@@ -113,7 +113,7 @@
     "test:git-install": "node --test scripts/git-artifacts.test.mjs",
     "verify:source-runner": "node --test scripts/harness-source-verify.test.mjs",
     "verify:git-artifact": "node scripts/git-artifacts.mjs",
-    "verify:issue-regressions": "node --test scripts/issue-188.test.mjs scripts/issue-189.test.mjs scripts/issue-205.test.mjs scripts/issue-234.test.mjs scripts/issue-236.test.mjs scripts/issue-236-stale-module.test.mjs scripts/issue-262.test.mjs scripts/issue-305.test.mjs scripts/issue-259.test.mjs scripts/issue-238.test.mjs scripts/issue-244.test.mjs scripts/issue-243.test.mjs scripts/issue-195.test.mjs",
+    "verify:issue-regressions": "node --test scripts/issue-188.test.mjs scripts/issue-189.test.mjs scripts/issue-205.test.mjs scripts/issue-234.test.mjs scripts/issue-236.test.mjs scripts/issue-236-stale-module.test.mjs scripts/issue-262.test.mjs scripts/issue-305.test.mjs scripts/issue-259.test.mjs scripts/issue-238.test.mjs scripts/issue-244.test.mjs scripts/issue-243.test.mjs scripts/issue-195.test.mjs scripts/issue-117.test.mjs",
     "verify:lifecycle-issues": "node --test scripts/issue-308.test.mjs scripts/issue-272.test.mjs scripts/issue-103.test.mjs scripts/issue-259-settlement.test.mjs scripts/issue-114.test.mjs",
     "verify:ui-status": "node --test scripts/issue-58.test.mjs",
     "verify:evaluation": "node scripts/evaluation/validate.mjs --self-test && node --test scripts/issue-211.test.mjs",
