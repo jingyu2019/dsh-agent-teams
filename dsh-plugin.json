@@ -3,7 +3,7 @@
   "manifestVersion": "0.15",
   "id": "com.nanmicoder.agent-teams",
   "name": "@nanmicoder/dsh-agent-teams",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "license": "MIT",
   "source": "git+https://github.com/NanmiCoder/dsh-agent-teams.git",
   "facets": {
@@ -14,18 +14,49 @@
   },
   "requires": {
     "contracts": [
-      { "apiVersion": "tool.dsh/v1", "kind": "Tool" },
-      { "apiVersion": "command.dsh/v1", "kind": "CommandRuntime" },
-      { "apiVersion": "session.dsh/v1alpha1", "kind": "Session" },
-      { "apiVersion": "model.dsh/v1", "kind": "ModelCatalog" },
-      { "apiVersion": "presentation.dsh/v1alpha1", "kind": "Presentation" }
+      {
+        "apiVersion": "tool.dsh/v1",
+        "kind": "Tool"
+      },
+      {
+        "apiVersion": "command.dsh/v1",
+        "kind": "CommandRuntime"
+      },
+      {
+        "apiVersion": "session.dsh/v1alpha1",
+        "kind": "Session"
+      },
+      {
+        "apiVersion": "model.dsh/v1",
+        "kind": "ModelCatalog"
+      },
+      {
+        "apiVersion": "presentation.dsh/v1alpha1",
+        "kind": "Presentation"
+      }
     ]
   },
   "permissions": [
-    { "name": "storage.local.read", "scope": "workspace", "reason": "Read team state, tasks, attempts and mailboxes under .agent-teams/." },
-    { "name": "storage.local.write", "scope": "workspace", "reason": "Persist team state, tasks, attempts and mailboxes under .agent-teams/." },
-    { "name": "session.create", "scope": "session", "reason": "Create a continuable subagent session for each team member." },
-    { "name": "messages.observe.read", "scope": "session", "reason": "Observe captain and member messages to advance scheduling and report delivery." }
+    {
+      "name": "storage.local.read",
+      "scope": "workspace",
+      "reason": "Read team state, tasks, attempts and mailboxes under .agent-teams/."
+    },
+    {
+      "name": "storage.local.write",
+      "scope": "workspace",
+      "reason": "Persist team state, tasks, attempts and mailboxes under .agent-teams/."
+    },
+    {
+      "name": "session.create",
+      "scope": "session",
+      "reason": "Create a continuable subagent session for each team member."
+    },
+    {
+      "name": "messages.observe.read",
+      "scope": "session",
+      "reason": "Observe captain and member messages to advance scheduling and report delivery."
+    }
   ],
   "contributes": {
     "commands": [
