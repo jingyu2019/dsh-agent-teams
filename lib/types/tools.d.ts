@@ -12,6 +12,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { type MemberToolPolicy } from './tool-policies.ts';
 import type { ArtifactSnapshot } from './types.ts';
+import { type MemberRuntimeConfig } from './members.ts';
 import { type TeamState, type TeamTask } from './types.ts';
 export { steerCaptainReport } from './members.ts';
 /** Resolved plugin config consumed by the tools. */
@@ -133,3 +134,7 @@ export declare function applyQualityFollowUp(team: TeamState, closed: TeamTask, 
     reason?: string;
     excludedFindings?: string[];
 };
+/** Build the scheduler config through one testable production seam. */
+export declare function schedulerRuntimeConfig(config: ToolsConfig, dispatch: import('./scheduler.ts').SchedulerConfig['dispatch']): import('./scheduler.ts').SchedulerConfig;
+/** Build the `memberRuntime` config handed to member helpers. */
+export declare function memberRuntime(config: ToolsConfig): MemberRuntimeConfig;

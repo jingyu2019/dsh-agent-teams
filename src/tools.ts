@@ -704,13 +704,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   installRetiredMemberGuard(ctx, config.stateDir)
   installMemberDelegationGuard(ctx, config.stateDir, config.memberMaxDepth ?? 0)
   installMailboxAdmission(ctx, config.stateDir)
-  const scheduler = installTeamScheduler(ctx, {
-    stateDir: config.stateDir,
-    executionPrompt: config.executionPrompt,
-    maxConcurrentWorkers: config.maxConcurrentWorkers ?? config.maxMembers,
-    parallelToolCalls: config.parallelToolCalls === true,
-    dispatch: dispatchMember,
-  })
+  const scheduler = installTeamScheduler(ctx, schedulerRuntimeConfig(config, dispatchMember))
 
 
   async function dispatchMember(captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', request?: DispatchRequest): Promise<DispatchResult> {
@@ -2914,8 +2908,22 @@ export function applyQualityFollowUp(
   }
 }
 
+/** Build the scheduler config through one testable production seam. */
+export function schedulerRuntimeConfig(
+  config: ToolsConfig,
+  dispatch: import('./scheduler.ts').SchedulerConfig['dispatch'],
+): import('./scheduler.ts').SchedulerConfig {
+  return {
+    stateDir: config.stateDir,
+    executionPrompt: config.executionPrompt,
+    maxConcurrentWorkers: config.maxConcurrentWorkers ?? config.maxMembers,
+    parallelToolCalls: config.parallelToolCalls === true,
+    dispatch,
+  }
+}
+
 /** Build the `memberRuntime` config handed to member helpers. */
-function memberRuntime(config: ToolsConfig): MemberRuntimeConfig {
+export function memberRuntime(config: ToolsConfig): MemberRuntimeConfig {
   return {
     provider: config.memberProvider,
     maxDepth: config.memberMaxDepth,

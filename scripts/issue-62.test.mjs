@@ -8,6 +8,7 @@ import { createTeamDir } from '../lib/state.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { memberRuntime, schedulerRuntimeConfig } from '../lib/tools.js'
 
 const team = { id: 'team', name: 'Team', description: 'goal', captainSessionId: 'c', createdAt: 0, members: [], tasks: [], taskSeq: 0 }
 const member = { name: 'worker', id: 'child', role: 'impl', joinedAt: 0, status: 'idle' }
@@ -72,4 +73,10 @@ test('scheduler config carries the opt-in into the dispatched assignment', async
     await scheduler.kickMember(workspace, 'team', 'worker', captain)
     assert.match(prompt, /Parallel Emission is enabled/)
   } finally { await rm(workspace, { recursive: true, force: true }) }
+})
+
+test('registration config seams propagate the opt-in to scheduler and member runtime', () => {
+  const config = { stateDir: '.agent-teams', memberProvider: 'spawn', memberMaxDepth: 0, maxMembers: 8, parallelToolCalls: true, profiles: {}, toolPolicies: {} }
+  assert.equal(schedulerRuntimeConfig(config, async () => true).parallelToolCalls, true)
+  assert.equal(memberRuntime(config).parallelToolCalls, true)
 })
