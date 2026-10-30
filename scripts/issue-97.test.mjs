@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { appendMailbox, createMessage, createTeamDir, readTeam } from '../lib/state.js'
+import { releaseLegacyPermitForIdle } from '../lib/state.js'
 import { installTeamScheduler, activePermitCount, canAcquireActivationPermit } from '../lib/scheduler.js'
 import { createRouteCursor } from '../lib/members.js'
 
@@ -317,5 +318,37 @@ test('legacy route-waiting task with no active delivery consumes no permit', asy
     await f.scheduler.kickMember(f.workspace, 'cap', 'w1', f.captain)
     assert.equal(f.dispatched.length, 0)
     assert.equal((await readTeam(f.stateRoot, 'cap')).activations.filter(item => item.permitHeld).length, 0)
+  } finally { await f.cleanup() }
+})
+
+test('legacy idle releases only a delivery created before the edge was observed', async () => {
+  const team = teamWith(1, 1)
+  team.members[0].id = 'c1'
+  team.members[0].currentActivationId = 'newer'
+  team.activations = [{ ...lease('newer', 'c1'), createdAt: Date.now() + 1_000 }]
+  const f = await fixture(team, 1, {}, false)
+  try {
+    const released = await releaseLegacyPermitForIdle(f.stateRoot, 'cap', 'c1', Date.now())
+    assert.equal(released, false, 'a lease newer than the observed edge must not be released')
+    const current = await readTeam(f.stateRoot, 'cap')
+    assert.equal(current.activations[0].permitHeld, true)
+    assert.equal(current.activations[0].settlementApplied, false)
+  } finally { await f.cleanup() }
+})
+
+test('legacy idle does not release a delivery whose live turn is still running', async () => {
+  const team = teamWith(1, 1)
+  team.members[0].id = 'c1'
+  team.members[0].currentActivationId = 'running-lease'
+  team.activations = [lease('running-lease', 'c1')]
+  const f = await fixture(team, 1, { c1: 'running' }, false)
+  try {
+    const released = await releaseLegacyPermitForIdle(
+      f.stateRoot, 'cap', 'c1', Date.now() + 1_000,
+      () => f.ctx.agents.get('c1')?.status,
+    )
+    assert.equal(released, false, 'a turn still running must keep its permit')
+    const current = await readTeam(f.stateRoot, 'cap')
+    assert.equal(current.activations[0].permitHeld, true)
   } finally { await f.cleanup() }
 })
