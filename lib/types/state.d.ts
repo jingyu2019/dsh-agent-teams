@@ -71,6 +71,8 @@ export declare const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly Task
 export declare function transitionError(current: TaskStatus, next: TaskStatus): string | undefined;
 /** Activate the task's current generation for one owner and return its capability id. */
 export declare function activateTaskAttempt(task: TeamTask, assignee: string): string;
+/** Clear the durable sparse probe without touching the current capability. */
+export declare function clearTaskProbe(task: TeamTask): void;
 /** Clear fields bound to one exact activation/attempt. */
 export declare function clearTaskActivation(task: TeamTask): void;
 /** Start a fresh task generation for one owner. */

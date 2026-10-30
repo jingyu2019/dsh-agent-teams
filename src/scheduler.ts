@@ -43,12 +43,15 @@ import {
 } from './state.ts'
 import { contractStaleness, isVerdictKind, taskKindOf, verdictScopePatterns } from './quality-gates.ts'
 import { digestWorkspacePaths, snapshotWorkspacePaths } from './artifacts.ts'
-import type { ActivationLease, ActivationStopReason, NotificationLedgerEntry, TaskParking, TeamMember, TeamState, TeamTask } from './types.ts'
+import type { ActivationLease, ActivationStopReason, ContextLifecycleCapability, ContextLifecycleComposition, NotificationLedgerEntry, TaskParking, TeamMember, TeamState, TeamTask } from './types.ts'
 
 /** Per-dependency output cap in the assignment prompt. */
 export const DEPENDENCY_OUTPUT_MAX_CHARS = 2_000
 /** Combined dependency-output budget in the assignment prompt. */
 export const DEPENDENCY_OUTPUTS_TOTAL_MAX_CHARS = 12_000
+/** Sparse probes are disabled by default and clamp enabled values to a safe range. */
+export const MIN_PROBE_INTERVAL_MS = 5_000
+export const MAX_PROBE_INTERVAL_MS = 600_000
 
 export interface DispatchRequest {
   readonly attemptId?: string
@@ -84,6 +87,12 @@ export interface SchedulerConfig {
   readonly maxConcurrentWorkers?: number
   /** Prompt-only opt-in for multiple AgentTeams calls in one response. */
   readonly parallelToolCalls?: boolean
+  /** Sparse probe cadence; 0/absent disables all probe timers. */
+  readonly probeIntervalMs?: number
+  /** Injected clock seam for deterministic lifecycle tests. */
+  readonly now?: () => number
+  readonly setTimeout?: (callback: () => void, delayMs: number) => unknown
+  readonly clearTimeout?: (handle: unknown) => void
   readonly dispatch?: (
     captain: Agent,
     teamId: string,
@@ -98,6 +107,12 @@ export interface SchedulerConfig {
 /** Count permits that still pin a managed activation. */
 export function activePermitCount(leases: readonly Pick<ActivationLease, 'permitHeld'>[]): number {
   return leases.reduce((count, lease) => count + (lease.permitHeld === true ? 1 : 0), 0)
+}
+
+/** Normalize the opt-in probe interval. Zero stays disabled; enabled values are bounded. */
+export function normalizeProbeIntervalMs(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0
+  return Math.min(MAX_PROBE_INTERVAL_MS, Math.max(MIN_PROBE_INTERVAL_MS, Math.floor(value)))
 }
 
 /** Whether one more activation may acquire a global permit. */
@@ -161,6 +176,7 @@ export interface DispatchTicket {
   readonly verify?: readonly string[]
   readonly reviewedTaskId?: string
   readonly findingSourceTaskIds?: readonly string[]
+  readonly contextLifecycle?: ContextLifecycleCapability
 }
 
 function taskProfileSeedId(task: TeamTask): string | undefined {
@@ -275,6 +291,19 @@ function nextReadyTask(tasks: readonly TeamTask[], memberName: string): TeamTask
     ?? ready.find(task => task.assignee === undefined)
 }
 
+function contextLifecycleGuidance(capability: ContextLifecycleCapability | undefined): string {
+  if (capability === undefined) {
+    return 'Host context compaction: unproven. No successful host compaction event is available; do not claim compaction passed.\n\n'
+  }
+  const detail = capability.lastCompactionError === undefined ? '' : ` Last error: ${capability.lastCompactionError}.`
+  const evidence = capability.observedEvent === undefined
+    ? ''
+    : ` Last event: ${capability.observedEvent}${capability.observedAt === undefined ? '' : ` at ${new Date(capability.observedAt).toISOString()}`}.`
+  return `Host context compaction: ${capability.state} (${capability.composition ?? 'unknown'} composition).${evidence}${detail} ${capability.state === 'observed'
+    ? 'The host owns compaction; keep the same child, task and attempt identity.'
+    : 'Do not claim compaction passed; preserve the exact task and attempt while continuing.'}\n\n`
+}
+
 export function assignmentPrompt(
   ticket: DispatchTicket,
   stateDir: string,
@@ -319,7 +348,7 @@ Do not start a teammate's assigned task.
 Team goal:
 ${goal}
 
-Profile protocol:
+${contextLifecycleGuidance(ticket.contextLifecycle)}Profile protocol:
 ${protocol}
 ${executionPrompt === undefined || executionPrompt === '' ? '' : `
 Execution guidance:
@@ -361,6 +390,11 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
   const activationRoots = new Map<string, string>()
   const activationWorkspaces = new Map<string, string>()
   const lifecycleLanes = new Map<string, Promise<unknown>>()
+  const probeIntervalMs = normalizeProbeIntervalMs(config.probeIntervalMs)
+  const clockNow = config.now ?? Date.now
+  const scheduleTimer = config.setTimeout ?? ((callback: () => void, delayMs: number): unknown => setTimeout(callback, delayMs))
+  const cancelTimer = config.clearTimeout ?? ((handle: unknown): void => clearTimeout(handle as ReturnType<typeof setTimeout>))
+  const probeTimers = new Map<string, unknown>()
 
   const serializeLifecycle = async <T>(childId: string, operation: () => Promise<T>): Promise<T> => {
     const previous = lifecycleLanes.get(childId) ?? Promise.resolve()
@@ -385,6 +419,137 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
   const boundedText = (value: string, max = 2_000): string => (
     value.length <= max ? value : `${value.slice(0, max)}… [truncated]`
   )
+
+  const contextComposition = (): { composition: ContextLifecycleComposition; hostVersion?: string } => {
+    const service = typeof ctx.get === 'function' ? ctx.get('compaction') : undefined
+    if (service === undefined || service === null) return { composition: 'minimal' }
+    const version = typeof service === 'object' && service !== null && 'version' in service
+      ? (service as { version?: unknown }).version
+      : undefined
+    return {
+      composition: 'standard',
+      ...typeof version === 'string' && version.trim() !== '' ? { hostVersion: version.trim() } : {},
+    }
+  }
+
+  const defaultContextLifecycle = (): ContextLifecycleCapability => {
+    const detected = contextComposition()
+    return detected.composition === 'minimal'
+      ? {
+        state: 'unavailable',
+        composition: 'minimal',
+        source: 'none',
+        notes: 'host compaction service is not mounted in this composition',
+        ...detected.hostVersion === undefined ? {} : { hostVersion: detected.hostVersion },
+      }
+      : {
+        state: 'unproven',
+        composition: 'standard',
+        source: 'none',
+        notes: 'no successful compaction/end has been observed for this child session',
+        ...detected.hostVersion === undefined ? {} : { hostVersion: detected.hostVersion },
+      }
+  }
+
+  const ensureMemberContextLifecycle = (member: TeamMember): boolean => {
+    const detected = contextComposition()
+    const current = member.contextLifecycle
+    if (current !== undefined && current.composition === detected.composition) {
+      if (detected.hostVersion === undefined || current.hostVersion === detected.hostVersion) return false
+      member.contextLifecycle = { ...current, hostVersion: detected.hostVersion }
+      return true
+    }
+    member.contextLifecycle = defaultContextLifecycle()
+    return true
+  }
+
+  const recordContextLifecycleEvent = async (
+    session: { id: string; header?: { cwd?: string } },
+    event: { type: string; time?: number; data?: unknown },
+  ): Promise<void> => {
+    if (!event.type.startsWith('compaction/')) return
+    const workspace = session.header?.cwd ?? process.cwd()
+    const stateRoot = stateRootOf(workspace, config)
+    const located = await findTeamByParticipant(stateRoot, session.id)
+    if (located === undefined) return
+    await withTeamLock(teamLockKey(stateRoot, located.id), async () => {
+      const team = await readTeam(stateRoot, located.id)
+      const member = team?.members.find(candidate => candidate.id === session.id && candidate.status !== 'removed')
+      if (team === undefined || member === undefined) return
+      const lease = team.activations?.find(candidate => candidate.activationId === member.currentActivationId
+        && candidate.memberId === member.id
+        && candidate.memberGeneration === (member.generation ?? 1))
+      const observedAt = typeof event.time === 'number' && Number.isFinite(event.time) ? event.time : clockNow()
+      const previous = member.contextLifecycle ?? defaultContextLifecycle()
+      const base: ContextLifecycleCapability = {
+        ...previous,
+        composition: 'standard',
+        source: 'session-event',
+        memberId: member.id,
+        memberGeneration: member.generation ?? 1,
+        ...lease === undefined ? {} : {
+          activationId: lease.activationId,
+          activationEpoch: lease.activationEpoch,
+        },
+        lastEvent: event.type as ContextLifecycleCapability['lastEvent'],
+      }
+      if (event.type === 'compaction/start') {
+        member.contextLifecycle = {
+          ...base,
+          state: 'unproven',
+          observedEvent: 'compaction/start',
+          observedAt,
+          lastCompactionError: undefined,
+          notes: 'compaction started; success requires a matching compaction/end',
+        }
+      } else if (event.type === 'compaction/end') {
+        member.contextLifecycle = {
+          ...base,
+          state: 'observed',
+          observedEvent: 'compaction/end',
+          observedAt,
+          lastCompactionError: undefined,
+          notes: 'host reported a successful compaction/end for this child session',
+        }
+      } else if (event.type === 'compaction/end.error') {
+        const data = typeof event.data === 'object' && event.data !== null ? event.data as Record<string, unknown> : {}
+        const raw = data['error'] ?? data['message'] ?? data['reason']
+        const errorText = typeof raw === 'string' ? raw : raw === undefined ? 'compaction/end.error' : JSON.stringify(raw)
+        member.contextLifecycle = {
+          ...base,
+          state: 'unavailable',
+          observedEvent: undefined,
+          observedAt,
+          lastCompactionError: boundedText(errorText),
+          notes: 'host compaction failed; this is not evidence of successful compaction',
+        }
+      } else if (event.type === 'compaction/prune') {
+        member.contextLifecycle = {
+          ...base,
+          state: previous.state === 'observed' ? 'observed' : previous.state === 'unavailable' ? 'unavailable' : 'unproven',
+          pruneObservedAt: observedAt,
+          notes: previous.state === 'observed'
+            ? 'host pruned session data after an observed successful compaction'
+            : 'host compaction/prune was observed; pruning alone is not successful compaction',
+        }
+      } else {
+        return
+      }
+      await writeTeam(stateRoot, team)
+    })
+  }
+
+  const ensureTeamContextLifecycle = async (stateRoot: string, teamId: string): Promise<void> => {
+    await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+      const team = await readTeam(stateRoot, teamId)
+      if (team === undefined) return
+      let changed = false
+      for (const member of team.members) {
+        if (member.status !== 'removed') changed = ensureMemberContextLifecycle(member) || changed
+      }
+      if (changed) await writeTeam(stateRoot, team)
+    })
+  }
 
   const noticeFor = (
     team: TeamState,
@@ -470,6 +635,95 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     }
   }
 
+  const probeTimerKey = (stateRoot: string, teamId: string): string => `${stateRoot}\u0000${teamId}`
+
+  const clearTeamProbeTimer = (stateRoot: string, teamId: string): void => {
+    const key = probeTimerKey(stateRoot, teamId)
+    const handle = probeTimers.get(key)
+    if (handle === undefined) return
+    probeTimers.delete(key)
+    cancelTimer(handle)
+  }
+
+  const scheduleTeamProbeTimer = async (workspace: string, teamId: string, known?: TeamState): Promise<void> => {
+    const stateRoot = stateRootOf(workspace, config)
+    const key = probeTimerKey(stateRoot, teamId)
+    const team = known ?? await readTeam(stateRoot, teamId)
+    if (probeIntervalMs <= 0 || team === undefined || team.halted === true || team.phase === 'staged') {
+      clearTeamProbeTimer(stateRoot, teamId)
+      return
+    }
+    const next = team.tasks
+      .filter(task => task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled')
+      .map(task => task.probe?.nextProbeAt)
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+      .sort((left, right) => left - right)[0]
+    if (next === undefined) {
+      clearTeamProbeTimer(stateRoot, teamId)
+      return
+    }
+    const prior = probeTimers.get(key)
+    if (prior !== undefined) {
+      probeTimers.delete(key)
+      cancelTimer(prior)
+    }
+    const delay = Math.max(1, next - clockNow())
+    const handle = scheduleTimer(() => {
+      probeTimers.delete(key)
+      void fireDueProbes(workspace, teamId).catch(error => {
+        ctx.logger.warn(`agent-teams: sparse probe failed for ${teamId}: ${String(error)}`)
+      })
+    }, delay)
+    ;(handle as { unref?: () => void } | undefined)?.unref?.()
+    probeTimers.set(key, handle)
+  }
+
+  const fireDueProbes = async (workspace: string, teamId: string): Promise<void> => {
+    const stateRoot = stateRootOf(workspace, config)
+    if (probeIntervalMs <= 0) return
+    const now = clockNow()
+    const due = await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+      const team = await readTeam(stateRoot, teamId)
+      if (team === undefined || team.halted === true || team.phase === 'staged') return []
+      const actions: Array<{ memberName: string; kick: boolean }> = []
+      let changed = false
+      for (const task of team.tasks) {
+        const probe = task.probe
+        if (probe === undefined || probe.nextProbeAt > now
+          || task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') continue
+        const member = team.members.find(candidate => candidate.id !== '' && candidate.name === task.assignee && candidate.status !== 'removed')
+        const lease = team.activations?.find(candidate => candidate.activationId === probe.activationId
+          && candidate.memberId === member?.id
+          && candidate.memberGeneration === probe.memberGeneration
+          && candidate.activationEpoch === probe.activationEpoch
+          && candidate.attemptId === probe.attemptId)
+        const exactParking = task.parking !== undefined
+          && task.parking.attemptId === task.attemptId
+          && task.parking.activationId === probe.activationId
+        const permitActive = lease?.permitHeld === true
+          && (lease.state === 'pending' || lease.state === 'started' || lease.state === 'recovering')
+        const live = member === undefined ? undefined : ctx.agents.get(SessionId(member.id))
+        const positivelyRunning = lease?.startObserved === true
+          || lease?.hostRunId !== undefined
+          || lease?.runningObservedAt !== undefined
+          || live?.status === 'running'
+        const memberName = member?.name ?? task.assignee ?? ''
+        probe.probeCount += 1
+        probe.lastProbeAt = now
+        probe.nextProbeAt = now + probeIntervalMs
+        changed = true
+        if (memberName !== '') actions.push({ memberName, kick: permitActive && positivelyRunning && !exactParking })
+      }
+      if (changed) await writeTeam(stateRoot, team)
+      return actions
+    })
+    for (const action of due) {
+      if (action.kick) await runtime.kickMember(workspace, teamId, action.memberName)
+      else await flushDueNotices(workspace, stateRoot, teamId)
+    }
+    await scheduleTeamProbeTimer(workspace, teamId)
+  }
+
   const activationBoundary = async (childId: string, isNew: boolean): Promise<number> => {
     if (isNew) return 0
     const live = ctx.agents.get(SessionId(childId))
@@ -519,7 +773,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       recoveryDecision: 'none',
       state: 'pending',
       permitHeld: true,
-      createdAt: Date.now(),
+      createdAt: clockNow(),
     }
     if (newChild && managed) member.id = reservedChildId
     member.generation = member.generation ?? 1
@@ -532,6 +786,20 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       options.task.attemptGeneration = member.generation
       options.task.attemptActivationId = activationId
       options.task.attemptActivationEpoch = activationEpoch
+      if (probeIntervalMs > 0) {
+        const armedAt = clockNow()
+        options.task.probe = {
+          activationId,
+          memberGeneration: member.generation,
+          activationEpoch,
+          attemptId: options.attemptId,
+          nextProbeAt: armedAt + probeIntervalMs,
+          probeCount: 0,
+          armedAt,
+        }
+      } else {
+        options.task.probe = undefined
+      }
     }
     pendingByChild.set(reservedChildId, { teamId: team.id, activationId })
     activationRoots.set(team.id, stateRoot)
@@ -597,6 +865,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
               ? 'settlement_unknown: missing or unknown stopReason (fail closed)'
               : `activation ended with stopReason=${stopReason}${routeHint}`
             task.output = lease.diagnostic === undefined ? base : `${base}: ${lease.diagnostic}`
+            task.probe = undefined
             task.updatedAt = now
             noticeFor(team, lease, stopReason === 'unknown' ? 'settlement_unknown' : 'failed',
               `Member ${lease.memberId} activation ${lease.activationId} failed task ${task.id}: ${task.output}`)
@@ -912,6 +1181,17 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     }
   }
 
+  ctx.on('session/event', (session, event) => {
+    const type = String(event.type)
+    if (!type.startsWith('compaction/')) return
+    void serializeLifecycle(String(session.id), () => recordContextLifecycleEvent(
+      { id: String(session.id), header: session.header },
+      { type, time: event.time, data: event.data },
+    )).catch(error => {
+      ctx.logger.warn(`agent-teams: context lifecycle observation failed for ${String(session.id)}: ${String(error)}`)
+    })
+  })
+
   ctx.on('subagent/start', info => {
     void serializeLifecycle(String(info.id), () => bindStart(info)).catch(error => {
       ctx.logger.warn(`agent-teams: activation start binding failed for ${String(info.id)}: ${String(error)}`)
@@ -959,6 +1239,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       await serializeMember(queueKey, async () => {
         await recoverActivations(workspace, stateRoot, teamId)
         await flushDueNotices(workspace, stateRoot, teamId)
+        await ensureTeamContextLifecycle(stateRoot, teamId)
         let team = await readTeam(stateRoot, teamId)
         if (team === undefined || team.halted === true || team.phase === 'staged') return
         const captain = liveCaptain(ctx, team.captainSessionId, suppliedCaptain)
@@ -1183,6 +1464,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             subject: task.subject,
             description: task.description,
             teamDescription: fresh.description,
+            ...currentMember.contextLifecycle === undefined ? {} : { contextLifecycle: currentMember.contextLifecycle },
             ...protocol === undefined ? {} : { profileProtocol: protocol },
             ...profileSeedId === undefined ? {} : { profileSeedId },
             ...fresh.profile?.executionPrompt === undefined && config.executionPrompt === undefined
@@ -1285,6 +1567,8 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           await writeTeam(stateRoot, fresh)
         })
       })
+      const current = await readTeam(stateRoot, teamId)
+      if (current !== undefined) await scheduleTeamProbeTimer(workspace, teamId, current)
     },
   }
 

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { appendMailbox, createMessage, createTeamDir, readTeam } from '../lib/state.js'
 import { assignmentPrompt, installTeamScheduler } from '../lib/scheduler.js'
+import { renderStatus } from '../lib/tools.js'
 
 const tick = (ms = 25) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -26,7 +27,7 @@ function lease(now) {
   }
 }
 
-async function fixture({ composition = 'standard', active = true } = {}) {
+async function fixture({ composition = 'standard', active = true, mailbox = active } = {}) {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-teams-w3-context-'))
   const stateRoot = join(workspace, '.agent-teams')
   const now = Date.now()
@@ -34,6 +35,7 @@ async function fixture({ composition = 'standard', active = true } = {}) {
   const child = fakeAgent('child', workspace)
   const listeners = new Map()
   const dispatched = []
+  const prompts = []
   const compaction = composition === 'minimal' ? undefined : { version: 'fake-rc' }
   const ctx = {
     agents: { get: id => id === 'captain' ? captain : id === 'child' ? child : undefined, list: () => [captain, child] },
@@ -63,17 +65,18 @@ async function fixture({ composition = 'standard', active = true } = {}) {
     activations: active ? [lease(now)] : [],
   }
   await createTeamDir(stateRoot, team)
-  await appendMailbox(stateRoot, team.id, 'worker', createMessage('captain', 'worker', 'keep this mailbox state'))
+  if (mailbox) await appendMailbox(stateRoot, team.id, 'worker', createMessage('captain', 'worker', 'keep this mailbox state'))
   const scheduler = installTeamScheduler(ctx, {
     stateDir: '.agent-teams',
     maxConcurrentWorkers: 2,
-    dispatch: async (_captain, _teamId, memberName, _text, _signal, _mode, request) => {
+    dispatch: async (_captain, _teamId, memberName, text, _signal, _mode, request) => {
       dispatched.push({ memberName, request })
+      prompts.push(text)
       if (request?.newChild) ctx.emit('subagent/start', { id: request.reservedChildId, runId: `run-${request.activationId}`, provider: 'fake', local: true })
       return { accepted: true }
     },
   })
-  return { workspace, stateRoot, ctx, child, scheduler, captain, dispatched, cleanup: () => rm(workspace, { recursive: true, force: true }) }
+  return { workspace, stateRoot, ctx, child, scheduler, captain, dispatched, prompts, cleanup: () => rm(workspace, { recursive: true, force: true }) }
 }
 
 test('standard composition is unproven before an actual compaction signal', async () => {
@@ -85,6 +88,7 @@ test('standard composition is unproven before an actual compaction signal', asyn
     assert.equal(team.members[0].contextLifecycle.state, 'unproven')
     assert.equal(team.members[0].contextLifecycle.composition, 'standard')
     assert.equal(team.members[0].contextLifecycle.observedEvent, undefined)
+    assert.match(f.prompts[0], /Host context compaction: unproven/i)
   } finally { await f.cleanup() }
 })
 
@@ -136,7 +140,8 @@ test('compaction/end.error is unavailable and records a bounded diagnostic', asy
     const member = (await readTeam(f.stateRoot, 'context')).members[0]
     assert.equal(member.contextLifecycle.state, 'unavailable')
     assert.match(member.contextLifecycle.lastCompactionError, /summarizer failed/)
-    assert.ok(member.contextLifecycle.lastCompactionError.length <= 2001)
+    assert.ok(member.contextLifecycle.lastCompactionError.length <= 2_050)
+    assert.equal(member.contextLifecycle.observedEvent, undefined)
   } finally { await f.cleanup() }
 })
 
@@ -162,4 +167,44 @@ test('assignment guidance exposes unavailable compaction honestly', () => {
   }, '.agent-teams', 'context')
   assert.match(prompt, /Host context compaction: unavailable/i)
   assert.match(prompt, /do not claim compaction passed/i)
+})
+
+test('a different child session cannot change this member capability', async () => {
+  const f = await fixture({ active: false })
+  try {
+    await f.scheduler.kickMember(f.workspace, 'context', 'worker', f.captain)
+    await tick()
+    f.ctx.emit('session/event', { id: 'other-child', header: { cwd: f.workspace } }, { type: 'compaction/end', seq: 40, time: 500, data: {} })
+    await tick()
+    const member = (await readTeam(f.stateRoot, 'context')).members[0]
+    assert.equal(member.contextLifecycle.state, 'unproven')
+    assert.equal(member.contextLifecycle.observedEvent, undefined)
+  } finally { await f.cleanup() }
+})
+
+test('cold restore without an event remains unproven', async () => {
+  const f = await fixture({ active: false })
+  try {
+    await f.scheduler.kickMember(f.workspace, 'context', 'worker', f.captain)
+    const cold = installTeamScheduler(f.ctx, { stateDir: '.agent-teams', maxConcurrentWorkers: 2 })
+    assert.ok(cold)
+    const member = (await readTeam(f.stateRoot, 'context')).members[0]
+    assert.equal(member.contextLifecycle.state, 'unproven')
+    assert.equal(member.contextLifecycle.observedEvent, undefined)
+  } finally { await f.cleanup() }
+})
+
+test('status renders team and member context lifecycle states', () => {
+  const text = renderStatus({
+    team_name: 'Context', viewer: 'captain',
+    context_lifecycle: { state: 'unavailable', counts: { observed: 0, unavailable: 1, unproven: 0 } },
+    members: [{
+      name: 'worker', role: 'impl', provider: '', model: '', reasoning_effort: '', tool_policy: '',
+      status: 'idle', activity: 'idle',
+      context_lifecycle: { state: 'unavailable', composition: 'minimal', notes: 'not mounted' },
+    }],
+    tasks: [], captain_inbox: [], member_inboxes: {}, mailbox_warnings: [], mailbox_warning_count: 0,
+  })
+  assert.match(text, /Context lifecycle: unavailable/i)
+  assert.match(text, /worker.*context unavailable/i)
 })

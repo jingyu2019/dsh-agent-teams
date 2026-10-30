@@ -10,6 +10,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
+import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { type MemberToolPolicy } from './tool-policies.ts';
 import type { ArtifactSnapshot } from './types.ts';
 import { type MemberRuntimeConfig } from './members.ts';
@@ -37,6 +38,8 @@ export interface ToolsConfig {
     maxMembers: number;
     /** Global cap on simultaneous activation permits (defaults to maxMembers). */
     maxConcurrentWorkers?: number;
+    /** Sparse probe cadence; zero/absent disables probes. */
+    probeIntervalMs?: number;
     /** Whether prompts may explicitly permit several AgentTeams calls per response. */
     parallelToolCalls?: boolean;
     /** Named team profiles from the active DSH profile. */
@@ -138,3 +141,5 @@ export declare function applyQualityFollowUp(team: TeamState, closed: TeamTask, 
 export declare function schedulerRuntimeConfig(config: ToolsConfig, dispatch: import('./scheduler.ts').SchedulerConfig['dispatch']): import('./scheduler.ts').SchedulerConfig;
 /** Build the `memberRuntime` config handed to member helpers. */
 export declare function memberRuntime(config: ToolsConfig): MemberRuntimeConfig;
+/** Render the status snapshot as compact text for the model. */
+export declare function renderStatus(value: JsonValue): string;

@@ -14,11 +14,14 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { type MemberStartResult } from './harness-compat.ts';
-import type { ActivationLease, TeamTask } from './types.ts';
+import type { ActivationLease, ContextLifecycleCapability, TeamTask } from './types.ts';
 /** Per-dependency output cap in the assignment prompt. */
 export declare const DEPENDENCY_OUTPUT_MAX_CHARS = 2000;
 /** Combined dependency-output budget in the assignment prompt. */
 export declare const DEPENDENCY_OUTPUTS_TOTAL_MAX_CHARS = 12000;
+/** Sparse probes are disabled by default and clamp enabled values to a safe range. */
+export declare const MIN_PROBE_INTERVAL_MS = 5000;
+export declare const MAX_PROBE_INTERVAL_MS = 600000;
 export interface DispatchRequest {
     readonly attemptId?: string;
     readonly activationId?: string;
@@ -40,10 +43,18 @@ export interface SchedulerConfig {
     readonly maxConcurrentWorkers?: number;
     /** Prompt-only opt-in for multiple AgentTeams calls in one response. */
     readonly parallelToolCalls?: boolean;
+    /** Sparse probe cadence; 0/absent disables all probe timers. */
+    readonly probeIntervalMs?: number;
+    /** Injected clock seam for deterministic lifecycle tests. */
+    readonly now?: () => number;
+    readonly setTimeout?: (callback: () => void, delayMs: number) => unknown;
+    readonly clearTimeout?: (handle: unknown) => void;
     readonly dispatch?: (captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', request?: DispatchRequest) => Promise<boolean | DispatchResult>;
 }
 /** Count permits that still pin a managed activation. */
 export declare function activePermitCount(leases: readonly Pick<ActivationLease, 'permitHeld'>[]): number;
+/** Normalize the opt-in probe interval. Zero stays disabled; enabled values are bounded. */
+export declare function normalizeProbeIntervalMs(value: number | undefined): number;
 /** Whether one more activation may acquire a global permit. */
 export declare function canAcquireActivationPermit(leases: readonly Pick<ActivationLease, 'permitHeld'>[], maxConcurrentWorkers: number | undefined): boolean;
 export interface TeamScheduler {
@@ -96,6 +107,7 @@ export interface DispatchTicket {
     readonly verify?: readonly string[];
     readonly reviewedTaskId?: string;
     readonly findingSourceTaskIds?: readonly string[];
+    readonly contextLifecycle?: ContextLifecycleCapability;
 }
 /**
  * Recursively collect `status=completed` ancestors of `taskId` in topological

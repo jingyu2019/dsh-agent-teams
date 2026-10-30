@@ -24,7 +24,7 @@ class FakeClock {
     for (const timer of due) {
       timer.cleared = true
       timer.fn()
-      await tick(0)
+      await tick(20)
     }
     this.timers = this.timers.filter(timer => !timer.cleared)
   }
@@ -73,7 +73,7 @@ async function fixture({ probeIntervalMs = 0, probe, released = false, parked = 
     id: 'probe', name: 'Probe', captainSessionId: 'captain', createdAt: now,
     members: [{ id: 'child', name: 'worker', joinedAt: now, status: 'idle', generation: 1, currentActivationId: 'act-1', lastActivationEpoch: 1 }],
     tasks: probe === undefined ? [{ ...task, status: 'pending', attempt: 0, attemptId: undefined, attemptActivationId: undefined, attemptMemberId: undefined, attemptGeneration: undefined, attemptActivationEpoch: undefined }] : [task],
-    taskSeq: 1, activationSeq: 1, activations: [activation(now, { released })],
+    taskSeq: 1, activationSeq: 1, activations: probe === undefined ? [] : [activation(now, { released })],
   }
   await createTeamDir(stateRoot, team)
   const scheduler = installTeamScheduler(ctx, {
@@ -82,6 +82,10 @@ async function fixture({ probeIntervalMs = 0, probe, released = false, parked = 
     clearTimeout: id => clock.clearTimeout(id),
     dispatch: async (_captain, _teamId, memberName, _text, _signal, _mode, request) => {
       dispatched.push({ memberName, request })
+      // A legacy host starts the accepted turn immediately; exact recovery
+      // must observe that running boundary rather than rediscovering it as a
+      // lost delivery when the probe fires.
+      child.status = 'running'
       return { accepted: true }
     },
   })
@@ -135,6 +139,22 @@ test('restart uses the durable due time instead of restarting the interval', asy
     assert.equal((await readTeam(f.stateRoot, 'probe')).tasks[0].probe.probeCount, 2)
     await f.clock.advance(1)
     assert.equal((await readTeam(f.stateRoot, 'probe')).tasks[0].probe.probeCount, 3)
+  } finally { await f.cleanup() }
+})
+
+test('a due probe never rotates a permit with no positive running boundary', async () => {
+  const f = await fixture({
+    probeIntervalMs: 5000,
+    probe: { activationId: 'act-1', memberGeneration: 1, activationEpoch: 1, attemptId: 'attempt-1', nextProbeAt: 1_000_001, probeCount: 0, armedAt: 1_000_000 },
+  })
+  try {
+    await f.scheduler.kickMember(f.workspace, 'probe', 'worker', f.captain)
+    await f.clock.advance(1)
+    const task = (await readTeam(f.stateRoot, 'probe')).tasks[0]
+    assert.equal(f.dispatched.length, 0)
+    assert.equal(task.attemptId, 'attempt-1')
+    assert.equal(task.attemptActivationId, 'act-1')
+    assert.equal(task.probe.probeCount, 1)
   } finally { await f.cleanup() }
 })
 

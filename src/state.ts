@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { MemberToolFilter } from './tool-policies.ts'
-import { FINDING_SEVERITIES, REVIEW_VERDICTS, TASK_KINDS, TERMINAL_TASK_STATUSES, type ReviewFinding, type TaskStatus, type TeamMember, type TeamMessage, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
+import { FINDING_SEVERITIES, REVIEW_VERDICTS, TASK_KINDS, TERMINAL_TASK_STATUSES, type ContextLifecycleCapability, type ReviewFinding, type TaskProbe, type TaskStatus, type TeamMember, type TeamMessage, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
 import { hasValidQualityTaskFields, isReviewPolicy, isValidFindingLine, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
 import { teamLeadMatch, type LeadIdentity } from './lineage.ts'
 
@@ -186,9 +186,15 @@ export function activateTaskAttempt(task: TeamTask, assignee: string): string {
   task.attemptId = attemptId
   task.handoffId = undefined
   task.reassigning = false
+  task.probe = undefined
   clearAttemptResult(task)
   task.updatedAt = Date.now()
   return attemptId
+}
+
+/** Clear the durable sparse probe without touching the current capability. */
+export function clearTaskProbe(task: TeamTask): void {
+  task.probe = undefined
 }
 
 /** Clear fields bound to one exact activation/attempt. */
@@ -199,6 +205,7 @@ export function clearTaskActivation(task: TeamTask): void {
   task.attemptActivationEpoch = undefined
   task.parking = undefined
   task.attemptRoute = undefined
+  task.probe = undefined
 }
 
 /** Start a fresh task generation for one owner. */
@@ -884,6 +891,38 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
+/** Validate one persisted compaction capability. */
+function isContextLifecycleCapability(value: unknown): value is ContextLifecycleCapability {
+  if (!isRecord(value)) return false
+  return (value['state'] === 'observed' || value['state'] === 'unavailable' || value['state'] === 'unproven')
+    && (value['hostVersion'] === undefined || typeof value['hostVersion'] === 'string')
+    && (value['composition'] === undefined || value['composition'] === 'standard' || value['composition'] === 'minimal' || value['composition'] === 'unknown')
+    && (value['observedEvent'] === undefined || value['observedEvent'] === 'compaction/start' || value['observedEvent'] === 'compaction/end')
+    && (value['observedAt'] === undefined || isFiniteNumber(value['observedAt']))
+    && (value['lastCompactionError'] === undefined || typeof value['lastCompactionError'] === 'string')
+    && (value['source'] === 'session-event' || value['source'] === 'verified-matrix' || value['source'] === 'none')
+    && (value['notes'] === undefined || typeof value['notes'] === 'string')
+    && (value['memberId'] === undefined || typeof value['memberId'] === 'string')
+    && (value['memberGeneration'] === undefined || Number.isSafeInteger(value['memberGeneration']))
+    && (value['activationId'] === undefined || typeof value['activationId'] === 'string')
+    && (value['activationEpoch'] === undefined || Number.isSafeInteger(value['activationEpoch']))
+    && (value['lastEvent'] === undefined || ['compaction/start', 'compaction/end', 'compaction/end.error', 'compaction/prune'].includes(value['lastEvent'] as string))
+    && (value['pruneObservedAt'] === undefined || isFiniteNumber(value['pruneObservedAt']))
+}
+
+/** Validate one persisted sparse probe. */
+function isTaskProbe(value: unknown): value is TaskProbe {
+  if (!isRecord(value)) return false
+  return typeof value['activationId'] === 'string' && value['activationId'] !== ''
+    && Number.isSafeInteger(value['memberGeneration']) && (value['memberGeneration'] as number) >= 0
+    && Number.isSafeInteger(value['activationEpoch']) && (value['activationEpoch'] as number) >= 0
+    && typeof value['attemptId'] === 'string' && value['attemptId'] !== ''
+    && isFiniteNumber(value['nextProbeAt'])
+    && Number.isSafeInteger(value['probeCount']) && (value['probeCount'] as number) >= 0
+    && isFiniteNumber(value['armedAt'])
+    && (value['lastProbeAt'] === undefined || isFiniteNumber(value['lastProbeAt']))
+}
+
 /** Validate one member record at the durable JSON boundary. */
 function isTeamMember(value: unknown): value is TeamMember {
   if (!isRecord(value)) return false
@@ -906,6 +945,7 @@ function isTeamMember(value: unknown): value is TeamMember {
     // A member without a policy keeps the legacy shape: both fields stay absent.
     && isOptionalNonBlankString(value['toolPolicy'])
     && (value['toolFilter'] === undefined || isMemberToolFilter(value['toolFilter']))
+    && (value['contextLifecycle'] === undefined || isContextLifecycleCapability(value['contextLifecycle']))
     && (value['runtimeSetup'] === undefined || (isRecord(value['runtimeSetup'])
       && typeof value['runtimeSetup']['persona'] === 'string'
       && isMemberToolFilter(value['runtimeSetup']['toolFilter'])))
@@ -1173,6 +1213,7 @@ export function isTeamTask(value: unknown): value is TeamTask {
     && isOptionalString(value['handoffFromMemberId'])
     && (value['reassigning'] === undefined || typeof value['reassigning'] === 'boolean')
     && (value['attemptRoute'] === undefined || isRouteCursor(value['attemptRoute']))
+    && (value['probe'] === undefined || isTaskProbe(value['probe']))
     && isFiniteNumber(value['createdAt'])
     && isFiniteNumber(value['updatedAt'])
     && hasValidQualityTaskFields(value)

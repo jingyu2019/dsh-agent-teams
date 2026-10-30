@@ -33,6 +33,7 @@ import {
   findTeamByCaptain,
   findTeamByParticipant,
   cancelUnfinishedTask,
+  clearTaskProbe,
   invalidateTaskAttempt,
   readUnreadMailbox,
   readMailbox,
@@ -117,6 +118,8 @@ export interface ToolsConfig {
   maxMembers: number
   /** Global cap on simultaneous activation permits (defaults to maxMembers). */
   maxConcurrentWorkers?: number
+  /** Sparse probe cadence; zero/absent disables probes. */
+  probeIntervalMs?: number
   /** Whether prompts may explicitly permit several AgentTeams calls per response. */
   parallelToolCalls?: boolean
   /** Named team profiles from the active DSH profile. */
@@ -2070,7 +2073,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           const transition = transitionError(task.status, args.status)
           if (transition !== undefined) throw new Error(transition)
           task.status = args.status
-          if (args.status === 'completed' || args.status === 'failed' || args.status === 'cancelled') task.parking = undefined
+          if (args.status === 'completed' || args.status === 'failed' || args.status === 'cancelled') {
+            task.parking = undefined
+            clearTaskProbe(task)
+          }
         }
         if (args.output !== undefined) task.output = args.output
         if (args.verdict !== undefined) task.verdict = args.verdict as ReviewVerdict
@@ -2430,6 +2436,18 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           tool_policy: member.toolPolicy ?? '',
           status: member.status,
           activity: member.id !== '' ? (activity.get(member.id) ?? 'unknown') : 'unspawned',
+          context_lifecycle: {
+            state: member.contextLifecycle?.state ?? 'unproven',
+            composition: member.contextLifecycle?.composition ?? 'unknown',
+            source: member.contextLifecycle?.source ?? 'none',
+            ...member.contextLifecycle?.hostVersion === undefined ? {} : { host_version: member.contextLifecycle.hostVersion },
+            ...member.contextLifecycle?.observedEvent === undefined ? {} : { observed_event: member.contextLifecycle.observedEvent },
+            ...member.contextLifecycle?.observedAt === undefined ? {} : { observed_at: member.contextLifecycle.observedAt },
+            ...member.contextLifecycle?.lastCompactionError === undefined ? {} : { last_compaction_error: member.contextLifecycle.lastCompactionError },
+            ...member.contextLifecycle?.lastEvent === undefined ? {} : { last_event: member.contextLifecycle.lastEvent },
+            ...member.contextLifecycle?.pruneObservedAt === undefined ? {} : { prune_observed_at: member.contextLifecycle.pruneObservedAt },
+            ...member.contextLifecycle?.notes === undefined ? {} : { notes: member.contextLifecycle.notes },
+          },
           ...member.spawnError === undefined ? {} : { spawn_error: member.spawnError },
         }))
       const tasks = team.tasks.map((task) => ({
@@ -2449,7 +2467,19 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         findings_open: (task.findings ?? []).filter((finding) => finding.resolved !== true).length,
         ...task.profileSeedId === undefined ? {} : { seed_id: task.profileSeedId },
         ...task.output !== undefined ? { output: task.output } : {},
+        ...task.probe === undefined ? {} : {
+          next_probe_at: task.probe.nextProbeAt,
+          probe_count: task.probe.probeCount,
+        },
       }))
+      const contextCounts = { observed: 0, unavailable: 0, unproven: 0 }
+      for (const member of members) {
+        const state = member.context_lifecycle.state
+        if (state === 'observed' || state === 'unavailable' || state === 'unproven') contextCounts[state] += 1
+      }
+      const contextState = contextCounts.unavailable > 0
+        ? 'unavailable'
+        : contextCounts.unproven > 0 ? 'unproven' : contextCounts.observed > 0 ? 'observed' : 'unproven'
       const mailboxWarnings: string[] = []
       let mailboxWarningCount = 0
       const reportMalformed = (agentKey: string) => (lineNumber: number): void => {
@@ -2518,6 +2548,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           },
         },
         viewer: identity.name,
+        context_lifecycle: { state: contextState, counts: contextCounts },
         members,
         tasks,
         captain_inbox: captainInbox.slice(0, 10).map((message) => ({
@@ -2931,6 +2962,7 @@ export function schedulerRuntimeConfig(
     executionPrompt: config.executionPrompt,
     maxConcurrentWorkers: config.maxConcurrentWorkers ?? config.maxMembers,
     parallelToolCalls: config.parallelToolCalls === true,
+    probeIntervalMs: config.probeIntervalMs ?? 0,
     dispatch,
   }
 }
@@ -2948,12 +2980,13 @@ export function memberRuntime(config: ToolsConfig): MemberRuntimeConfig {
 }
 
 /** Render the status snapshot as compact text for the model. */
-function renderStatus(value: JsonValue): string {
+export function renderStatus(value: JsonValue): string {
   const team = value as {
     team_name: string
     description?: string
     profile?: { name: string; protocol?: string; task_planning?: string }
     viewer: string
+    context_lifecycle: { state: string; counts: { observed: number; unavailable: number; unproven: number } }
     members: {
       name: string
       role: string
@@ -2963,9 +2996,10 @@ function renderStatus(value: JsonValue): string {
       tool_policy: string
       status: string
       activity: string
+      context_lifecycle: { state: string; composition?: string; notes?: string }
       spawn_error?: string
     }[]
-    tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number; supplemental_evidence?: string; fixes?: string }[]
+    tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number; supplemental_evidence?: string; fixes?: string; next_probe_at?: number; probe_count?: number }[]
     captain_inbox: { from: string; content: string }[]
     member_inbox?: { from: string; content: string }[]
     member_inboxes: Record<string, { count: number; latest: string }>
@@ -2993,13 +3027,15 @@ function renderStatus(value: JsonValue): string {
     ...team.profile === undefined ? [] : [`Profile: ${team.profile.name}${team.profile.task_planning ? ` [${team.profile.task_planning}]` : ''}${team.profile.protocol ? ` — ${team.profile.protocol}` : ''}`],
     ...team.loop_summary ? [`Loop: ${team.loop_state ?? ''} — ${team.loop_summary}`.replace(/^Loop:  — /u, 'Loop: ')] : [],
     `Viewing as: ${team.viewer}`,
+    `Context lifecycle: ${team.context_lifecycle.state} (observed ${team.context_lifecycle.counts.observed}, unavailable ${team.context_lifecycle.counts.unavailable}, unproven ${team.context_lifecycle.counts.unproven})`,
     `Members (${team.members.length}):`,
     ...team.members.map((member) => {
       const route = member.provider && member.model ? ` · ${member.provider}/${member.model}` : ''
       const effort = member.reasoning_effort ? ` · reasoning ${member.reasoning_effort}` : ''
       const failure = member.spawn_error === undefined ? '' : `\n      start failed: ${member.spawn_error.slice(0, 400)}`
       const policy = member.tool_policy ? ` · policy ${member.tool_policy}` : ''
-      return `  - ${member.name} [${member.role}] ${member.status}/${member.activity}${route}${effort}${policy}${failure}`
+      const context = ` · context ${member.context_lifecycle.state}`
+      return `  - ${member.name} [${member.role}] ${member.status}/${member.activity}${route}${effort}${policy}${context}${failure}`
     }),
     `Tasks (${team.tasks.length}):`,
     ...team.tasks.map((task) => {
@@ -3012,7 +3048,8 @@ function renderStatus(value: JsonValue): string {
       const round = task.round === undefined ? '' : ` r${task.round}`
       const verdict = task.verdict === undefined ? '' : ` verdict ${task.verdict}`
       const fixes = task.fixes === undefined ? '' : ` fixes ${task.fixes}`
-      return `  - ${task.id} [${task.status}]${kind}${round}${verdict}${fixes} attempt ${task.attempt}${handoff}${seed} ${task.subject} → ${task.assignee || 'unassigned'}${deps}${output}${evidence}`
+      const probe = task.next_probe_at === undefined ? '' : ` · probe ${task.probe_count ?? 0} next ${new Date(task.next_probe_at).toISOString()}`
+      return `  - ${task.id} [${task.status}]${kind}${round}${verdict}${fixes} attempt ${task.attempt}${handoff}${seed} ${task.subject} → ${task.assignee || 'unassigned'}${deps}${probe}${output}${evidence}`
     }),
     ...team.coverage === undefined || team.coverage.length === 0 ? [] : [
       'Coverage:',

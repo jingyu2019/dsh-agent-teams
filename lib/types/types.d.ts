@@ -155,6 +155,8 @@ export interface TeamTask {
     parking?: TaskParking;
     /** Durable ordered route state for this task attempt (issue #76). */
     attemptRoute?: RouteCursor;
+    /** Durable sparse probe for this exact attempt; absent while probes are disabled. */
+    probe?: TaskProbe;
     /** Quality-gate kind. Missing values are treated as `work`. */
     kind?: TaskKind;
     /** Review / requirements / repair loop index, 1-based when present. */
@@ -222,6 +224,40 @@ export interface TeamTask {
     revisions?: TaskRevision[];
     createdAt: number;
     updatedAt: number;
+}
+/** Honest host-owned context lifecycle capability for one durable member. */
+export type ContextLifecycleState = 'observed' | 'unavailable' | 'unproven';
+/** Host composition marker used to distinguish explicit minimal builds. */
+export type ContextLifecycleComposition = 'standard' | 'minimal' | 'unknown';
+/** Host-owned context compaction observation. AgentTeams never fabricates a compactor. */
+export interface ContextLifecycleCapability {
+    state: ContextLifecycleState;
+    hostVersion?: string;
+    composition?: ContextLifecycleComposition;
+    observedEvent?: 'compaction/start' | 'compaction/end';
+    observedAt?: number;
+    lastCompactionError?: string;
+    source: 'session-event' | 'verified-matrix' | 'none';
+    notes?: string;
+    /** Exact child/session identity that produced the last observed event. */
+    memberId?: string;
+    memberGeneration?: number;
+    activationId?: string;
+    activationEpoch?: number;
+    /** `compaction/prune` is observed but is never proof of a successful compaction. */
+    lastEvent?: 'compaction/start' | 'compaction/end' | 'compaction/end.error' | 'compaction/prune';
+    pruneObservedAt?: number;
+}
+/** Durable sparse probe bound to one task activation/attempt. */
+export interface TaskProbe {
+    activationId: string;
+    memberGeneration: number;
+    activationEpoch: number;
+    attemptId: string;
+    nextProbeAt: number;
+    probeCount: number;
+    armedAt: number;
+    lastProbeAt?: number;
 }
 /** Why one managed subagent activation exists. */
 export type ActivationPurpose = 'bootstrap' | 'task' | 'mailbox';
@@ -370,6 +406,8 @@ export interface TeamMember {
     generation?: number;
     /** Latest exact activation assigned to this member. */
     currentActivationId?: string;
+    /** Last host-owned compaction observation for this child session. */
+    contextLifecycle?: ContextLifecycleCapability;
     lastActivationEpoch?: number;
     /** Execution admission is closed while a failed/pending handoff is drained. */
     stopping?: boolean;
