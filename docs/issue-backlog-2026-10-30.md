@@ -21,6 +21,8 @@ Additional items resolved after the original audit:
 - **#223** resolved: preset picker, next-turn model routing and confirmed archived-team deletion.
 - **#96** resolved with opt-in `toolSurface: core`, which keeps a stable compact captain surface.
 - **#117** plugin-side lock-table growth was fixed in the 0.1.16 line; the remaining host-side memory question still needs RSS/heapUsed samples.
+- **#162 / #241** provide an explicit context reset for idle members; host-driven automatic compaction remains a separate host capability.
+- **#317** is a duplicate token-complaint root cause addressed by #96, per-member model routing, and the lighter invoke-profile path.
 
 `compatibility.json` now includes exact rc.4 and rc.5 targets. The real `plugin-manager-install` and `progressive-entry` checks pass on rc.5; evidence is in [`docs/harness-0.2.1-rc.5/`](./harness-0.2.1-rc.5/README.md).
 

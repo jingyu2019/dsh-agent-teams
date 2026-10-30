@@ -529,7 +529,7 @@ export interface AgentPresetV1 {
     updatedAt: number;
 }
 /** Durable activity action shown in the team timeline. */
-export type TimelineAction = 'team.created' | 'member.added' | 'member.removed' | 'member.renamed' | 'task.created' | 'task.claimed' | 'task.started' | 'task.completed' | 'task.failed' | 'task.cancelled' | 'task.reassigned' | 'task.amended' | 'message.sent' | 'message.delivered' | 'message.read';
+export type TimelineAction = 'team.created' | 'member.added' | 'member.removed' | 'member.renamed' | 'member.context_reset' | 'task.created' | 'task.claimed' | 'task.started' | 'task.completed' | 'task.failed' | 'task.cancelled' | 'task.reassigned' | 'task.amended' | 'message.sent' | 'message.delivered' | 'message.read';
 /** One append-only activity entry. Newest entries are at the end of TeamState.timeline. */
 export interface TimelineEntry {
     id: string;

@@ -228,6 +228,8 @@ Attachments accept only regular files in the sender's task scope or an owner-con
 
 `toolSurface: core` keeps a stable but smaller captain tool set for token-sensitive sessions: basic create/approve/roster/task/report/collect/delete operations remain, while advanced editing, preset, worktree and amendment tools are hidden. The default is `full`.
 
+`agent_teams_reset_member_context` retires an idle member's child session after explicit user confirmation. The roster row, route, skills and worktree lane stay; the next task starts a fresh child context.
+
 ## Boundaries
 
 - One captain leads one active team at a time.
