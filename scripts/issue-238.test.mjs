@@ -66,10 +66,15 @@ async function fixture(t, outcomes = {}) {
         active -= 1
         starts.push({ member, spec })
         if (outcomes[member] === 'reject') throw new Error(`boom-${member}`)
+        if (outcomes[member] === 'hang-start') return new Promise(() => {})
+        if (outcomes[member] === 'late-start') await new Promise(resolve => setTimeout(resolve, 1200))
+        const result = outcomes[member] === 'hang-result'
+          ? new Promise(() => {})
+          : Promise.resolve({ stopReason: outcomes[member] ?? 'completed', output: [{ type: 'text', text: `result-${member}` }] })
         return {
           childId: `child-${member}`,
           messageId: `msg-${member}`,
-          result: Promise.resolve({ stopReason: outcomes[member] ?? 'completed', output: [{ type: 'text', text: `result-${member}` }] }),
+          result,
           dispose: async () => { disposals.push(member) },
         }
       },
@@ -144,4 +149,35 @@ test('#238 concurrency option bounds simultaneous child starts', async t => {
   })
   assert.equal(result.results.length, 3)
   assert.equal(f.maxActive(), 1)
+})
+
+test('#238 timeout covers a child start that never resolves', { timeout: 5000 }, async t => {
+  const f = await fixture(t, { Scout: 'hang-start' })
+  const started = Date.now()
+  const result = await f.call('agent_teams_invoke_profile', {
+    profile: 'dev', members: ['Scout'], prompt: 'x', timeoutMs: 1000,
+  })
+  assert.equal(result.results[0].status, 'timeout')
+  assert.equal(result.results[0].stopReason, 'timeout')
+  assert.ok(Date.now() - started < 3000)
+})
+
+test('#238 maps an aborted child result to cancelled', async t => {
+  const f = await fixture(t, { Reviewer: 'aborted' })
+  const result = await f.call('agent_teams_invoke_profile', {
+    profile: 'dev', members: ['Scout', 'Reviewer'], prompt: 'x', concurrency: 2,
+  })
+  assert.equal(result.results[0].status, 'completed')
+  assert.equal(result.results[1].status, 'cancelled')
+  assert.equal(result.results[1].stopReason, 'aborted')
+})
+
+test('#238 disposes a child that finishes starting after the deadline', { timeout: 5000 }, async t => {
+  const f = await fixture(t, { Scout: 'late-start' })
+  const result = await f.call('agent_teams_invoke_profile', {
+    profile: 'dev', members: ['Scout'], prompt: 'x', timeoutMs: 1000,
+  })
+  assert.equal(result.results[0].status, 'timeout')
+  await new Promise(resolve => setTimeout(resolve, 350))
+  assert.deepEqual(f.disposals, ['Scout'])
 })

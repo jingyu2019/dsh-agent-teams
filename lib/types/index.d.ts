@@ -23,6 +23,7 @@ import z from '@deepseek-ai/schemastery';
 import { type ToolsConfig } from './tools.ts';
 import { type SkillBindingConfig, type TeamProfileConfig } from './profiles.ts';
 import { type MemberToolPolicy } from './tool-policies.ts';
+export { MEMBER_TOOL_NAMES, TEAM_TOOL_NAMES } from './tool-names.ts';
 export declare const name = "agent-teams";
 export declare const inject: string[];
 /** Plugin configuration. */

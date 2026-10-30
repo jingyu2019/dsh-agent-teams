@@ -46,6 +46,8 @@ import { installTeamCapabilities } from './capabilities.ts'
 import { agentTeamsSource, observedSessionFormatVersion } from './harness-compat.ts'
 import { TEAM_TOOL_NAMES } from './tool-names.ts'
 
+export { MEMBER_TOOL_NAMES, TEAM_TOOL_NAMES } from './tool-names.ts'
+
 import { authenticatedWebRoutes, readJsonRequest, RequestBodyError, type BrowserRequestGate, type WebRouteHost } from './web-routes.ts'
 
 /** Web-server service key candidates, newest first. */
