@@ -18,6 +18,8 @@ const MIME_BY_EXT: Readonly<Record<string, string>> = {
   pdf: 'application/pdf', zip: 'application/zip',
 }
 
+const PROTECTED_SEGMENTS = new Set(['.git', '.dsh', '.agent-teams', 'node_modules', 'secrets'])
+
 export class AttachmentError extends Error {}
 
 function fail(message: string): never { throw new AttachmentError(message) }
@@ -35,6 +37,10 @@ function normalizedRelative(value: string): string {
 function within(root: string, candidate: string): boolean {
   const prefix = root.endsWith('/') ? root : `${root}/`
   return candidate === root || candidate.startsWith(prefix)
+}
+
+function hasProtectedSegment(path: string): boolean {
+  return path.split(/[\\/]+/u).some(segment => PROTECTED_SEGMENTS.has(segment))
 }
 
 async function assertNoSymlinkComponents(root: string, relative: string): Promise<void> {
@@ -100,6 +106,7 @@ export async function copyAttachment(input: {
   if (before.size > ATTACHMENT_MAX_BYTES) fail('attachment exceeds the 10 MiB per-file limit')
   const canonical = await realpath(candidate)
   if (!within(root, canonical)) fail('attachment real path escapes its allowed root')
+  if (hasProtectedSegment(canonical)) fail('attachment path is excluded from delivery')
   const stateRootReal = await realpath(input.stateRoot).catch(() => undefined)
   if (stateRootReal !== undefined && within(stateRootReal, canonical)) fail('attachment path is excluded from delivery')
   for (const protectedPath of ['.git', '.dsh', 'node_modules', 'secrets']) {
