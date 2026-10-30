@@ -7,6 +7,8 @@ interface CapabilityConfig {
     isPendingMember: (agent: Agent) => boolean;
     captainPrompt: () => string;
     order?: number;
+    /** `core` hides advanced captain tools while keeping a stable prefix. */
+    toolSurface?: 'full' | 'core';
 }
 /** Call once, after all business definitions have registered. Never per member. */
 export declare function installTeamCapabilities(ctx: Context, config: CapabilityConfig): void;

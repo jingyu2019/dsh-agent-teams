@@ -15,6 +15,13 @@ Two new installation reports arrived after the original audit:
 | 327 | accepted, fixed in this fork | DSH `0.2.1-rc.5` rejects `@latest`; exact host install reproduced and passed from the packed artifact | W0-COMPAT |
 | 328 | duplicate root cause of #327 | Same rc.5 compatibility rejection on Windows | W0-COMPAT |
 
+Additional items resolved after the original audit:
+
+- **#314** already fixed by the 0.1.28 `engines.dsh` minimum-version declaration.
+- **#223** resolved: preset picker, next-turn model routing and confirmed archived-team deletion.
+- **#96** resolved with opt-in `toolSurface: core`, which keeps a stable compact captain surface.
+- **#117** plugin-side lock-table growth was fixed in the 0.1.16 line; the remaining host-side memory question still needs RSS/heapUsed samples.
+
 `compatibility.json` now includes exact rc.4 and rc.5 targets. The real `plugin-manager-install` and `progressive-entry` checks pass on rc.5; evidence is in [`docs/harness-0.2.1-rc.5/`](./harness-0.2.1-rc.5/README.md).
 
 ## Baseline
@@ -178,11 +185,10 @@ Acceptance:
 ## Evidence Queue
 
 - **314:** exact installed version + `pnpm.log` + clean rc.3 exact-0.1.27 retry.
-- **317/96:** matched token/tool/schema baseline across 3–5 runs; split captain/member cost.
+- **317:** matched token/tool/schema baseline across 3–5 runs; split captain/member cost.
 - **117:** 20+ cycles with RSS/heapUsed/external/handles and heap ownership diff.
 - **151:** package identity, host version, request/tool trace, spend cap.
 - **162/190/241:** supported-host long-context trace; compaction event presence/absence; intended host vs plugin behavior.
-- **223:** separate archive-deletion contract; route model switch to #243; clarify any missing preset-picker UI.
 - **314/others:** installer logs must distinguish mirror timeout from compatibility rejection.
 
 ## Out-of-scope / duplicate handling

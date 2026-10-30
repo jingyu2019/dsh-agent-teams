@@ -48,7 +48,7 @@ import { formatProfilesForPrompt, normalizeSkillCatalog, type SkillBindingConfig
 import { parseToolPolicies, type MemberToolPolicy } from './tool-policies.ts'
 import { installTeamCapabilities } from './capabilities.ts'
 import { agentTeamsSource, observedSessionFormatVersion } from './harness-compat.ts'
-import { TEAM_TOOL_NAMES } from './tool-names.ts'
+import { CORE_CAPTAIN_TOOL_NAMES, TEAM_TOOL_NAMES } from './tool-names.ts'
 
 export { MEMBER_TOOL_NAMES, TEAM_TOOL_NAMES } from './tool-names.ts'
 
@@ -108,6 +108,8 @@ export interface Config {
   probeIntervalMs?: number
   /** Prompt-only permission to emit multiple AgentTeams tool calls per response. */
   parallelToolCalls?: boolean
+  /** `core` hides advanced captain tools for token-sensitive sessions (#96). */
+  toolSurface?: 'full' | 'core'
   /** Named multi-role team profiles. */
   profiles?: Record<string, TeamProfileConfig>
   /**
@@ -223,6 +225,7 @@ export const Config: z<Config> = z.object({
   maxConcurrentWorkers: z.natural().min(1),
   probeIntervalMs: z.natural().default(0),
   parallelToolCalls: z.boolean().default(false),
+  toolSurface: z.union([z.const('full'), z.const('core')]).default('full'),
   promptSectionOrder: z.natural().default(117),
   slashCommand: z.boolean().default(true),
 })
@@ -261,6 +264,7 @@ export function resolveToolsConfig(config: Config): ToolsConfig {
     maxConcurrentWorkers: config.maxConcurrentWorkers ?? config.maxMembers ?? 8,
     probeIntervalMs: config.probeIntervalMs ?? 0,
     parallelToolCalls: config.parallelToolCalls ?? false,
+    toolSurface: config.toolSurface ?? 'full',
     profiles: config.profiles ?? {},
     // Owner configuration is validated once, at mount: an empty or malformed
     // policy must never reach a member creation path.
@@ -290,7 +294,8 @@ export function apply(ctx: Context, config: Config): void {
     order: config.promptSectionOrder,
     // Keep the bounded profile directory available without extra tool calls.
     // installTeamCapabilities snapshots this once; no business state rewrites it.
-    captainPrompt: () => usageSectionText(TEAM_TOOL_NAMES.join(', '), formatProfilesForPrompt(config.profiles), resolved.parallelToolCalls === true),
+    toolSurface: resolved.toolSurface,
+    captainPrompt: () => usageSectionText((resolved.toolSurface === 'core' ? CORE_CAPTAIN_TOOL_NAMES : TEAM_TOOL_NAMES).join(', '), formatProfilesForPrompt(config.profiles), resolved.parallelToolCalls === true),
   })
 
   // Deterministic activation surfaces: the closed-namespace `/agent-teams`

@@ -72,6 +72,8 @@ export interface Config {
     probeIntervalMs?: number;
     /** Prompt-only permission to emit multiple AgentTeams tool calls per response. */
     parallelToolCalls?: boolean;
+    /** `core` hides advanced captain tools for token-sensitive sessions (#96). */
+    toolSurface?: 'full' | 'core';
     /** Named multi-role team profiles. */
     profiles?: Record<string, TeamProfileConfig>;
     /**

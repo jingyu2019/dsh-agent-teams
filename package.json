@@ -119,7 +119,7 @@
     "verify:evaluation": "node scripts/evaluation/validate.mjs --self-test && node --test scripts/issue-211.test.mjs",
     "verify:legacy-session-repair": "node --test scripts/legacy-session-source-repair.test.mjs",
     "verify:lineage-identity": "node --test scripts/lineage-identity.test.mjs",
-    "verify:issue-w5w7": "node --test scripts/issue-263.test.mjs scripts/issue-279-rename.test.mjs scripts/issue-279-scale.test.mjs scripts/issue-279-manual.test.mjs scripts/issue-70.test.mjs scripts/issue-121.test.mjs scripts/issue-315.test.mjs scripts/issue-287.test.mjs scripts/issue-223.test.mjs"
+    "verify:issue-w5w7": "node --test scripts/issue-263.test.mjs scripts/issue-279-rename.test.mjs scripts/issue-279-scale.test.mjs scripts/issue-279-manual.test.mjs scripts/issue-70.test.mjs scripts/issue-121.test.mjs scripts/issue-315.test.mjs scripts/issue-287.test.mjs scripts/issue-223.test.mjs scripts/issue-96.test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

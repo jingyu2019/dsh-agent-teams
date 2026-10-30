@@ -129,6 +129,8 @@ export interface ToolsConfig {
   probeIntervalMs?: number
   /** Whether prompts may explicitly permit several AgentTeams calls per response. */
   parallelToolCalls?: boolean
+  /** Stable core/captain tool surface for token-sensitive sessions (#96). */
+  toolSurface?: 'full' | 'core'
   /** Named team profiles from the active DSH profile. */
   profiles: Record<string, import('./profiles.ts').TeamProfileConfig>
   /** Owner-declared reusable member tool policies, keyed by policy id (#59). */

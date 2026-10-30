@@ -206,6 +206,7 @@ dsh plugin --profile web add github:NanmiCoder/dsh-agent-teams
         allowRead: true
     agentLibrary:
       enabled: true
+    toolSurface: full
     worktrees:
       enabled: true
       root: /absolute/path/outside/the/repository
@@ -213,6 +214,8 @@ dsh plugin --profile web add github:NanmiCoder/dsh-agent-teams
 ```
 
 附件只接受发送者当前任务范围内的普通文件，或部署方配置的 artifact root；状态、依赖、秘密和仓库元数据路径会被拒绝。头像仅支持本地 PNG/JPEG/WebP，按内容寻址并通过认证路由读取。全局 Agent 预设是不可变修订，新成员复制其快照。成员工作树把一个常驻子会话绑定到固定 path/branch；集成与清理必须显式调用确认门控的 `agent_teams_worktree`，且永不使用 force/prune。
+
+`toolSurface: core` 为对 token 敏感的会话保留稳定但更小的队长工具集：创建、审批、成员/任务、汇报、汇总和结束仍可用，高级编辑、预设、工作树和合同修订工具会被隐藏。默认值为 `full`。
 
 ## 使用边界
 

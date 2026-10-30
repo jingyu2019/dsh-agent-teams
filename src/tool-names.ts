@@ -14,3 +14,14 @@ export const MEMBER_TOOL_NAMES: readonly string[] = [
 ]
 
 export const CAPTAIN_TOOL_NAMES = TEAM_TOOL_NAMES.filter(name => !MEMBER_TOOL_NAMES.includes(name))
+
+/** Small opt-in captain surface for token-sensitive ordinary sessions (#96). */
+export const CORE_CAPTAIN_TOOL_NAMES: readonly string[] = [
+  'agent_teams_create', 'agent_teams_invoke_profile', 'agent_teams_approve',
+  'agent_teams_add_member', 'agent_teams_create_task', 'agent_teams_reassign_task',
+  'agent_teams_update_task', 'agent_teams_send_message', 'agent_teams_status',
+  'agent_teams_collect', 'agent_teams_delete',
+]
+
+/** Members already use the four coordination tools; core keeps exactly those. */
+export const CORE_MEMBER_TOOL_NAMES: readonly string[] = MEMBER_TOOL_NAMES
