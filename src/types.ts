@@ -283,6 +283,8 @@ export type ActivationStopReason = 'completed' | 'max-tokens' | 'aborted' | 'err
 /** One exact managed activation and its durable settlement authority. */
 export interface ActivationLease {
   activationId: string
+  /** Whether this lease came from a managed startActivation host. */
+  managed?: boolean
   dispatchToken: string
   teamId: string
   memberId: string

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { appendMailbox, createMessage, createTeamDir, readTeam } from '../lib/state.js'
 import { installTeamScheduler, activePermitCount, canAcquireActivationPermit } from '../lib/scheduler.js'
+import { createRouteCursor } from '../lib/members.js'
 
 function fakeAgent(id, cwd) {
   return {
@@ -129,5 +130,66 @@ test('legacy unmanaged path also caps seven ready tasks at two', async () => {
     const team = await readTeam(f.stateRoot, 'cap')
     assert.equal(f.dispatched.length, 2)
     assert.equal(team.tasks.filter(item => item.status !== 'pending').length, 2)
+  } finally { await f.cleanup() }
+})
+
+test('legacy bootstrap activations use the same durable permit cap', async () => {
+  const team = teamWith(2, 2)
+  team.members[0].id = ''
+  team.members[1].id = ''
+  const f = await fixture(team, 2, {}, false)
+  try {
+    await f.scheduler.kickTeam(f.workspace, 'cap', f.captain)
+    assert.equal(f.dispatched.length, 2)
+    assert.equal(f.dispatched.every(item => item.request?.newChild === true), true)
+    const current = await readTeam(f.stateRoot, 'cap')
+    assert.equal(current.activations.filter(item => item.permitHeld && item.purpose === 'bootstrap').length, 2)
+  } finally { await f.cleanup() }
+})
+
+test('legacy mailbox wake cannot bypass held activation permits', async () => {
+  const team = teamWith(2, 0)
+  team.members[0].id = 'c1'
+  team.members[1].id = 'c2'
+  team.activations = [lease('held', 'c2')]
+  team.activationSeq = 1
+  const f = await fixture(team, 1, { c2: 'running' }, false)
+  try {
+    await appendMailbox(f.stateRoot, 'cap', 'w1', createMessage('captain', 'w1', 'wake'))
+    await f.scheduler.kickMember(f.workspace, 'cap', 'w1', f.captain)
+    assert.equal(f.dispatched.length, 0)
+    assert.equal((await readTeam(f.stateRoot, 'cap')).activations.filter(item => item.permitHeld).length, 1)
+  } finally { await f.cleanup() }
+})
+
+test('legacy accepted mailbox delivery releases its exact permit', async () => {
+  const team = teamWith(1, 0)
+  team.members[0].id = 'c1'
+  const f = await fixture(team, 1, {}, false)
+  try {
+    await appendMailbox(f.stateRoot, 'cap', 'w1', createMessage('captain', 'w1', 'wake'))
+    await f.scheduler.kickMember(f.workspace, 'cap', 'w1', f.captain)
+    await new Promise(resolve => setTimeout(resolve, 25))
+    const current = await readTeam(f.stateRoot, 'cap')
+    assert.equal(f.dispatched.length, 1)
+    assert.equal(current.activations.filter(item => item.permitHeld).length, 0)
+  } finally { await f.cleanup() }
+})
+
+test('legacy route-waiting task with no active delivery consumes no permit', async () => {
+  const team = teamWith(1, 1)
+  team.members[0].id = 'c1'
+  team.tasks[0].status = 'claimed'
+  team.tasks[0].attempt = 1
+  team.tasks[0].attemptId = 'a1'
+  team.tasks[0].attemptMemberId = 'c1'
+  team.tasks[0].attemptActivationId = 'old-released'
+  team.tasks[0].attemptRoute = { ...createRouteCursor(2), state: 'waiting', nextActionAt: Date.now() + 60_000, lastFailure: { activationId: 'old-released', hostRunId: 'old-run', code: 'RATE_LIMIT', class: 'transient', at: 0 } }
+  team.activations = [{ ...lease('old-released', 'c1', 'released', false), taskId: 't1', attempt: 1, attemptId: 'a1' }]
+  const f = await fixture(team, 1, {}, false)
+  try {
+    await f.scheduler.kickMember(f.workspace, 'cap', 'w1', f.captain)
+    assert.equal(f.dispatched.length, 0)
+    assert.equal((await readTeam(f.stateRoot, 'cap')).activations.filter(item => item.permitHeld).length, 0)
   } finally { await f.cleanup() }
 })

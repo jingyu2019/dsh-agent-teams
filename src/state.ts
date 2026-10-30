@@ -271,6 +271,25 @@ export async function releaseActivationPermitsForDrainedMembers(
   })
 }
 
+/** Release one exact activation permit without touching unrelated leases. */
+export async function releaseActivationPermit(
+  stateRoot: string,
+  teamId: string,
+  activationId: string,
+): Promise<void> {
+  await withTeamLock(`team:${stateRoot}:${teamId}`, async () => {
+    const team = await readTeam(stateRoot, teamId)
+    const lease = team?.activations?.find(candidate => candidate.activationId === activationId)
+    if (team === undefined || lease === undefined || lease.permitHeld !== true) return
+    lease.permitHeld = false
+    lease.state = 'released'
+    lease.endObserved = true
+    lease.settlementApplied = true
+    lease.releasedAt ??= Date.now()
+    await writeTeam(stateRoot, team)
+  })
+}
+
 /**
  * Create the team directory structure and the initial team record.
  * @param stateRoot - resolved absolute state root directory.

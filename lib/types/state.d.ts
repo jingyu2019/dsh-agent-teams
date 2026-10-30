@@ -88,6 +88,8 @@ export declare function invalidateTaskAttempt(task: TeamTask, nextAssignee?: str
  * must leave the permits held for restart recovery.
  */
 export declare function releaseActivationPermitsForDrainedMembers(stateRoot: string, teamId: string, memberIds: readonly string[]): Promise<number>;
+/** Release one exact activation permit without touching unrelated leases. */
+export declare function releaseActivationPermit(stateRoot: string, teamId: string, activationId: string): Promise<void>;
 /**
  * Create the team directory structure and the initial team record.
  * @param stateRoot - resolved absolute state root directory.

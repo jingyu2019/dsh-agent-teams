@@ -35,6 +35,8 @@ import {
   readTeam,
   readPendingMailbox,
   releaseMailboxDelivery,
+  releaseActivationPermitsForDrainedMembers,
+  releaseActivationPermit,
   unsatisfiedDependencies,
   withTeamLock,
   writeTeam,
@@ -105,18 +107,6 @@ export function canAcquireActivationPermit(
 ): boolean {
   if (maxConcurrentWorkers === undefined) return true
   return activePermitCount(leases) < Math.max(1, Math.floor(maxConcurrentWorkers))
-}
-
-/** Legacy hosts have no lifecycle lease ledger; open task rows are their permits. */
-export function activeUnmanagedTaskCount(tasks: readonly Pick<TeamTask, 'status'>[]): number {
-  return tasks.filter(task => task.status === 'claimed' || task.status === 'in_progress').length
-}
-
-export function canAcquireUnmanagedPermit(
-  tasks: readonly Pick<TeamTask, 'status'>[],
-  maxConcurrentWorkers: number | undefined,
-): boolean {
-  return maxConcurrentWorkers === undefined || activeUnmanagedTaskCount(tasks) < Math.max(1, Math.floor(maxConcurrentWorkers))
 }
 
 export interface TeamScheduler {
@@ -505,18 +495,21 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
   ): Promise<{ lease: ActivationLease; newChild: boolean; reservedChildId: string }> => {
     const managed = usesManagedActivations(ctx.subagents)
     const newChild = member.id === ''
-    const reservedChildId = newChild ? managed ? String(SessionId(randomUUID())) : '' : member.id
+    const reservedChildId = newChild ? String(SessionId(randomUUID())) : member.id
     const activationEpoch = (team.activationSeq ?? 0) + 1
     const activationId = options.activationId ?? randomUUID()
     const dispatchToken = options.dispatchToken ?? randomUUID()
     const lease: ActivationLease = {
       activationId,
+      managed,
       dispatchToken,
       teamId: team.id,
       memberId: reservedChildId,
       memberGeneration: member.generation ?? 1,
       activationEpoch,
-      purpose,
+      // First spawn of a continuable child is the bootstrap activation; a
+      // later turn on that child is task or mailbox work.
+      purpose: newChild ? 'bootstrap' : purpose,
       ...options.task === undefined ? {} : { taskId: options.task.id, attempt: options.task.attempt },
       ...options.attemptId === undefined ? {} : { attemptId: options.attemptId },
       preDispatchSessionSeq: await activationBoundary(reservedChildId, newChild),
@@ -529,7 +522,6 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       createdAt: Date.now(),
     }
     if (newChild && managed) member.id = reservedChildId
-    if (!managed) return { lease, newChild, reservedChildId }
     member.generation = member.generation ?? 1
     member.currentActivationId = activationId
     member.lastActivationEpoch = activationEpoch
@@ -734,7 +726,9 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           pendingByChild.set(childId, { teamId: input.teamId, activationId: lease.activationId })
         }
       }
-      if (input.receipt.messageId !== undefined) lease.hostMessageId = String(input.receipt.messageId)
+      if (input.receipt.managed === true && input.receipt.messageId !== undefined) {
+        lease.hostMessageId = String(input.receipt.messageId)
+      }
       await writeTeam(input.stateRoot, team)
     }).catch(error => {
       ctx.logger.warn(`agent-teams: activation receipt persistence failed: ${String(error)}`)
@@ -904,7 +898,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           const memberName = fresh.members.find(member => member.id === current.memberId)?.name
           task.status = 'pending'
           task.assignee = memberName
-          task.attempt = Math.max(0, (task.attempt ?? 1) - 1)
+          if (current.managed !== false) task.attempt = Math.max(0, (task.attempt ?? 1) - 1)
           task.attemptId = undefined
           clearTaskActivation(task)
           task.updatedAt = Date.now()
@@ -976,14 +970,14 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
         // fresh task and acknowledge only after Harness accepts the follow-up.
         const mailboxDelivery = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
           const fresh = await readTeam(stateRoot, team!.id)
-          if (fresh === undefined) return { messages: [], memberId: member!.id, newChild: false }
+          if (fresh === undefined) return { messages: [], memberId: member!.id, newChild: false, allocated: false }
           const currentMember = fresh.members.find(candidate => candidate.name === member!.name && candidate.status !== 'removed')
-          if (currentMember === undefined) return { messages: [], memberId: member!.id, newChild: false }
+          if (currentMember === undefined) return { messages: [], memberId: member!.id, newChild: false, allocated: false }
           const pending = await readPendingMailbox(stateRoot, fresh.id, currentMember.name)
           await discardMailboxMessages(stateRoot, fresh.id, currentMember.name, pending.filter(message => !isCurrentMail(fresh, message)).map(message => message.id))
           const current = pending.filter(message => isCurrentMail(fresh, message))
           await claimMailboxDelivery(stateRoot, fresh.id, currentMember.name, current.map(message => message.id))
-          if (current.length === 0) return { messages: current, memberId: currentMember.id, newChild: false }
+          if (current.length === 0) return { messages: current, memberId: currentMember.id, newChild: false, allocated: false }
           const live = ctx.agents.get(SessionId(currentMember.id))
           const decision = mailboxActivationDecision(fresh.activations ?? [], currentMember.id, live?.status === 'running')
           const activeLease = fresh.activations?.find(lease => lease.memberId === currentMember.id
@@ -994,18 +988,15 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             // overwrite pendingByChild. Leave mail durable until the exact
             // end/drain/recovery path closes this lease.
             await releaseMailboxDelivery(stateRoot, fresh.id, currentMember.name, current.map(message => message.id))
-            return { messages: [], memberId: currentMember.id, newChild: false, blocked: true }
+            return { messages: [], memberId: currentMember.id, newChild: false, allocated: false, blocked: true }
           }
-          const managedHost = usesManagedActivations(ctx.subagents)
-          const capacity = managedHost
-            ? canAcquireActivationPermit(fresh.activations ?? [], config.maxConcurrentWorkers)
-            : canAcquireUnmanagedPermit(fresh.tasks, config.maxConcurrentWorkers)
+          const capacity = canAcquireActivationPermit(fresh.activations ?? [], config.maxConcurrentWorkers)
           if (!reuse && !capacity) {
             // Mailbox work is real work, but it may not bypass the global
             // activation budget. Keep the durable mail queued and retry from
             // the next scheduler edge after an exact permit release.
             await releaseMailboxDelivery(stateRoot, fresh.id, currentMember.name, current.map(message => message.id))
-            return { messages: [], memberId: currentMember.id, newChild: false, blocked: true }
+            return { messages: [], memberId: currentMember.id, newChild: false, allocated: false, blocked: true }
           }
           const activation = reuse ? undefined : await allocateActivation(stateRoot, workspace, fresh, currentMember, 'mailbox')
           await writeTeam(stateRoot, fresh)
@@ -1014,6 +1005,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             memberId: currentMember.id,
             activation: activation?.lease ?? activeLease,
             newChild: activation === undefined ? false : activation.newChild,
+            allocated: activation !== undefined,
           }
         })
         const unread = mailboxDelivery.messages
@@ -1046,6 +1038,11 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             await withTeamLock(teamLockKey(stateRoot, team.id), () => (
               markMailboxDelivered(stateRoot, team!.id, member!.name, unread.map(message => message.id))
             ))
+            if (!usesManagedActivations(ctx.subagents) && mailboxDelivery.allocated && mailboxDelivery.activation !== undefined) {
+              // Legacy delivery has no exact subagent lifecycle. Once the
+              // host accepts the mailbox turn, its delivery permit is settled.
+              await releaseActivationPermit(stateRoot, team.id, mailboxDelivery.activation.activationId)
+            }
           } else {
             if (mailboxDelivery.activation !== undefined) {
               await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
@@ -1070,10 +1067,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           if (fresh === undefined || fresh.halted === true || fresh.phase === 'staged') return undefined
           const currentMember = fresh.members.find(candidate => candidate.name === memberName && candidate.status !== 'removed')
           if (currentMember === undefined || !isMemberAvailable(ctx, currentMember)) return undefined
-          const managedHost = usesManagedActivations(ctx.subagents)
-          const capacity = managedHost
-            ? canAcquireActivationPermit(fresh.activations ?? [], config.maxConcurrentWorkers)
-            : canAcquireUnmanagedPermit(fresh.tasks, config.maxConcurrentWorkers)
+          const capacity = canAcquireActivationPermit(fresh.activations ?? [], config.maxConcurrentWorkers)
           if (!capacity) return undefined
           const owned = ownedOpenTask(fresh.tasks, currentMember.name)
           const durableParking = owned?.parking
@@ -1090,7 +1084,9 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             }
             return undefined
           }
-          const exactActiveLease = usesManagedActivations(ctx.subagents) && owned?.attemptActivationId !== undefined
+          const exactActiveLease = owned?.attemptActivationId !== undefined
+            && (usesManagedActivations(ctx.subagents)
+              || liveMember(ctx, currentMember)?.status === 'running')
             ? resolveLease(fresh, owned.attemptActivationId)
             : undefined
           const exactActive = exactActiveLease !== undefined
@@ -1122,7 +1118,12 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             && route.state !== 'exhausted'
             && owned.attemptId !== undefined
           const parkedAttemptId = parkedAttempts.get(currentMember.id)
-          const recoverOwned = owned !== undefined && !routeRetry
+          // A direct member claim has a capability but no scheduler-owned
+          // member/activation binding yet. It is already an openly owned
+          // attempt, not an unobserved cold recovery; do not rotate it from a
+          // display status edge.
+          const directlyClaimed = owned?.attemptId !== undefined && owned.attemptMemberId === undefined
+          const recoverOwned = owned !== undefined && !routeRetry && !directlyClaimed
             && (owned.attemptId === undefined || owned.attemptId !== parkedAttemptId)
           const task = exactActive ? undefined : routeRetry ? owned : recoverOwned ? owned : owned === undefined
             ? nextReadyTask(fresh.tasks, currentMember.name)
@@ -1351,11 +1352,15 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       })
       return
     }
+    let hasOwnedOpen = false
+    let hasReadyWork = false
     await withTeamLock(teamLockKey(stateRoot, located.id), async () => {
       const fresh = await readTeam(stateRoot, located.id)
       const current = fresh?.members.find(candidate => candidate.id === agent.id && candidate.status !== 'removed')
       if (fresh === undefined || current === undefined) return
       const next = status === 'running' ? 'working' : 'idle'
+      hasOwnedOpen = ownedOpenTask(fresh.tasks, current.name) !== undefined
+      hasReadyWork = nextReadyTask(fresh.tasks, current.name) !== undefined
       if (next === 'idle') {
         const owned = ownedOpenTask(fresh.tasks, current.name)
         if (owned?.attemptId === undefined) parkedAttempts.delete(agent.id)
@@ -1367,7 +1372,14 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       current.status = next
       await writeTeam(stateRoot, fresh)
     })
-    if (status === 'idle') await runtime.kickMember(workspace, located.id, member.name)
+    if (status === 'idle') {
+      // Unmanaged hosts have no subagent/end lifecycle. The idle edge is the
+      // exact delivery quiescence available there; release only after the
+      // member has settled, then allow the next admitted delivery.
+      await releaseActivationPermitsForDrainedMembers(stateRoot, located.id, [agent.id])
+      const pending = await readPendingMailbox(stateRoot, located.id, member.name)
+      if (pending.length > 0 || hasReadyWork) await runtime.kickMember(workspace, located.id, member.name)
+    }
   }
 
   ctx.on('agent/status', ({ agent, status }) => {
