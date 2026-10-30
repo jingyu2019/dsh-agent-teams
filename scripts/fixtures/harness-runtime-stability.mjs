@@ -53,6 +53,7 @@ export function apply(ctx) {
     await ctx.get('loader').await();
     const captain = await ctx.agents.create({ sessionId: 'session-' + randomUUID(), meta: { cwd: process.cwd() }, agentOptions: { provider: 'runtime-lab', model: 'fixture-model' } });
     captainId = captain.agent.id;
+    record({ event: 'stability-memory', phase: 'start', requests: requests.length, ...process.memoryUsage() });
     const root = join(process.cwd(), '.agent-teams'), file = join(root, 'stability/team.json');
     const state = () => JSON.parse(readFileSync(file, 'utf8'));
     const mail = name => { const p = join(root, `stability/inbox/${name}.jsonl`); return existsSync(p) ? readFileSync(p, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : []; };
@@ -61,6 +62,7 @@ export function apply(ctx) {
       captain.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Execute the authorized stability scenario commands.' }] }));
       await captain.agent.whenIdle();
       assert.equal(commands.length, 0, 'captain did not execute all scripted tools');
+      record({ event: 'stability-memory', phase: 'after-run', requests: requests.length, ...process.memoryUsage() });
     }
     const cmd = (name, args = {}) => ({ name: `agent_teams_${name}`, args });
     await run(cmd('create', { name: 'stability', description: 'Stability regression', approval: 'required' }), cmd('add_member', { name: 'worker', role: 'HMR_ROLE_MARKER', tool_policy: 'restricted' }), cmd('add_member', { name: 'blocked' }), cmd('create_task', { subject: 'Long working turn', assignee: 'worker' }), cmd('create_task', { subject: 'Dependency blocked task', assignee: 'blocked', dependencies: ['t1'] }));
@@ -204,13 +206,13 @@ export function apply(ctx) {
     assert.equal(settledState().tasks.length,1);
     record({event:'stability-terminal-evidence-passed',records:1,duplicateAppend:false,originalResultPreserved:true});
     const parentBeforeReport = requests.filter(r => r.sessionId === captainId).length;
-    memberResponses.set(settledId, { name: 'agent_teams_send_message', args: { to: 'captain', content: 'Task t1 completed with verified result.' } });
+    memberResponses.set(settledId, { name: 'agent_teams_send_message', args: { to: 'captain', content: 'Task t1 completed with verified result.', source_task_id: 't1', source_attempt_id: attempt, report_kind: 'final' } });
     gates.get(settledId)();
     await until(() => gates.has(settledId) && requests.filter(r => r.sessionId === captainId).length > parentBeforeReport, 'completion report wakes parent');
     await captain.agent.whenIdle();
     const parentAfterReport = requests.filter(r => r.sessionId === captainId).length;
     const beforeDuplicate = requests.filter(r => r.sessionId === settledId).length;
-    memberResponses.set(settledId, { name: 'agent_teams_send_message', args: { to: 'captain', source_task_id:'t1',source_attempt_id:attempt,content: 'Task t1 completed with verified result.' } });
+    memberResponses.set(settledId, { name: 'agent_teams_send_message', args: { to: 'captain', source_task_id:'t1',source_attempt_id:attempt,report_kind:'final',content: 'Task t1 completed with verified result.' } });
     gates.get(settledId)();
     await until(() => gates.has(settledId) && requests.filter(r => r.sessionId === settledId).length > beforeDuplicate, 'duplicate report acknowledged');
     await captain.agent.whenIdle();
@@ -225,6 +227,7 @@ export function apply(ctx) {
     record({ event: 'stability-settlement-dedup-passed', reportWakes: parentAfterReport - parentBeforeReport, duplicateModelRequests: 0 });
     await run(cmd('delete'));
     await ctx.sessions.flush(captain.agent.session);
+    record({ event: 'stability-memory', phase: 'end', requests: requests.length, ...process.memoryUsage() });
     await captain.dispose();
     process.stdout.write('STABILITY_OK\n'); ctx.get('appExit')(0);
   })().catch(error => { process.stderr.write(String(error.stack ?? error) + '\n'); ctx.get('appExit')(1); });

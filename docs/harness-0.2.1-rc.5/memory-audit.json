@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "host": "0.2.1-rc.5",
+  "scenario": "stability",
+  "samples": 15,
+  "requests": 108,
+  "rssStart": 235388928,
+  "rssEnd": 259899392,
+  "rssDelta": 24510464,
+  "heapUsedStart": 105416832,
+  "heapUsedEnd": 106369712,
+  "heapUsedDelta": 952880,
+  "heapTotalStart": 149716992,
+  "heapTotalEnd": 168624128,
+  "maxRss": 259899392,
+  "maxHeapUsed": 116684656,
+  "minHeapUsed": 92388728
+}

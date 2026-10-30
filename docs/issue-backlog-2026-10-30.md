@@ -27,7 +27,7 @@ Additional items resolved after the original audit:
 Current open non-PR state (2026-10-31): **48 issues** — 30 accepted/fixed in this fork, 9 duplicate, 4 already fixed, 4 out of scope, and 1 still evidence-gated (`#117`).
 
 - **#151** is out of scope for this plugin: the attached screenshot shows the host task manager and a background Bash job (`sleep`, `job_output`) stuck at 771 minutes, not the AgentTeams activity panel. The original maintainer also suspected a different plugin/host surface.
-- **#117** still needs host-side RSS/heapUsed samples; the plugin lock-table regression is covered by 1,000 serialized and 100 concurrent lock tests.
+- **#117** has a bounded rc.5 resource audit: 15 samples over 108 model requests, heapUsed +0.95 MiB and max heapUsed 116.7 MiB; RSS rose 24.5 MiB consistent with page retention. This did not reproduce a long-running real-model OOM, so a failing-workload RSS/heapUsed series is still required.
 - **#190 / #241** now use the host `ctx.compaction.compactNow` service through `agent_teams_compact_member`; the plugin still does not own automatic host policy.
 
 `compatibility.json` now includes exact rc.4 and rc.5 targets. The real `plugin-manager-install` and `progressive-entry` checks pass on rc.5; evidence is in [`docs/harness-0.2.1-rc.5/`](./harness-0.2.1-rc.5/README.md).
