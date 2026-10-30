@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createTeamDir, createMessage, appendMailbox, readMailbox, readUnreadMailbox, readPendingMailbox, markMailboxDelivered, writeTeam } from '../lib/state.js'
 import { canDeclareDelivery } from '../lib/quality-gates.js'
-import { installMailboxAdmission, mailboxPrompt } from '../lib/mailbox.js'
+import { FINAL_REPORT_GRACE_MS, installMailboxAdmission, isFinalReportForSettlement, mailboxPrompt } from '../lib/mailbox.js'
 import { installMemberSelectionRuntime, installMemberDelegationGuard } from '../lib/members.js'
 import { steerMemberPrompt } from '../lib/harness-compat.js'
 
@@ -68,17 +68,37 @@ await test('old-generation guidance is discarded while current mail survives the
   assert.ok(rows[0].discardedAt); assert.equal(rows[0].readAt, undefined); assert.ok(rows[1].readAt)
 })
 
-await test('reported completion suppresses only redundant native success settlements', async t => {
+await test('reported completion suppresses only exact redundant native success settlements', async t => {
+  const previousGrace = process.env.AGENT_TEAMS_FINAL_REPORT_GRACE_MS
+  process.env.AGENT_TEAMS_FINAL_REPORT_GRACE_MS = '10'
+  t.after(() => {
+    if (previousGrace === undefined) delete process.env.AGENT_TEAMS_FINAL_REPORT_GRACE_MS
+    else process.env.AGENT_TEAMS_FINAL_REPORT_GRACE_MS = previousGrace
+  })
   const h = await fixture(t)
   installMailboxAdmission(h.ctx, '.agent-teams')
+  h.state.members[0].generation = 1
   h.state.tasks[0].status = 'completed'
+  h.state.tasks[0].attemptActivationId = 'a1'
+  h.state.tasks[0].attemptActivationEpoch = 1
+  h.state.tasks[0].attemptGeneration = 1
+  h.state.activations = [{
+    activationId: 'a1', dispatchToken: 'd1', teamId: 'team', memberId: 'worker', memberGeneration: 1,
+    activationEpoch: 1, purpose: 'task', taskId: 't1', attempt: 1, attemptId: 'a1', hostRunId: 'r1',
+    preDispatchSessionSeq: 0, startObserved: true, endObserved: true, state: 'released', permitHeld: false,
+    createdAt: 1, endedAt: Date.now(), releasedAt: Date.now(), stopReason: 'completed',
+  }]
   await writeTeam(h.root, h.state)
   const summary = 'Background subagent worker finished and will do no further work unless you send it more.'
   const notice = { source: { kind: 'subagent-settled', senderSessionId: 'worker', summary }, content: [{ type: 'text', text: summary }] }
   const payload = { agent: { id: 'captain', session: { header: { cwd: h.workspace }, ownEvents: () => [] } } }
   const admit = messages => h.handlers.get('agent/pre-step')(payload, async () => ({ kind: 'enter', messages }))
   assert.equal((await admit([notice])).messages.length, 1, 'unreported completion must still reach the captain')
-  const report = createMessage('worker', 'captain', 'Task t1 completed; concrete result.')
+  const report = {
+    ...createMessage('worker', 'captain', 'Task t1 completed; concrete result.'),
+    reportKind: 'final', sourceTaskId: 't1', sourceAttemptId: 'a1', sourceTaskStatus: 'in_progress',
+    sourceMemberId: 'worker', sourceMemberGeneration: 1, sourceActivationId: 'a1', sourceActivationEpoch: 1,
+  }
   await appendMailbox(h.root, 'team', 'captain', report)
   assert.equal((await admit([notice])).messages.length, 1, 'unaccepted mailbox report must not hide the fallback')
   await markMailboxDelivered(h.root, 'team', 'captain', [report.id])
@@ -90,11 +110,6 @@ await test('reported completion suppresses only redundant native success settlem
     { ...notice, source: { ...notice.source, senderSessionId: 'unrelated' } },
     { ...notice, source: { kind: 'user' } },
   ]) assert.equal((await admit([altered])).messages.length, 1)
-  h.state.tasks.push({ ...h.state.tasks[0], id: 't2', status: 'failed', updatedAt: Date.now() + 1 })
-  h.state.taskSeq = 2
-  await writeTeam(h.root, h.state)
-  assert.equal((await admit([notice])).messages.length, 1, 'an older report cannot hide a newer unsuccessful task')
-  h.state.tasks.pop()
   h.state.tasks[0].status = 'in_progress'
   await writeTeam(h.root, h.state)
   assert.equal((await admit([notice])).messages.length, 1, 'unfinished work still needs settlement attention')
@@ -141,4 +156,33 @@ await test('member-relative delegation limit covers raw runtime calls and preser
   await assert.rejects(h.ctx.subagents.startContinuable({ request: { parent: worker } }), /delegation limit/)
   await h.ctx.subagents.start('spawn', { parent: captain })
   assert.deepEqual(created, ['captain'])
+})
+
+await test('W1 exact final settlement predicate', () => {
+  const team = { id: 't', name: 'T', captainSessionId: 'c', createdAt: 1, members: [], taskSeq: 1,
+    tasks: [{ id: 'task', subject: 'x', status: 'completed', assignee: 'w', dependencies: [], attempt: 1,
+      attemptId: 'a', attemptActivationId: 'act', attemptGeneration: 1, createdAt: 1, updatedAt: 1 }] }
+  const lease = { activationId: 'act', memberId: 'child', memberGeneration: 1 }
+  const message = { id: 'm', from: 'w', to: 'captain', content: 'done', ts: 1, reportKind: 'final',
+    sourceTaskId: 'task', sourceAttemptId: 'a', sourceMemberId: 'child', sourceMemberGeneration: 1, sourceActivationId: 'act', deliveredAt: 1 }
+  assert.equal(isFinalReportForSettlement(team, message, 'child', lease), true)
+})
+await test('W1 progress final bypass is rejected', () => {
+  const lease = { activationId: 'act', memberId: 'child', memberGeneration: 1 }
+  const team = { id: 't', name: 'T', captainSessionId: 'c', createdAt: 1, members: [], taskSeq: 1,
+    tasks: [{ id: 'task', subject: 'x', status: 'completed', assignee: 'w', dependencies: [], attempt: 1,
+      attemptId: 'a', attemptActivationId: 'act', attemptGeneration: 1, createdAt: 1, updatedAt: 1 }] }
+  assert.equal(isFinalReportForSettlement(team, { id: 'm', from: 'w', to: 'captain', content: 'x', ts: 1,
+    reportKind: 'progress', sourceTaskId: 'task', sourceAttemptId: 'a', sourceMemberId: 'child',
+    sourceMemberGeneration: 1, sourceActivationId: 'act' }, 'child', lease), false)
+})
+await test('W1 final grace is bounded to 500ms', () => assert.equal(FINAL_REPORT_GRACE_MS, 500))
+await test('W1 final cannot bind another activation', () => {
+  const lease = { activationId: 'new', memberId: 'child', memberGeneration: 1 }
+  const team = { id: 't', name: 'T', captainSessionId: 'c', createdAt: 1, members: [], taskSeq: 1,
+    tasks: [{ id: 'task', subject: 'x', status: 'completed', assignee: 'w', dependencies: [], attempt: 1,
+      attemptId: 'a', attemptActivationId: 'new', attemptGeneration: 1, createdAt: 1, updatedAt: 1 }] }
+  assert.equal(isFinalReportForSettlement(team, { id: 'm', from: 'w', to: 'captain', content: 'x', ts: 1,
+    reportKind: 'final', sourceTaskId: 'task', sourceAttemptId: 'a', sourceMemberId: 'child',
+    sourceMemberGeneration: 1, sourceActivationId: 'old' }, 'child', lease), false)
 })

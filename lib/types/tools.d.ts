@@ -86,6 +86,17 @@ export interface AgentTeamsRuntime {
         teamId: string;
     }>;
 }
+/** Public schema guidance shared by every tool-policy selection surface. */
+export declare const TOOL_POLICY_DESCRIPTION = "Optional owner-declared tool-policy id. Omit when no policy is needed. Never invent an id; an unknown non-empty id is rejected atomically.";
+/**
+ * Normalize a tool-policy selection from runtime input. Tool gateways may
+ * materialize omitted optional strings as empty or whitespace-only values;
+ * those mean "no policy". A non-string runtime value is also treated as
+ * omitted because the public schema only accepts strings.
+ */
+export declare function optionalToolPolicyId(value: unknown): string | undefined;
+/** Drop undefined values and duplicate strings while preserving first-seen order. */
+export declare function orderedUniqueStrings(values: readonly (string | undefined)[]): string[];
 export declare function haltTeamWork(input: {
     ctx: Context;
     stateRoot: string;

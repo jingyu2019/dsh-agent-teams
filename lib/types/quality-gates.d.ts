@@ -9,7 +9,8 @@ declare const WRITE_KINDS: readonly TaskKind[];
 declare const DEFAULT_REVIEW_POLICY: Required<Pick<ReviewPolicy, 'requirementsMinRounds' | 'requirementsMaxRounds' | 'codeMaxRounds' | 'maxRepairAttempts'>>;
 export type PathClassification = 'in_scope' | 'out_of_scope' | 'undeclared' | 'illegal';
 export interface CreateTaskInput {
-    subject: string;
+    /** Runtime input may be non-string despite the public tool schema. */
+    subject: unknown;
     description?: string;
     dependencies?: string[];
     assignee?: string;

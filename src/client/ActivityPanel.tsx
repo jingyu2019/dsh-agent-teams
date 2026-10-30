@@ -58,7 +58,15 @@ import {
   type ActivityTask,
   type ActivityTeam,
 } from './activity-monitor.ts'
-import { ACTION_ART, LEAD_ART, memberArtUrl } from './artwork.ts'
+import {
+  defaultStatusRenderer,
+  semanticAgentStatus,
+  statusMotionState,
+  statusPresentation,
+  type StatusPresentation,
+  type StatusRenderer,
+} from './status-presentation.ts'
+import { LEAD_ART, memberArtUrl } from './artwork.ts'
 import { OPEN_PANEL_EVENT } from './AgentTeamsCard.tsx'
 import { StagingPlanEditor } from './StagingPlanEditor.tsx'
 import type { AgentTeamsCardData } from './agent-teams-card-definition.ts'
@@ -200,6 +208,45 @@ function WorkGlyph({ active }: { readonly active: boolean }) {
   )
 }
 
+/** Boolean page visibility changes are event-driven; no animation poll is added. */
+function usePageHidden(): boolean {
+  const [hidden, setHidden] = useState(false)
+  useEffect(() => {
+    const sync = (): void => { setHidden(document.visibilityState === 'hidden') }
+    sync()
+    document.addEventListener('visibilitychange', sync)
+    return () => { document.removeEventListener('visibilitychange', sync) }
+  }, [])
+  return hidden
+}
+
+/** Respect reduced motion in renderer metadata as well as the CSS fallback. */
+function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false)
+  useEffect(() => {
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const sync = (): void => { setReduced(query.matches) }
+    sync()
+    query.addEventListener('change', sync)
+    return () => { query.removeEventListener('change', sync) }
+  }, [])
+  return reduced
+}
+
+/** Mount one replaceable status renderer with lifecycle-aware motion state. */
+function StatusIndicator({ presentation, t, paused, reducedMotion, renderer = defaultStatusRenderer, className, textClassName }: {
+  readonly presentation: StatusPresentation
+  readonly t: AgentTeamsTranslate
+  readonly paused: boolean
+  readonly reducedMotion: boolean
+  readonly renderer?: StatusRenderer
+  readonly className?: string
+  readonly textClassName?: string
+}) {
+  const motionState = statusMotionState(presentation, { mounted: true, hidden: paused, reducedMotion })
+  return <>{renderer.render(presentation, { t, motionState, className, textClassName })}</>
+}
+
 /** Collapsed badge: an always-visible corner pill while any team exists. */
 function CollapsedBadge({ count, busy, onClick, t }: {
   readonly count: number
@@ -213,22 +260,6 @@ function CollapsedBadge({ count, busy, onClick, t }: {
       <span className={css.badgeCount}>{count}</span>
     </button>
   )
-}
-
-function memberStateLabel(
-  member: ActivityMember,
-  tasks: readonly ActivityTask[],
-  historic: boolean,
-  t: AgentTeamsTranslate,
-): string {
-  const owned = tasks.filter((task) => task.assignee === member.name)
-  if (member.activity === 'working') return t('member.state.working')
-  if (owned.some((task) => task.status === 'failed')) return t('member.state.failed')
-  if (owned.some((task) => task.state === 'blocked')) return t('member.state.waiting')
-  if (owned.length > 0 && owned.every((task) => task.status === 'completed')) return t('member.state.delivered')
-  if (member.status === 'removed') return t(historic ? 'member.state.left' : 'member.state.removed')
-  if (owned.length > 0) return t('member.state.pending')
-  return t('member.state.unassigned')
 }
 
 function memberStatusText(
@@ -540,7 +571,7 @@ function DependencyMap({ tasks, members, t, discarded = false, workspace = false
   )
 }
 
-export function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, onNavigate, t, historic = false, workspace = false }: {
+export function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, onNavigate, t, historic = false, workspace = false, motionPaused = false, statusRenderer }: {
   readonly team: ActivityTeam
   readonly modelDirectory?: ModelDirectory
   readonly onContinuePlanning?: () => void
@@ -550,8 +581,14 @@ export function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscar
   readonly t: AgentTeamsTranslate
   readonly historic?: boolean
   readonly workspace?: boolean
+  /** Parent surface is hidden (for example, a collapsed floater). */
+  readonly motionPaused?: boolean
+  /** Optional visual replacement; lifecycle mapping is unchanged. */
+  readonly statusRenderer?: StatusRenderer
 }) {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const pageHidden = usePageHidden()
+  const reducedMotion = useReducedMotion()
   const selectedAssignee = team.tasks.find(task => task.id === selectedTaskId)?.assignee
   const [membersOpen, setMembersOpen] = useState(workspace)
   const [stopOpen, setStopOpen] = useState(false)
@@ -703,6 +740,12 @@ export function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscar
                 {visibleMembers.map((member) => {
                   const owned = team.tasks.filter((task) => task.assignee === member.name)
                   const memberModel = memberRouteLabel(member)
+                  const semanticStatus = semanticAgentStatus(member, team.tasks, {
+                    phase: team.phase,
+                    halted: stopped,
+                    discarded,
+                  })
+                  const presentation = statusPresentation(semanticStatus)
                   return (
               <div key={member.id || member.name} className={css.memberBlock} data-activity={member.activity} data-selected-member={workspace && selectedAssignee === member.name || undefined}>
                 <span className={css.memberBranch} aria-hidden><span /></span>
@@ -722,7 +765,6 @@ export function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscar
                     ) : (
                       <span className={css.memberInitial} style={{ background: accentOf(member.id) }}>{memberInitial(member.name)}</span>
                     )}
-                    <img className={css.stateArt} data-activity={member.activity} src={ACTION_ART[member.activity]} alt="" aria-hidden />
                   </span>
                   <span className={css.memberInfo}>
                     <span className={css.memberLine}>
@@ -736,15 +778,16 @@ export function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscar
                           {compactModelLabel(memberModel)}
                         </span>
                       )}
-                      <span className={css.memberState} data-activity={member.activity}>
-                        <WorkGlyph active={member.activity === 'working'} />
-                        {discarded
-                          ? t('member.state.notCreated')
-                          : stopped
-                            ? t('member.state.stopped')
-                            : team.phase === 'staged'
-                              ? t('member.state.staged')
-                              : memberStateLabel(member, team.tasks, historic, t)}
+                      <span className={css.memberState} data-activity={member.activity} data-status={semanticStatus}>
+                        <StatusIndicator
+                          presentation={presentation}
+                          t={t}
+                          paused={motionPaused || pageHidden}
+                          reducedMotion={reducedMotion}
+                          renderer={statusRenderer}
+                          className={css.memberStatusIndicator}
+                          textClassName={css.memberStatusText}
+                        />
                       </span>
                     </span>
                     <span className={css.memberStatusLine}>{discarded
@@ -1338,18 +1381,19 @@ export function ActivityPanel({ sessionsList, modelDirectories, openMember, t, c
                       onDiscarded={returnToComposer}
                       onNavigate={navigateToSession}
                       t={t}
+                      motionPaused={!conversationVisible || !expanded}
                     />
                   ))}
                   {visibleArchived.map((team) => (
                     <div key={`${team.captainSessionId}:${team.teamId}`} data-team-id={team.teamId} data-historic className={css.archivedWrap}>
                       <span className={css.archiveLabel}>{t(team.phase === 'staged' ? 'archive.discardedLabel' : 'archive.label')}</span>
-                      <TeamSection team={team} onNavigate={navigateToSession} t={t} historic />
+                      <TeamSection team={team} onNavigate={navigateToSession} t={t} historic motionPaused={!conversationVisible || !expanded} />
                     </div>
                   ))}
                   {visibleHistoric.map(({ data: team, owner }) => {
                     const teamKey = `${owner}:${team.teamId}`
                     return (
-                      <TeamSection key={teamKey} team={historicCardTeam(team, owner)} onNavigate={navigateToSession} t={t} historic />
+                      <TeamSection key={teamKey} team={historicCardTeam(team, owner)} onNavigate={navigateToSession} t={t} historic motionPaused={!conversationVisible || !expanded} />
                     )
                   })}
                 </>

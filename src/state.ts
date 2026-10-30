@@ -191,6 +191,15 @@ export function activateTaskAttempt(task: TeamTask, assignee: string): string {
   return attemptId
 }
 
+/** Clear fields bound to one exact activation/attempt. */
+export function clearTaskActivation(task: TeamTask): void {
+  task.attemptMemberId = undefined
+  task.attemptGeneration = undefined
+  task.attemptActivationId = undefined
+  task.attemptActivationEpoch = undefined
+  task.parking = undefined
+}
+
 /** Start a fresh task generation for one owner. */
 export function beginTaskAttempt(task: TeamTask, assignee: string): string {
   task.attempt = (task.attempt ?? 0) + 1
@@ -208,6 +217,7 @@ export function cancelUnfinishedTask(task: TeamTask, output?: string): void {
   task.attemptId = undefined
   task.handoffId = undefined
   task.reassigning = false
+  clearTaskActivation(task)
   if (output !== undefined) task.output = output
   task.updatedAt = Date.now()
 }
@@ -222,6 +232,7 @@ export function invalidateTaskAttempt(
   task.status = 'pending'
   task.assignee = nextAssignee
   task.reassigning = reassigning
+  clearTaskActivation(task)
   clearAttemptResult(task)
   task.updatedAt = Date.now()
 }
@@ -445,6 +456,20 @@ export async function appendMailbox(
   }
   const separator = existing !== '' && !existing.endsWith('\n') ? '\n' : ''
   await atomicWriteText(file, `${existing}${separator}${JSON.stringify(message)}\n`)
+}
+
+
+/** Append one deterministic durable notice unless its id already exists. */
+export async function appendMailboxOnce(
+  stateRoot: string,
+  teamId: string,
+  agentKey: string,
+  message: TeamMessage,
+): Promise<boolean> {
+  const existing = await readMailbox(stateRoot, teamId, agentKey)
+  if (existing.some(candidate => candidate.id === message.id)) return false
+  await appendMailbox(stateRoot, teamId, agentKey, message)
+  return true
 }
 
 /**
@@ -1117,6 +1142,11 @@ function isTeamMessage(value: unknown): value is TeamMessage {
     && (value['sourceTaskId'] === undefined || typeof value['sourceTaskId'] === 'string')
     && (value['sourceAttemptId'] === undefined || typeof value['sourceAttemptId'] === 'string')
     && (value['sourceTaskStatus'] === undefined || ['pending', 'claimed', 'in_progress', 'completed', 'failed', 'cancelled'].includes(value['sourceTaskStatus'] as string))
+    && (value['reportKind'] === undefined || value['reportKind'] === 'progress' || value['reportKind'] === 'final')
+    && (value['sourceMemberId'] === undefined || typeof value['sourceMemberId'] === 'string')
+    && (value['sourceMemberGeneration'] === undefined || isFiniteNumber(value['sourceMemberGeneration']))
+    && (value['sourceActivationId'] === undefined || typeof value['sourceActivationId'] === 'string')
+    && (value['sourceActivationEpoch'] === undefined || isFiniteNumber(value['sourceActivationEpoch']))
 }
 
 /**

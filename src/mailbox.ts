@@ -2,20 +2,52 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
 import { acknowledgeMailbox, CAPTAIN_KEY, discardMailboxMessages, findTeamByCaptain, readMailbox, readUnreadMailbox, readTeam, sanitizeKey, withTeamLock } from './state.ts'
-import type { TeamMessage, TeamState } from './types.ts'
+import { TERMINAL_TASK_STATUSES, type ActivationLease, type TeamMessage, type TeamState } from './types.ts'
 import { sessionOwnEvents } from './harness-compat.ts'
 import { leadIdentityOfAsync, sessionLeadsTeamAsync } from './lineage.ts'
 
 const PREFIX = 'AgentTeams inbox receipt: '
+/** Bounded best-effort wait for a final report at native settlement. */
+export const FINAL_REPORT_GRACE_MS = 500
+
+function finalReportGraceMs(): number {
+  const configured = Number(process.env['AGENT_TEAMS_FINAL_REPORT_GRACE_MS'])
+  return Number.isFinite(configured) && configured >= 0 ? Math.min(configured, 2_000) : FINAL_REPORT_GRACE_MS
+}
 
 export function isCurrentMail(team: TeamState, message: TeamMessage): boolean {
   if (message.discardedAt !== undefined) return false
-  if (message.sourceAttemptId !== undefined && !team.tasks.some(task => task.id === message.sourceTaskId
-    && task.attemptId === message.sourceAttemptId && task.assignee === message.from
-    && (message.sourceTaskStatus === undefined || !['completed', 'failed', 'cancelled'].includes(task.status) || message.sourceTaskStatus === task.status))) return false
+  if (message.sourceAttemptId !== undefined) {
+    const source = team.tasks.find(task => task.id === message.sourceTaskId
+      && task.attemptId === message.sourceAttemptId && task.assignee === message.from)
+    if (source === undefined) return false
+    const allowedStatus = message.sourceTaskStatus === undefined
+      || !TERMINAL_TASK_STATUSES.includes(source.status)
+      || message.sourceTaskStatus === source.status
+      || (message.reportKind === 'final' && !TERMINAL_TASK_STATUSES.includes(message.sourceTaskStatus))
+    if (!allowedStatus) return false
+  }
   if (message.attemptId === undefined) return true
   return team.tasks.some(task => task.id === message.taskId && task.attemptId === message.attemptId
     && task.assignee === message.to && (task.status === 'claimed' || task.status === 'in_progress'))
+}
+
+/** Exact final-report predicate used by native settlement suppression. */
+export function isFinalReportForSettlement(
+  team: TeamState,
+  message: TeamMessage,
+  childId: string,
+  lease: Pick<ActivationLease, 'activationId' | 'memberId' | 'memberGeneration'>,
+): boolean {
+  if (message.reportKind !== 'final' || message.sourceTaskId === undefined || message.sourceAttemptId === undefined) return false
+  if (message.deliveredAt === undefined && message.readAt === undefined) return false
+  if (message.sourceMemberId !== childId || lease.memberId !== childId) return false
+  if (message.sourceActivationId !== lease.activationId) return false
+  if ((message.sourceMemberGeneration ?? 0) !== lease.memberGeneration) return false
+  const task = team.tasks.find(candidate => candidate.id === message.sourceTaskId)
+  return task?.attemptId === message.sourceAttemptId
+    && task.status === 'completed'
+    && task.attemptActivationId === lease.activationId
 }
 
 /** Include structured provenance even in the status-tool fallback presentation. */
@@ -76,24 +108,35 @@ export function installMailboxAdmission(ctx: Context, stateDir: string): void {
     }))
     const redundantSettlements = new Set<string>()
     if (successfulSettlements.size > 0) {
-      // Narrow containment: only AgentTeams state reads degrade silently.
+      // Only an exact final report for the just-ended activation can suppress
+      // the native settlement. Hold admission for a bounded grace so a report
+      // that is already in flight can land; after that, never suppress based
+      // on sender/time alone.
+      const deadline = Date.now() + finalReportGraceMs()
       try {
         const owned = await findTeamByCaptain(root, payload.agent.id, await leadIdentityOfAsync(ctx, payload.agent.session))
-        if (owned !== undefined) await withTeamLock(`team:${root}:${owned.id}`, async () => {
-          const team = await readTeam(root, owned.id)
-          if (team === undefined || !(await sessionLeadsTeamAsync(ctx, team, payload.agent.id)) || team.halted) return
-          const reports = await readMailbox(root, team.id, CAPTAIN_KEY)
-          for (const member of team.members) {
-            if (!successfulSettlements.has(member.id) || member.status === 'removed' || member.stopping) continue
-            const tasks = team.tasks.filter(task => task.assignee === member.name)
-            if (tasks.some(task => task.status === 'claimed' || task.status === 'in_progress')) continue
-            const latest = tasks.filter(task => (task.attempt ?? 0) > 0 || task.status === 'completed').sort((a, b) => b.updatedAt - a.updatedAt)[0]
-            if (latest?.status === 'completed' && reports.some(report => report.from === member.name && report.ts >= latest.updatedAt
-              && report.discardedAt === undefined && (report.deliveredAt !== undefined || report.readAt !== undefined))) {
-              redundantSettlements.add(member.id)
-            }
+        if (owned !== undefined) {
+          while (true) {
+            await withTeamLock(`team:${root}:${owned.id}`, async () => {
+              const team = await readTeam(root, owned.id)
+              if (team === undefined || !(await sessionLeadsTeamAsync(ctx, team, payload.agent.id)) || team.halted) return
+              const reports = await readMailbox(root, team.id, CAPTAIN_KEY)
+              for (const childId of successfulSettlements) {
+                if (redundantSettlements.has(childId)) continue
+                const leases = (team.activations ?? [])
+                  .filter(lease => lease.memberId === childId && (lease.state === 'ended' || lease.state === 'released'))
+                  .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+                const lease = leases[0]
+                if (lease === undefined) continue
+                if (reports.some(report => report.discardedAt === undefined && isFinalReportForSettlement(team, report, childId, lease))) {
+                  redundantSettlements.add(childId)
+                }
+              }
+            })
+            if (redundantSettlements.size === successfulSettlements.size || Date.now() >= deadline) break
+            await new Promise(resolve => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))))
           }
-        })
+        }
       } catch (error: unknown) {
         // A corrupt AgentTeams state file (e.g. an invalid team.json) must never
         // hold the host's step admission hostage: degrade to plain admission.

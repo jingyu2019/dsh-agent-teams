@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import { apply as installRetry } from '@deepseek-ai/dsh-llm-retry'
 import { installMemberSelectionRuntime } from '../lib/members.js'
+import { bindAgentRun, recordBoundAgentDiagnostic } from '../lib/harness-compat.js'
 import { installTeamScheduler } from '../lib/scheduler.js'
 import { appendMailbox, createMessage, createTeamDir, readTeam, readMailbox, readUnreadMailbox, withTeamLock, writeTeam } from '../lib/state.js'
 
@@ -23,7 +24,7 @@ async function eventually(predicate) {
   assert.fail('terminal failure did not settle')
 }
 
-async function fixture(t, { captainStatus = 'idle', fallback, captainOffline = false, rejectDelivery = false } = {}) {
+async function fixture(t, { captainStatus = 'idle', fallback, captainOffline = false, rejectDelivery = false, managed = false } = {}) {
   const workspace = await mkdtemp(join(tmpdir(), 'dsh-member-failure-'))
   const pendingFailures = []
   let settleOnCleanup = () => {}
@@ -75,6 +76,7 @@ async function fixture(t, { captainStatus = 'idle', fallback, captainOffline = f
     on(name, listener) { rootListeners.set(name, listener); return () => rootListeners.delete(name) },
     effect(setup) { const dispose = setup(); disposers.push(dispose); return dispose },
     subagents: {
+      ...(managed ? { async startActivation() {} } : {}),
       registerContinuableSetup(fn) { setup = fn },
       async followup(_captain, id, content) { deliveries.push({ id, content }); return 'accepted' },
     },
@@ -103,13 +105,19 @@ async function fixture(t, { captainStatus = 'idle', fallback, captainOffline = f
   const runtime = installMemberSelectionRuntime(ctx, '.agent-teams', (workspace, teamId, memberName) => (
     scheduler.kickMember(workspace, teamId, memberName)
   ))
-  const dispose = await runtime.withPending(captain.id, 'agent-teams:team:worker', {
-    provider: 'fake', model: 'primary', ...fallback ? { fallback } : {},
-  }, () => setup({
+  const childCtx = {
     agent: child,
     effect(setup) { const dispose = setup(); disposers.push(dispose); return dispose },
     on(name, listener) { listeners.set(name, listener); return () => listeners.delete(name) },
-  }))
+    ...(managed ? {
+      tools: { restrict() { return () => {} } },
+      systemPrompt: { getSectionOrder() { return 0 }, section() { return () => {} } },
+    } : {}),
+  }
+  const selection = { provider: 'fake', model: 'primary', ...fallback ? { fallback } : {} }
+  const pendingSetup = managed ? { persona: 'worker role', toolFilter: {} } : undefined
+  const dispose = await runtime.withPending(captain.id, 'agent-teams:team:worker', selection,
+    () => setup(childCtx), pendingSetup)
   t.after(dispose)
   let retryHandler
   let projection
@@ -251,4 +259,62 @@ await test('a queued error cannot fail a newer attempt created before it gets th
   assert.equal((await h.state()).tasks[0].status, 'in_progress')
   assert.equal((await h.state()).tasks[0].attemptId, 'a2')
   assert.equal((await h.mailbox()).length, 0)
+})
+
+await test('W1 request-error correlation uses the exact Agent object', () => {
+  const current = { id: 'same' }
+  const stale = { id: 'same' }
+  const seen = []
+  bindAgentRun(current, { teamId: 't', activationId: 'a', hostRunId: 'r', memberId: 'same',
+    memberGeneration: 1, activationEpoch: 1, recordDiagnostic: value => seen.push(value) })
+  assert.equal(recordBoundAgentDiagnostic(stale, 'stale'), false)
+  assert.equal(recordBoundAgentDiagnostic(current, 'bound'), true)
+  assert.deepEqual(seen, ['bound'])
+})
+await test('W1 route-owned error never falls back to member-name identity', () => {
+  const current = { id: 'worker' }
+  const impostor = { id: 'worker' }
+  let calls = 0
+  bindAgentRun(current, { teamId: 't', activationId: 'a', hostRunId: 'r', memberId: 'worker',
+    memberGeneration: 1, activationEpoch: 1, recordDiagnostic: () => { calls++ } })
+  assert.equal(recordBoundAgentDiagnostic(impostor, 'stale'), false)
+  assert.equal(calls, 0)
+})
+
+await test('a bound route-owned request error returns undefined and never calls next', async t => {
+  const h = await fixture(t)
+  const seen = []
+  bindAgentRun(h.child, { teamId: 'team', activationId: 'act', hostRunId: 'run', memberId: h.child.id,
+    memberGeneration: 1, activationEpoch: 1, recordDiagnostic: value => seen.push(value) })
+  let nextCalls = 0
+  const result = await h.memberError(h.payload(undefined, 'RATE_LIMIT'), async () => {
+    nextCalls++
+    return { kind: 'retry' }
+  })
+  assert.equal(result, undefined)
+  assert.equal(nextCalls, 0)
+  assert.match(seen[0], /RATE_LIMIT/)
+})
+
+await test('managed unbound agent/error is ignored and cannot fail the task', async t => {
+  const h = await fixture(t, { managed: true })
+  const before = await h.state()
+  h.terminal({ settle: false })
+  await new Promise(resolve => setTimeout(resolve, 30))
+  const after = await h.state()
+  assert.equal(after.tasks[0].status, before.tasks[0].status)
+  assert.equal(after.tasks[0].attemptId, before.tasks[0].attemptId)
+  assert.equal((await h.mailbox()).length, 0)
+})
+
+await test('managed unbound agent/request-error does not call next or mutate the task', async t => {
+  const h = await fixture(t, { managed: true })
+  let nextCalls = 0
+  const result = await h.memberError(h.payload(undefined, 'RATE_LIMIT'), async () => {
+    nextCalls++
+    return { kind: 'retry' }
+  })
+  assert.equal(result, undefined)
+  assert.equal(nextCalls, 0)
+  assert.equal((await h.state()).tasks[0].status, 'in_progress')
 })

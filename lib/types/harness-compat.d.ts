@@ -17,6 +17,8 @@ type Setup = (childCtx: Context, child: Agent) => () => void;
 export interface MemberStartSpec {
     provider: string;
     label: string;
+    /** Plugin-reserved durable child id for a first start. */
+    childId?: SessionId;
     request: {
         parent: Agent;
         prompt: ContentBlock[];
@@ -26,10 +28,34 @@ export interface MemberStartSpec {
     };
     signal: AbortSignal;
 }
-export declare function usesManagedActivations(runtime: Context['subagents']): boolean;
-export declare function startMember(runtime: Context['subagents'], spec: MemberStartSpec): Promise<{
+/** Exact process handle returned by a managed activation. */
+export interface MemberStartResult {
     childId: SessionId;
-}>;
+    managed: boolean;
+    messageId?: MessageId;
+    result?: Promise<unknown>;
+    dispose?: () => Promise<void>;
+}
+/** Process-local correlation from the exact live Agent to one durable lease. */
+export interface AgentRunBinding {
+    teamId: string;
+    activationId: string;
+    hostRunId: string;
+    memberId: string;
+    memberGeneration: number;
+    activationEpoch: number;
+    recordDiagnostic?: (diagnostic: string) => void;
+}
+/** Bind the exact live Agent object to its run/activation. */
+export declare function bindAgentRun(agent: Agent, binding: AgentRunBinding): void;
+/** Resolve an AgentTeams run without falling back to member name or latest task. */
+export declare function boundAgentRun(agent: Agent): AgentRunBinding | undefined;
+/** Drop process-local correlation once the exact lease is released. */
+export declare function unbindAgentRun(agent: Agent): void;
+/** Record a route-owned diagnostic only through the exact live Agent binding. */
+export declare function recordBoundAgentDiagnostic(agent: Agent, diagnostic: string): boolean;
+export declare function usesManagedActivations(runtime: Context['subagents']): boolean;
+export declare function startMember(runtime: Context['subagents'], spec: MemberStartSpec): Promise<MemberStartResult>;
 /** Wrap every available creation API, restoring only this plugin's own methods. */
 export declare function guardSubagentCreation(ctx: Context, check: (parent: Agent) => void): void;
 declare module '@deepseek-ai/dsh-llm' {

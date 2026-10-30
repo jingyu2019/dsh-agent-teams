@@ -892,51 +892,62 @@
   line-height: 20px;
 }
 
-.stateArt {
-  position: absolute;
-  right: -5px;
-  bottom: -3px;
-  width: 22px;
-  height: 22px;
-  box-sizing: border-box;
-  border: 0;
-  border-radius: 0;
-  object-fit: contain;
-  background: transparent;
-  filter:
-    drop-shadow(0 0 1px var(--dsw-alias-bg-layer-1))
-    drop-shadow(0 1px 1px rgb(18 45 72 / 24%));
-}
-
-.stateArt[data-activity='working'] {
-  animation: agentTeamsFloat 2.4s ease-in-out infinite;
-}
-
-.stateArt[data-activity='idle'] {
-  animation: agentTeamsBreathe 4.2s ease-in-out infinite;
-}
-
-.stateArt[data-activity='unknown'] {
-  animation: agentTeamsThink 2.8s ease-in-out infinite;
-}
-
-@keyframes agentTeamsFloat {
-  0%, 100% { transform: translateY(0) rotate(-4deg); }
-  50% { transform: translateY(-2px) rotate(4deg); }
-}
-
-@keyframes agentTeamsBreathe {
-  0%, 100% { opacity: 0.82; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.06); }
-}
-
-@keyframes agentTeamsThink {
-  0%, 100% { transform: rotate(-7deg); }
-  50% { transform: rotate(7deg); }
-}
-
 .memberState {
   margin-left: auto;
+}
+
+/* Semantic status indicator: glyph + visible text, independent of role art. */
+.memberStatusIndicator {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.memberStatusIndicator [data-status-glyph] {
+  display: inline-grid;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  place-items: center;
+  box-sizing: border-box;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.memberStatusIndicator[data-status-tone='active'] {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.memberStatusIndicator[data-status-tone='success'] {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.memberStatusIndicator[data-status-tone='danger'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.memberStatusIndicator[data-motion-state='running'] [data-status-glyph] {
+  animation: agentTeamsStatusPulse 1.35s ease-in-out infinite;
+}
+
+.memberStatusIndicator[data-motion-state='paused'] [data-status-glyph] {
+  animation-play-state: paused;
+}
+
+.memberStatusText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@keyframes agentTeamsStatusPulse {
+  0%, 100% { opacity: 0.68; transform: scale(0.92); }
+  50% { opacity: 1; transform: scale(1.08); }
 }
 
 .memberCount {
@@ -2059,7 +2070,7 @@
   .badgeDot,
   .panelDot,
   .workGlyph rect,
-  .stateArt,
+  .memberStatusIndicator [data-status-glyph],
   .memberAvatar[data-unread='true']::after {
     animation: none;
     transition: none;

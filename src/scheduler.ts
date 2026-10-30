@@ -14,16 +14,22 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentStatus } from '@deepseek-ai/dsh-agent'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import type { SubagentRunEndInfo, SubagentRunInfo } from '@deepseek-ai/dsh-subagent'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { deliverToMember } from './members.ts'
+import { deliverToMember, steerCaptainReport } from './members.ts'
+import { bindAgentRun, boundAgentRun, unbindAgentRun, usesManagedActivations, type MemberStartResult } from './harness-compat.ts'
 import { isCurrentMail, mailboxPrompt } from './mailbox.ts'
 import {
   markMailboxDelivered,
   discardMailboxMessages,
+  appendMailboxOnce,
   beginTaskAttempt,
   CAPTAIN_KEY,
+  createMessage,
   claimMailboxDelivery,
+  clearTaskActivation,
   findTeamByParticipant,
   invalidateTaskAttempt,
   readTeam,
@@ -35,17 +41,52 @@ import {
 } from './state.ts'
 import { contractStaleness, isVerdictKind, taskKindOf, verdictScopePatterns } from './quality-gates.ts'
 import { digestWorkspacePaths, snapshotWorkspacePaths } from './artifacts.ts'
-import type { TeamMember, TeamState, TeamTask } from './types.ts'
+import type { ActivationLease, ActivationStopReason, NotificationLedgerEntry, TaskParking, TeamMember, TeamState, TeamTask } from './types.ts'
 
 /** Per-dependency output cap in the assignment prompt. */
 export const DEPENDENCY_OUTPUT_MAX_CHARS = 2_000
 /** Combined dependency-output budget in the assignment prompt. */
 export const DEPENDENCY_OUTPUTS_TOTAL_MAX_CHARS = 12_000
 
+export interface DispatchRequest {
+  readonly attemptId?: string
+  readonly activationId?: string
+  readonly dispatchToken?: string
+  readonly newChild: boolean
+  readonly reservedChildId: string
+}
+
+export interface DispatchResult {
+  readonly accepted: boolean
+  readonly receipt?: MemberStartResult
+}
+
+export type MailboxActivationDecision = 'allocate' | 'reuse' | 'wait'
+
+/** Decide whether a mailbox wake may start a new run for this child. */
+export function mailboxActivationDecision(
+  leases: readonly ActivationLease[],
+  memberId: string,
+  liveRunning: boolean,
+): MailboxActivationDecision {
+  const active = leases.find(lease => lease.memberId === memberId
+    && (lease.state === 'pending' || lease.state === 'started' || lease.state === 'recovering'))
+  if (active === undefined) return 'allocate'
+  return active.state === 'started' && liveRunning ? 'reuse' : 'wait'
+}
+
 export interface SchedulerConfig {
   readonly stateDir: string
   readonly executionPrompt?: string
-  readonly dispatch?: (captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', attemptId?: string) => Promise<boolean>
+  readonly dispatch?: (
+    captain: Agent,
+    teamId: string,
+    memberName: string,
+    text: string,
+    signal: AbortSignal,
+    mode: 'queue' | 'steer',
+    request?: DispatchRequest,
+  ) => Promise<boolean | DispatchResult>
 }
 
 export interface TeamScheduler {
@@ -69,6 +110,10 @@ export interface DispatchTicket {
   readonly memberId: string
   readonly attempt: number
   readonly attemptId: string
+  readonly activationId: string
+  readonly dispatchToken: string
+  readonly newChild: boolean
+  readonly preDispatchSessionSeq: number
   readonly previousAssignee?: string
   /** True when this ticket rotates an unobserved durable open attempt. */
   readonly recoveredOwned: boolean
@@ -261,6 +306,8 @@ ${staleWorkOrder}${contract === '' ? '' : `\nContract:\n${contract}\n`}
 ${structuredCompletion}
 Attempt: ${ticket.attempt}
 Attempt id: ${ticket.attemptId}
+Activation id: ${ticket.activationId}
+Dispatch token: ${ticket.dispatchToken}
 
 Call agent_teams_claim_task for ${ticket.taskId}; it will return this same attempt_id. Include attempt_id=${ticket.attemptId} in every agent_teams_update_task call. If it is rejected as stale, stop work because the task was reassigned. claimed cannot jump to completed. Mark in_progress first, then completed or failed. Include attempt_id on every update. Then send_message to captain with source_task_id and source_attempt_id and become idle.
 When finishing: use status=completed only when the task's success criteria are satisfied; use status=failed when blocking findings or validation failures mean downstream work must not proceed; include a concise output in either case. Quality kinds must submit structured fields: review/requirements need verdict=pass to complete (needs_revision/reject must fail with findings); implementation/repair/verification/integration need acceptanceResults and commandsRun, while implementation/repair also need in-scope changedPaths. Use status values "passed" or "failed" inside those arrays. After the work and verification finish, call agent_teams_update_task immediately; do not wait for captain confirmation and do not continue exploring. Do not approve your own implementation. Mail is not a formal next review. Completed work must not be repeated to attach late evidence: call update_task on the original task with its attempt_id and acceptanceResults/commandsRun/evidence_note; supplements are append-only and cannot change its verdict. Treat the dependency results above as source material. Do not ignore them. Work only this task and only its in-scope paths in this turn.
@@ -282,6 +329,541 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     `${stateRoot}\u0000${teamId}\u0000${memberName}`
   )
 
+  const pendingByChild = new Map<string, { teamId: string; activationId: string }>()
+  const runToActivation = new Map<string, { teamId: string; activationId: string }>()
+  const activationRoots = new Map<string, string>()
+  const activationWorkspaces = new Map<string, string>()
+  const lifecycleLanes = new Map<string, Promise<unknown>>()
+
+  const serializeLifecycle = async <T>(childId: string, operation: () => Promise<T>): Promise<T> => {
+    const previous = lifecycleLanes.get(childId) ?? Promise.resolve()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const tail = previous.then(() => gate)
+    lifecycleLanes.set(childId, tail)
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release()
+      if (lifecycleLanes.get(childId) === tail) lifecycleLanes.delete(childId)
+    }
+  }
+
+  const stopReasonOf = (reason: unknown): ActivationStopReason => {
+    return reason === 'completed' || reason === 'max-tokens' || reason === 'aborted'
+      || reason === 'error' || reason === 'refusal' ? reason : 'unknown'
+  }
+
+  const boundedText = (value: string, max = 2_000): string => (
+    value.length <= max ? value : `${value.slice(0, max)}… [truncated]`
+  )
+
+  const noticeFor = (
+    team: TeamState,
+    lease: ActivationLease,
+    kind: NotificationLedgerEntry['kind'],
+    content: string,
+  ): NotificationLedgerEntry => {
+    const id = `${lease.activationId}:${kind}`
+    const existing = team.notifications?.find(entry => entry.id === id)
+    if (existing !== undefined) return existing
+    const now = Date.now()
+    team.notificationSeq = (team.notificationSeq ?? 0) + 1
+    const notice: NotificationLedgerEntry = {
+      id,
+      messageId: `notice:${id}`,
+      teamId: team.id,
+      memberId: lease.memberId,
+      memberGeneration: lease.memberGeneration,
+      activationId: lease.activationId,
+      ...lease.taskId === undefined ? {} : { taskId: lease.taskId },
+      ...lease.attemptId === undefined ? {} : { attemptId: lease.attemptId },
+      kind,
+      content: boundedText(content),
+      state: 'pending',
+      noticeDueAt: now,
+      createdAt: now,
+    }
+    team.notifications = [...(team.notifications ?? []), notice].slice(-200)
+    return notice
+  }
+
+  const flushNotice = async (workspace: string, stateRoot: string, teamId: string, noticeId: string): Promise<void> => {
+    const prepared = await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+      const team = await readTeam(stateRoot, teamId)
+      const notice = team?.notifications?.find(entry => entry.id === noticeId)
+      if (team === undefined || notice === undefined || notice.noticeDueAt > Date.now()
+        || notice.state === 'delivered' || notice.state === 'read' || notice.state === 'superseded') return undefined
+      const task = notice.taskId === undefined ? undefined : team.tasks.find(candidate => candidate.id === notice.taskId)
+      if (notice.kind === 'parked' && (task?.parking?.noticeKey !== notice.id || task.status !== 'claimed' && task.status !== 'in_progress')) {
+        notice.state = 'superseded'
+        await writeTeam(stateRoot, team)
+        return undefined
+      }
+      const message = {
+        ...createMessage('system', CAPTAIN_KEY, notice.content),
+        id: notice.messageId,
+        ts: notice.createdAt,
+        ...notice.taskId === undefined ? {} : { sourceTaskId: notice.taskId },
+        ...notice.attemptId === undefined ? {} : { sourceAttemptId: notice.attemptId },
+      }
+      await appendMailboxOnce(stateRoot, team.id, CAPTAIN_KEY, message)
+      notice.state = 'appended'
+      notice.appendedAt ??= Date.now()
+      await writeTeam(stateRoot, team)
+      return { captainSessionId: team.captainSessionId, message }
+    })
+    if (prepared === undefined) return
+    const captain = ctx.agents.get(prepared.captainSessionId as SessionId)
+    const delivered = captain !== undefined && steerCaptainReport(
+      captain,
+      'system',
+      prepared.message.content,
+      mailboxPrompt(teamId, CAPTAIN_KEY, [prepared.message]),
+    )
+    if (!delivered) return
+    await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+      const team = await readTeam(stateRoot, teamId)
+      const notice = team?.notifications?.find(entry => entry.id === noticeId)
+      if (team === undefined || notice === undefined) return
+      notice.state = 'delivered'
+      notice.deliveredAt ??= Date.now()
+      await writeTeam(stateRoot, team)
+    })
+  }
+
+  const flushDueNotices = async (workspace: string, stateRoot: string, teamId: string): Promise<void> => {
+    const team = await readTeam(stateRoot, teamId)
+    if (team === undefined) return
+    for (const notice of team.notifications ?? []) {
+      if (notice.state === 'pending' && notice.noticeDueAt <= Date.now()) {
+        await flushNotice(workspace, stateRoot, teamId, notice.id)
+      }
+    }
+  }
+
+  const activationBoundary = async (childId: string, isNew: boolean): Promise<number> => {
+    if (isNew) return 0
+    const live = ctx.agents.get(SessionId(childId))
+    if (live !== undefined) return Number(live.session.seq)
+    if (typeof ctx.get !== 'function') return 0
+    const query = ctx.get('sessionQuery') as {
+      observeSession?: (id: SessionId, options: { signal: AbortSignal }) => Promise<{ events: readonly unknown[] }>
+    } | undefined
+    if (typeof query?.observeSession !== 'function') {
+      throw new Error('agent-teams: managed resume requires the sessionQuery observeSession API')
+    }
+    const observed = await query.observeSession(SessionId(childId), { signal: new AbortController().signal })
+    return observed.events.length
+  }
+
+  const allocateActivation = async (
+    stateRoot: string,
+    workspace: string,
+    team: TeamState,
+    member: TeamMember,
+    purpose: ActivationLease['purpose'],
+    options: { task?: TeamTask; attemptId?: string; activationId?: string; dispatchToken?: string } = {},
+  ): Promise<{ lease: ActivationLease; newChild: boolean; reservedChildId: string }> => {
+    const managed = usesManagedActivations(ctx.subagents)
+    const newChild = member.id === ''
+    const reservedChildId = newChild ? managed ? String(SessionId(randomUUID())) : '' : member.id
+    const activationEpoch = (team.activationSeq ?? 0) + 1
+    const activationId = options.activationId ?? randomUUID()
+    const dispatchToken = options.dispatchToken ?? randomUUID()
+    const lease: ActivationLease = {
+      activationId,
+      dispatchToken,
+      teamId: team.id,
+      memberId: reservedChildId,
+      memberGeneration: member.generation ?? 1,
+      activationEpoch,
+      purpose,
+      ...options.task === undefined ? {} : { taskId: options.task.id, attempt: options.task.attempt },
+      ...options.attemptId === undefined ? {} : { attemptId: options.attemptId },
+      preDispatchSessionSeq: await activationBoundary(reservedChildId, newChild),
+      startObserved: false,
+      endObserved: false,
+      settlementApplied: false,
+      recoveryDecision: 'none',
+      state: 'pending',
+      permitHeld: true,
+      createdAt: Date.now(),
+    }
+    if (newChild && managed) member.id = reservedChildId
+    if (!managed) {
+      return { lease, newChild, reservedChildId }
+    }
+    member.generation = member.generation ?? 1
+    member.currentActivationId = activationId
+    member.lastActivationEpoch = activationEpoch
+    team.activationSeq = activationEpoch
+    team.activations = [...(team.activations ?? []), lease].slice(-200)
+    if (options.task !== undefined && options.attemptId !== undefined) {
+      options.task.attemptMemberId = reservedChildId
+      options.task.attemptGeneration = member.generation
+      options.task.attemptActivationId = activationId
+      options.task.attemptActivationEpoch = activationEpoch
+    }
+    pendingByChild.set(reservedChildId, { teamId: team.id, activationId })
+    activationRoots.set(team.id, stateRoot)
+    activationWorkspaces.set(team.id, workspace)
+    return { lease, newChild, reservedChildId }
+  }
+
+  const resolveLease = (team: TeamState, activationId: string): ActivationLease | undefined => (
+    team.activations?.find(lease => lease.activationId === activationId)
+  )
+
+  const settleActivation = async (input: {
+    teamId: string
+    activationId: string
+    hostRunId?: string
+    stopReason: unknown
+    diagnostic?: string
+    lastAssistantMessage?: string
+    source: 'end' | 'result' | 'restart'
+  }, stateRoot: string): Promise<void> => {
+    await withTeamLock(teamLockKey(stateRoot, input.teamId), async () => {
+      const team = await readTeam(stateRoot, input.teamId)
+      if (team === undefined) return
+      const lease = resolveLease(team, input.activationId)
+      if (lease === undefined || lease.state === 'released' || lease.endObserved && lease.settlementApplied === true) return
+      if (lease.hostRunId !== undefined && input.hostRunId !== undefined && lease.hostRunId !== input.hostRunId) return
+      const stopReason = stopReasonOf(input.stopReason)
+      lease.hostRunId ??= input.hostRunId
+      lease.endObserved = true
+      lease.state = 'ended'
+      lease.endedAt = Date.now()
+      lease.stopReason = stopReason
+      if (input.diagnostic !== undefined) lease.diagnostic = boundedText(input.diagnostic)
+      if (input.lastAssistantMessage !== undefined) lease.lastAssistantMessage = boundedText(input.lastAssistantMessage)
+      const task = input.source === 'end'
+        ? team.tasks.find(candidate => candidate.id === lease.taskId
+          && candidate.attemptId === lease.attemptId
+          && candidate.attemptActivationId === lease.activationId
+          && (candidate.status === 'claimed' || candidate.status === 'in_progress'))
+        : team.tasks.find(candidate => candidate.id === lease.taskId
+          && candidate.attemptId === lease.attemptId
+          && candidate.attemptActivationId === lease.activationId)
+      if (task !== undefined && (task.status === 'claimed' || task.status === 'in_progress')) {
+        const now = Date.now()
+        if (stopReason !== 'completed') {
+          task.status = 'failed'
+          const base = stopReason === 'unknown'
+            ? 'settlement_unknown: missing or unknown stopReason (fail closed)'
+            : `activation ended with stopReason=${stopReason}`
+          task.output = lease.diagnostic === undefined ? base : `${base}: ${lease.diagnostic}`
+          task.updatedAt = now
+          noticeFor(team, lease, stopReason === 'unknown' ? 'settlement_unknown' : 'failed',
+            `Member ${lease.memberId} activation ${lease.activationId} failed task ${task.id}: ${task.output}`)
+        } else {
+          const noticeKey = `${lease.activationId}:parked`
+          const parking: TaskParking = {
+            memberId: lease.memberId,
+            memberGeneration: lease.memberGeneration,
+            activationId: lease.activationId,
+            activationEpoch: lease.activationEpoch,
+            attemptId: lease.attemptId ?? '',
+            noticeDueAt: now,
+            noticeKey,
+          }
+          task.parking = parking
+          parkedAttempts.set(lease.memberId, lease.attemptId ?? '')
+          noticeFor(team, lease, 'parked',
+            `Member ${lease.memberId} finished activation ${lease.activationId} with completed stopReason while task ${task.id} is still ${task.status}. The exact attempt is parked; use reassign_task or update the task with its current attempt_id as appropriate.`)
+        }
+      }
+      lease.settlementApplied = true
+      lease.state = 'released'
+      lease.permitHeld = false
+      lease.releasedAt = Date.now()
+      await writeTeam(stateRoot, team)
+    })
+    const pointer = pendingByChild.get([...pendingByChild.entries()].find(([, value]) => value.activationId === input.activationId)?.[0] ?? '')
+    if (pointer !== undefined) {
+      const childId = [...pendingByChild.entries()].find(([, value]) => value === pointer)?.[0]
+      if (childId !== undefined) {
+        pendingByChild.delete(childId)
+        const agent = ctx.agents.get(SessionId(childId))
+        if (agent !== undefined) unbindAgentRun(agent)
+      }
+    }
+    if (input.hostRunId !== undefined) runToActivation.delete(input.hostRunId)
+  }
+
+  const bindStart = async (info: SubagentRunInfo): Promise<void> => {
+    const childId = String(info.id)
+    const pointer = pendingByChild.get(childId)
+    if (pointer === undefined) return
+    const agent = ctx.agents.get(info.id)
+    const stateRoot = activationRoots.get(pointer.teamId) ?? agent?.session.header.cwd ?? process.cwd()
+    await withTeamLock(teamLockKey(stateRoot, pointer.teamId), async () => {
+      const team = await readTeam(stateRoot, pointer.teamId)
+      if (team === undefined) return
+      const lease = resolveLease(team, pointer.activationId)
+      if (lease === undefined || lease.state === 'released' || lease.endObserved) return
+      if (lease.hostRunId !== undefined && lease.hostRunId !== String(info.runId)) return
+      lease.hostRunId = String(info.runId)
+      lease.startObserved = true
+      lease.state = 'started'
+      lease.startedAt ??= Date.now()
+      await writeTeam(stateRoot, team)
+      runToActivation.set(String(info.runId), { teamId: lease.teamId, activationId: lease.activationId })
+      if (agent !== undefined) {
+        bindAgentRun(agent, {
+          teamId: lease.teamId,
+          activationId: lease.activationId,
+          hostRunId: String(info.runId),
+          memberId: lease.memberId,
+          memberGeneration: lease.memberGeneration,
+          activationEpoch: lease.activationEpoch,
+          recordDiagnostic: diagnostic => {
+            void withTeamLock(teamLockKey(stateRoot, lease.teamId), async () => {
+              const fresh = await readTeam(stateRoot, lease.teamId)
+              const current = fresh === undefined ? undefined : resolveLease(fresh, lease.activationId)
+              if (fresh === undefined || current === undefined || current.state === 'released') return
+              current.diagnostic = boundedText(diagnostic)
+              await writeTeam(stateRoot, fresh)
+            }).catch(error => {
+              ctx.logger.warn(`agent-teams: activation diagnostic persistence failed: ${String(error)}`)
+            })
+          },
+        })
+      }
+    })
+  }
+
+  const settleEnd = async (info: SubagentRunEndInfo): Promise<void> => {
+    const runId = String(info.runId)
+    let pointer = runToActivation.get(runId)
+    if (pointer === undefined) {
+      const child = pendingByChild.get(String(info.id))
+      if (child !== undefined) pointer = child
+    }
+    if (pointer === undefined) return
+    const agent = ctx.agents.get(info.id)
+    const stateRoot = activationRoots.get(pointer.teamId) ?? agent?.session.header.cwd ?? process.cwd()
+    const message = info.lastAssistantMessage?.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+    await settleActivation({
+      teamId: pointer.teamId,
+      activationId: pointer.activationId,
+      hostRunId: runId,
+      stopReason: info.stopReason,
+      ...message === undefined || message === '' ? {} : { lastAssistantMessage: message },
+      source: 'end',
+    }, stateRoot)
+    const workspace = activationWorkspaces.get(pointer.teamId)
+    if (workspace !== undefined) await flushDueNotices(workspace, stateRoot, pointer.teamId)
+    const fresh = await readTeam(stateRoot, pointer.teamId)
+    const memberName = fresh?.members.find(member => member.id === String(info.id))?.name
+    if (memberName !== undefined && workspace !== undefined) {
+      await runtime.kickMember(workspace, pointer.teamId, memberName)
+    }
+  }
+
+  const recordReceipt = (input: {
+    stateRoot: string
+    teamId: string
+    activationId: string
+    receipt: MemberStartResult
+  }): void => {
+    void withTeamLock(teamLockKey(input.stateRoot, input.teamId), async () => {
+      const team = await readTeam(input.stateRoot, input.teamId)
+      const lease = team === undefined ? undefined : resolveLease(team, input.activationId)
+      if (team === undefined || lease === undefined) return
+      if (input.receipt.messageId !== undefined) lease.hostMessageId = String(input.receipt.messageId)
+      await writeTeam(input.stateRoot, team)
+    }).catch(error => {
+      ctx.logger.warn(`agent-teams: activation receipt persistence failed: ${String(error)}`)
+    })
+    const result = input.receipt.result
+    if (result === undefined) return
+    void result.then(async (value: unknown) => {
+      const observed = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
+      try {
+        if (input.receipt.dispose !== undefined) await input.receipt.dispose()
+      } catch (error: unknown) {
+        ctx.logger.warn(`agent-teams: exact activation dispose failed: ${String(error)}`)
+      }
+      const team = await readTeam(input.stateRoot, input.teamId)
+      const lease = team === undefined ? undefined : resolveLease(team, input.activationId)
+      if (lease === undefined || lease.endObserved) return
+      const output = Array.isArray(observed['output'])
+        ? observed['output'].flatMap(block => typeof block === 'object' && block !== null
+          && (block as Record<string, unknown>)['type'] === 'text'
+          && typeof (block as Record<string, unknown>)['text'] === 'string'
+          ? [(block as Record<string, unknown>)['text'] as string] : []).join('\n')
+        : undefined
+      await settleActivation({
+        teamId: input.teamId,
+        activationId: input.activationId,
+        stopReason: observed['stopReason'],
+        ...typeof observed['diagnostic'] === 'string' ? { diagnostic: observed['diagnostic'] } : {},
+        ...output === undefined || output === '' ? {} : { lastAssistantMessage: output },
+        source: 'result',
+      }, input.stateRoot)
+      const workspace = activationWorkspaces.get(input.teamId)
+      if (workspace !== undefined) await flushDueNotices(workspace, input.stateRoot, input.teamId)
+    }, async error => {
+      try {
+        if (input.receipt.dispose !== undefined) await input.receipt.dispose()
+      } catch (disposeError: unknown) {
+        ctx.logger.warn(`agent-teams: exact activation dispose after result rejection failed: ${String(disposeError)}`)
+      }
+      const errorText = error instanceof Error ? error.message : String(error)
+      await settleActivation({
+        teamId: input.teamId,
+        activationId: input.activationId,
+        stopReason: 'unknown',
+        diagnostic: errorText,
+        source: 'result',
+      }, input.stateRoot)
+      const workspace = activationWorkspaces.get(input.teamId)
+      if (workspace !== undefined) await flushDueNotices(workspace, input.stateRoot, input.teamId)
+    }).catch(error => {
+      ctx.logger.warn(`agent-teams: activation result reconciliation failed: ${String(error)}`)
+    })
+  }
+
+  const recoveryEvents = async (childId: string, from: number): Promise<readonly { type: string; data?: unknown }[]> => {
+    const live = ctx.agents.get(SessionId(childId))
+    if (live !== undefined && typeof live.session.snapshotEvents === 'function') {
+      return live.session.snapshotEvents(SessionLogOffset(from)) as readonly { type: string; data?: unknown }[]
+    }
+    if (typeof ctx.get !== 'function') return []
+    const query = ctx.get('sessionQuery') as {
+      observeSession?: (id: SessionId, options: { signal: AbortSignal }) => Promise<{ events: readonly { type: string; data?: unknown }[] }>
+    } | undefined
+    if (typeof query?.observeSession !== 'function') return []
+    const observed = await query.observeSession(SessionId(childId), { signal: new AbortController().signal })
+    return observed.events.slice(from)
+  }
+
+  const orphanActivation = async (stateRoot: string, workspace: string, teamId: string, lease: ActivationLease): Promise<void> => {
+    await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+      const team = await readTeam(stateRoot, teamId)
+      const current = team === undefined ? undefined : resolveLease(team, lease.activationId)
+      if (team === undefined || current === undefined || current.state === 'released') return
+      current.state = 'orphaned'
+      current.recoveryDecision = 'orphaned_parked'
+      current.endObserved = true
+      current.stopReason = 'unknown'
+      current.settlementApplied = true
+      current.permitHeld = false
+      current.endedAt ??= Date.now()
+      current.releasedAt = Date.now()
+      const task = current.taskId === undefined ? undefined : team.tasks.find(candidate => candidate.id === current.taskId
+        && candidate.attemptId === current.attemptId && candidate.attemptActivationId === current.activationId)
+      if (task !== undefined && (task.status === 'claimed' || task.status === 'in_progress')) {
+        const now = Date.now()
+        task.parking = {
+          memberId: current.memberId,
+          memberGeneration: current.memberGeneration,
+          activationId: current.activationId,
+          activationEpoch: current.activationEpoch,
+          attemptId: current.attemptId ?? '',
+          noticeDueAt: now,
+          noticeKey: `${current.activationId}:parked`,
+        }
+        noticeFor(team, current, 'parked',
+          `Member ${current.memberId} activation ${current.activationId} has no observable end after restart; task ${task.id} is parked and requires an exact captain decision.`)
+      }
+      await writeTeam(stateRoot, team)
+    })
+    activationRoots.set(teamId, stateRoot)
+    activationWorkspaces.set(teamId, workspace)
+  }
+
+  const recoverActivations = async (workspace: string, stateRoot: string, teamId: string): Promise<void> => {
+    const team = await readTeam(stateRoot, teamId)
+    if (team === undefined) return
+    activationRoots.set(teamId, stateRoot)
+    activationWorkspaces.set(teamId, workspace)
+    for (const lease of [...(team.activations ?? [])]) {
+      if (lease.state === 'released' || lease.state === 'rejected') continue
+      if (lease.endObserved && lease.settlementApplied !== true) {
+        await settleActivation({
+          teamId, activationId: lease.activationId, hostRunId: lease.hostRunId,
+          stopReason: lease.stopReason, diagnostic: lease.diagnostic, source: 'restart',
+        }, stateRoot)
+        continue
+      }
+      if (lease.endObserved) continue
+      const live = ctx.agents.get(SessionId(lease.memberId))
+      if (live?.status === 'running') {
+        await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+          const fresh = await readTeam(stateRoot, teamId)
+          const current = fresh === undefined ? undefined : resolveLease(fresh, lease.activationId)
+          if (fresh === undefined || current === undefined || current.state === 'released') return
+          current.state = 'recovering'
+          await writeTeam(stateRoot, fresh)
+        })
+        continue
+      }
+      const events = await recoveryEvents(lease.memberId, lease.preDispatchSessionSeq)
+      const prompts = events.filter(event => event.type === 'user/message' && JSON.stringify(event.data ?? {}).includes(lease.dispatchToken))
+      const turns = events.filter(event => event.type === 'turn/end')
+      const starts = events.filter(event => event.type === 'turn/start')
+      if (prompts.length > 1 || turns.length > 1) {
+        await orphanActivation(stateRoot, workspace, teamId, lease)
+        continue
+      }
+      if (prompts.length === 1 && turns.length === 1) {
+        const reason = typeof turns[0]!.data === 'object' && turns[0]!.data !== null
+          ? (turns[0]!.data as Record<string, unknown>)['reason']
+          : undefined
+        await settleActivation({
+          teamId, activationId: lease.activationId, hostRunId: lease.hostRunId,
+          stopReason: stopReasonOf(reason), source: 'restart',
+        }, stateRoot)
+        continue
+      }
+      // A committed turn event is acceptance evidence even when the exact
+      // prompt token/start marker was lost. Roll back only a provably empty
+      // post-boundary trace.
+      const accepted = lease.startObserved || lease.hostMessageId !== undefined
+        || prompts.length === 1 || starts.length > 0 || turns.length > 0
+      if (accepted) {
+        await orphanActivation(stateRoot, workspace, teamId, lease)
+        continue
+      }
+      await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+        const fresh = await readTeam(stateRoot, teamId)
+        const current = fresh === undefined ? undefined : resolveLease(fresh, lease.activationId)
+        if (fresh === undefined || current === undefined || current.state === 'released') return
+        const task = current.taskId === undefined ? undefined : fresh.tasks.find(candidate => candidate.id === current.taskId
+          && candidate.attemptId === current.attemptId && candidate.attemptActivationId === current.activationId)
+        if (task !== undefined && (task.status === 'claimed' || task.status === 'in_progress')) {
+          const memberName = fresh.members.find(member => member.id === current.memberId)?.name
+          task.status = 'pending'
+          task.assignee = memberName
+          task.attempt = Math.max(0, (task.attempt ?? 1) - 1)
+          task.attemptId = undefined
+          clearTaskActivation(task)
+          task.updatedAt = Date.now()
+        }
+        current.state = 'rejected'
+        current.recoveryDecision = 'rolled_back'
+        current.permitHeld = false
+        current.releasedAt = Date.now()
+        await writeTeam(stateRoot, fresh)
+      })
+    }
+  }
+
+  ctx.on('subagent/start', info => {
+    void serializeLifecycle(String(info.id), () => bindStart(info)).catch(error => {
+      ctx.logger.warn(`agent-teams: activation start binding failed for ${String(info.id)}: ${String(error)}`)
+    })
+  })
+  ctx.on('subagent/end', info => {
+    void serializeLifecycle(String(info.id), () => settleEnd(info)).catch(error => {
+      ctx.logger.warn(`agent-teams: activation settlement failed for ${String(info.id)}: ${String(error)}`)
+    })
+  })
+
   const serializeMember = async <T>(key: string, operation: () => Promise<T>): Promise<T> => {
     const previous = memberQueues.get(key) ?? Promise.resolve()
     let release!: () => void
@@ -300,6 +882,8 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
   const runtime: TeamScheduler = {
     async kickTeam(workspace, teamId, suppliedCaptain) {
       const stateRoot = stateRootOf(workspace, config)
+      await recoverActivations(workspace, stateRoot, teamId)
+      await flushDueNotices(workspace, stateRoot, teamId)
       const team = await readTeam(stateRoot, teamId)
       if (team === undefined || team.halted === true || team.phase === 'staged') return
       const captain = liveCaptain(ctx, team.captainSessionId, suppliedCaptain)
@@ -314,6 +898,8 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       const stateRoot = stateRootOf(workspace, config)
       const queueKey = memberQueueKey(stateRoot, teamId, memberName)
       await serializeMember(queueKey, async () => {
+        await recoverActivations(workspace, stateRoot, teamId)
+        await flushDueNotices(workspace, stateRoot, teamId)
         let team = await readTeam(stateRoot, teamId)
         if (team === undefined || team.halted === true || team.phase === 'staged') return
         const captain = liveCaptain(ctx, team.captainSessionId, suppliedCaptain)
@@ -323,26 +909,79 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
 
         // A mailbox-only fallback is real pending work. Deliver it before a
         // fresh task and acknowledge only after Harness accepts the follow-up.
-        const unread = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+        const mailboxDelivery = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
           const fresh = await readTeam(stateRoot, team!.id)
-          if (fresh === undefined) return []
-          const pending = await readPendingMailbox(stateRoot, fresh.id, member!.name)
-          await discardMailboxMessages(stateRoot, fresh.id, member!.name, pending.filter(message => !isCurrentMail(fresh, message)).map(message => message.id))
+          if (fresh === undefined) return { messages: [], memberId: member!.id, newChild: false }
+          const currentMember = fresh.members.find(candidate => candidate.name === member!.name && candidate.status !== 'removed')
+          if (currentMember === undefined) return { messages: [], memberId: member!.id, newChild: false }
+          const pending = await readPendingMailbox(stateRoot, fresh.id, currentMember.name)
+          await discardMailboxMessages(stateRoot, fresh.id, currentMember.name, pending.filter(message => !isCurrentMail(fresh, message)).map(message => message.id))
           const current = pending.filter(message => isCurrentMail(fresh, message))
-          await claimMailboxDelivery(stateRoot, fresh.id, member!.name, current.map(message => message.id))
-          return current
+          await claimMailboxDelivery(stateRoot, fresh.id, currentMember.name, current.map(message => message.id))
+          if (current.length === 0) return { messages: current, memberId: currentMember.id, newChild: false }
+          const live = ctx.agents.get(SessionId(currentMember.id))
+          const decision = mailboxActivationDecision(fresh.activations ?? [], currentMember.id, live?.status === 'running')
+          const activeLease = fresh.activations?.find(lease => lease.memberId === currentMember.id
+            && (lease.state === 'pending' || lease.state === 'started' || lease.state === 'recovering'))
+          const reuse = decision === 'reuse'
+          if (decision === 'wait') {
+            // A second mailbox wake cannot allocate another activation or
+            // overwrite pendingByChild. Leave mail durable until the exact
+            // end/drain/recovery path closes this lease.
+            await releaseMailboxDelivery(stateRoot, fresh.id, currentMember.name, current.map(message => message.id))
+            return { messages: [], memberId: currentMember.id, newChild: false, blocked: true }
+          }
+          const activation = reuse ? undefined : await allocateActivation(stateRoot, workspace, fresh, currentMember, 'mailbox')
+          await writeTeam(stateRoot, fresh)
+          return {
+            messages: current,
+            memberId: currentMember.id,
+            activation: activation?.lease ?? activeLease,
+            newChild: activation === undefined ? false : activation.newChild,
+          }
         })
+        const unread = mailboxDelivery.messages
         if (unread.length > 0) {
-          const prompt = mailboxPrompt(team.id, member.name, unread)
+          const activationText = mailboxDelivery.activation === undefined
+            ? ''
+            : `\n\nActivation id: ${mailboxDelivery.activation.activationId}\nDispatch token: ${mailboxDelivery.activation.dispatchToken}`
+          const prompt = `${mailboxPrompt(team.id, member.name, unread)}${activationText}`
           const signal = new AbortController().signal
-          const accepted = config.dispatch === undefined
-            ? await deliverToMember(ctx, captain, member.id, prompt, signal, 'steer')
-            : await config.dispatch(captain, team.id, member.name, prompt, signal, 'steer')
+          const dispatched = config.dispatch === undefined
+            ? await deliverToMember(ctx, captain, mailboxDelivery.memberId, prompt, signal, 'steer')
+            : await config.dispatch(captain, team.id, member.name, prompt, signal, 'steer', {
+              ...mailboxDelivery.activation === undefined ? {} : {
+                activationId: mailboxDelivery.activation.activationId,
+                dispatchToken: mailboxDelivery.activation.dispatchToken,
+              },
+              newChild: mailboxDelivery.newChild,
+              reservedChildId: mailboxDelivery.memberId,
+            })
+          const accepted = typeof dispatched === 'boolean' ? dispatched : dispatched.accepted
+          if (typeof dispatched !== 'boolean' && dispatched.receipt !== undefined && mailboxDelivery.activation !== undefined) {
+            recordReceipt({
+              stateRoot,
+              teamId: team.id,
+              activationId: mailboxDelivery.activation.activationId,
+              receipt: dispatched.receipt,
+            })
+          }
           if (accepted) {
             await withTeamLock(teamLockKey(stateRoot, team.id), () => (
               markMailboxDelivered(stateRoot, team!.id, member!.name, unread.map(message => message.id))
             ))
           } else {
+            if (mailboxDelivery.activation !== undefined) {
+              await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+                const fresh = await readTeam(stateRoot, team!.id)
+                const lease = fresh === undefined ? undefined : resolveLease(fresh, mailboxDelivery.activation!.activationId)
+                if (fresh === undefined || lease === undefined) return
+                lease.state = 'rejected'
+                lease.permitHeld = false
+                lease.releasedAt = Date.now()
+                await writeTeam(stateRoot, fresh)
+              })
+            }
             await withTeamLock(teamLockKey(stateRoot, team.id), () => (
               releaseMailboxDelivery(stateRoot, team!.id, member!.name, unread.map(message => message.id))
             ))
@@ -356,6 +995,27 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           const currentMember = fresh.members.find(candidate => candidate.name === memberName && candidate.status !== 'removed')
           if (currentMember === undefined || !isMemberAvailable(ctx, currentMember)) return undefined
           const owned = ownedOpenTask(fresh.tasks, currentMember.name)
+          const durableParking = owned?.parking
+          const parkingBlocks = durableParking !== undefined
+            && owned?.attemptId !== undefined
+            && durableParking.attemptId === owned.attemptId
+            && durableParking.memberId === currentMember.id
+            && durableParking.memberGeneration === (currentMember.generation ?? 1)
+          if (parkingBlocks) {
+            parkedAttempts.set(currentMember.id, owned!.attemptId!)
+            if (currentMember.status !== 'idle') {
+              currentMember.status = 'idle'
+              await writeTeam(stateRoot, fresh)
+            }
+            return undefined
+          }
+          const exactActiveLease = usesManagedActivations(ctx.subagents) && owned?.attemptActivationId !== undefined
+            ? resolveLease(fresh, owned.attemptActivationId)
+            : undefined
+          const exactActive = exactActiveLease !== undefined
+            && exactActiveLease.memberId === currentMember.id
+            && exactActiveLease.memberGeneration === (currentMember.generation ?? 1)
+            && (exactActiveLease.state === 'pending' || exactActiveLease.state === 'started' || exactActiveLease.state === 'recovering')
           // An idle edge observed by this scheduler parks the exact open
           // capability. Harness may dispose its AgentHandle after settlement,
           // so registry absence is not evidence that the owner was lost. Keep
@@ -364,7 +1024,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           const parkedAttemptId = parkedAttempts.get(currentMember.id)
           const recoverOwned = owned !== undefined
             && (owned.attemptId === undefined || owned.attemptId !== parkedAttemptId)
-          const task = recoverOwned ? owned : owned === undefined
+          const task = exactActive ? undefined : recoverOwned ? owned : owned === undefined
             ? nextReadyTask(fresh.tasks, currentMember.name)
             : undefined
           if (task === undefined) {
@@ -383,6 +1043,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             changedPaths: task.changedPaths, acceptanceResults: task.acceptanceResults, commandsRun: task.commandsRun,
           } : undefined
           const attemptId = beginTaskAttempt(task, currentMember.name)
+          const activation = await allocateActivation(stateRoot, workspace, fresh, currentMember, 'task', { task, attemptId })
           // A verdict must be able to say which revision was on disk when it
           // started, so a review that runs while someone else edits the tree
           // cannot later claim to have judged stable bytes (issue #161).
@@ -403,9 +1064,13 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           return {
             taskId: task.id,
             memberName: currentMember.name,
-            memberId: currentMember.id,
+            memberId: activation.reservedChildId,
             attempt: task.attempt ?? 1,
             attemptId,
+            activationId: activation.lease.activationId,
+            dispatchToken: activation.lease.dispatchToken,
+            newChild: activation.newChild,
+            preDispatchSessionSeq: activation.lease.preDispatchSessionSeq,
             previousAssignee,
             recoveredOwned: recoverOwned,
             ...previousResult === undefined ? {} : { previousResult },
@@ -447,9 +1112,24 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           )
         const prompt = assignmentPrompt(ticket, config.stateDir, team.id, workOrderStale)
         const signal = new AbortController().signal
-        const accepted = config.dispatch === undefined
+        const dispatched = config.dispatch === undefined
           ? await deliverToMember(ctx, captain, ticket.memberId, prompt, signal)
-          : await config.dispatch(captain, team.id, ticket.memberName, prompt, signal, 'queue', ticket.attemptId)
+          : await config.dispatch(captain, team.id, ticket.memberName, prompt, signal, 'queue', {
+            attemptId: ticket.attemptId,
+            activationId: ticket.activationId,
+            dispatchToken: ticket.dispatchToken,
+            newChild: ticket.newChild,
+            reservedChildId: ticket.memberId,
+          })
+        const accepted = typeof dispatched === 'boolean' ? dispatched : dispatched.accepted
+        if (typeof dispatched !== 'boolean' && dispatched.receipt !== undefined) {
+          recordReceipt({
+            stateRoot,
+            teamId: team.id,
+            activationId: ticket.activationId,
+            receipt: dispatched.receipt,
+          })
+        }
         if (accepted) return
 
         // Roll back only our exact failed dispatch. A concurrent captain
@@ -473,7 +1153,20 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             task.status = 'pending'
             task.assignee = ticket.previousAssignee
             task.attemptId = undefined
+            clearTaskActivation(task)
             parkedAttempts.delete(ticket.memberId)
+          }
+          const lease = resolveLease(fresh, ticket.activationId)
+          if (lease !== undefined) {
+            lease.state = 'rejected'
+            lease.permitHeld = false
+            lease.releasedAt = Date.now()
+          }
+          if (lease !== undefined && ticket.previousAttemptId !== undefined) {
+            task.attemptMemberId = lease.memberId
+            task.attemptGeneration = lease.memberGeneration
+            task.attemptActivationId = lease.activationId
+            task.attemptActivationEpoch = lease.activationEpoch
           }
           task.handoffId = undefined
           task.reassigning = false
@@ -523,6 +1216,29 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     const member = located.members.find(candidate => candidate.id === agent.id && candidate.status !== 'removed')
     if (member === undefined) {
       parkedAttempts.delete(agent.id)
+      return
+    }
+    if (usesManagedActivations(ctx.subagents)) {
+      const binding = boundAgentRun(agent)
+      if (binding === undefined || binding.teamId !== located.id) return
+      await withTeamLock(teamLockKey(stateRoot, located.id), async () => {
+        const fresh = await readTeam(stateRoot, located.id)
+        const current = fresh?.members.find(candidate => candidate.id === agent.id && candidate.status !== 'removed')
+        const lease = fresh === undefined ? undefined : resolveLease(fresh, binding.activationId)
+        if (fresh === undefined || current === undefined || lease === undefined) return
+        const exact = lease.hostRunId === binding.hostRunId
+          && lease.activationId === current.currentActivationId
+          && lease.memberGeneration === (current.generation ?? 1)
+          && lease.state !== 'released'
+        if (!exact) return
+        // Status is display-only. Exact settlement and permit release belong to
+        // subagent/end, never to an idle/status edge.
+        const next = status === 'running' ? 'working' : 'idle'
+        if (current.status !== next) {
+          current.status = next
+          await writeTeam(stateRoot, fresh)
+        }
+      })
       return
     }
     await withTeamLock(teamLockKey(stateRoot, located.id), async () => {

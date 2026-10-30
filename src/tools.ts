@@ -85,8 +85,8 @@ import {
   validateMemberLlmSelections,
   type MemberRuntimeConfig,
 } from './members.ts'
-import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamState, type TeamTask } from './types.ts'
-import { collectCompletedDependencyOutputs, formatDependencyOutputs, installTeamScheduler } from './scheduler.ts'
+import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamMessage, type TeamState, type TeamTask } from './types.ts'
+import { collectCompletedDependencyOutputs, formatDependencyOutputs, installTeamScheduler, type DispatchRequest, type DispatchResult } from './scheduler.ts'
 import { installMailboxAdmission, isCurrentMail, mailboxContent, mailboxPrompt, readCurrentMailbox } from './mailbox.ts'
 import { resolveTeamProfile } from './profiles.ts'
 import { forkLineageNote, leadIdentityOf, leadIdentityOfAsync, nearestLiveLead, sessionLeadsTeam, sessionLeadsTeamAsync } from './lineage.ts'
@@ -309,6 +309,33 @@ function requireStagedTeam(team: TeamState): void {
 function trimmedOptional(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim()
   return trimmed === undefined || trimmed === '' ? undefined : trimmed
+}
+
+/** Public schema guidance shared by every tool-policy selection surface. */
+export const TOOL_POLICY_DESCRIPTION = 'Optional owner-declared tool-policy id. Omit when no policy is needed. Never invent an id; an unknown non-empty id is rejected atomically.'
+
+/**
+ * Normalize a tool-policy selection from runtime input. Tool gateways may
+ * materialize omitted optional strings as empty or whitespace-only values;
+ * those mean "no policy". A non-string runtime value is also treated as
+ * omitted because the public schema only accepts strings.
+ */
+export function optionalToolPolicyId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
+/** Drop undefined values and duplicate strings while preserving first-seen order. */
+export function orderedUniqueStrings(values: readonly (string | undefined)[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    if (value === undefined || seen.has(value)) continue
+    seen.add(value)
+    result.push(value)
+  }
+  return result
 }
 
 /** Whether one materialized plan member carries no roster content at all. */
@@ -668,7 +695,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   const scheduler = installTeamScheduler(ctx, { stateDir: config.stateDir, executionPrompt: config.executionPrompt, dispatch: dispatchMember })
 
 
-  async function dispatchMember(captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', attemptId?: string): Promise<boolean> {
+  async function dispatchMember(captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', request?: DispatchRequest): Promise<DispatchResult> {
+    const attemptId = request?.attemptId
     const root = stateRootOf(workspaceOf(captain), config)
     // Record why a member never started. The scheduler treats a failed dispatch as
     // "not now" and retries, so without this the captain only ever sees an
@@ -690,20 +718,22 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     try {
       return await withTeamLock(teamLockKey(root, teamId), async () => {
         const team = await readTeam(root, teamId)
-        if (team === undefined || !(await sessionLeadsTeamAsync(ctx, team, captain.id)) || team.halted === true || team.phase === 'staged') return false
+        if (team === undefined || !(await sessionLeadsTeamAsync(ctx, team, captain.id)) || team.halted === true || team.phase === 'staged') return { accepted: false }
         const member = team.members.find(item => item.name === memberName && item.status !== 'removed')
-        if (member === undefined || member.stopping === true || team.tasks.some(task => task.reassigning === true && task.assignee === memberName)) return false
-        if (attemptId !== undefined && !team.tasks.some(task => task.attemptId === attemptId && task.assignee === memberName && (task.status === 'claimed' || task.status === 'in_progress'))) return false
-        if (member.id !== '') return deliverToMember(ctx, captain, member.id, text, signal, mode)
+        if (member === undefined || member.stopping === true || team.tasks.some(task => task.reassigning === true && task.assignee === memberName)) return { accepted: false }
+        if (attemptId !== undefined && !team.tasks.some(task => task.attemptId === attemptId && task.assignee === memberName && (task.status === 'claimed' || task.status === 'in_progress'))) return { accepted: false }
+        if (request?.newChild !== true && member.id !== '') {
+          return { accepted: await deliverToMember(ctx, captain, member.id, text, signal, mode) }
+        }
         const selection = await resolveMemberLlmSelection(ctx, captain, {
           provider: member.provider, model: member.model, reasoningEffort: member.reasoningEffort, fallback: member.fallback,
         }, signal)
-        await spawnMember(ctx, memberRuntime(config), memberSelections, selection, captain, team, member, config.stateDir, signal, text, member.toolFilter, memberRelaxableDeny(config, member))
+        const receipt = await spawnMember(ctx, memberRuntime(config), memberSelections, selection, captain, team, member, config.stateDir, signal, text, member.toolFilter, memberRelaxableDeny(config, member))
         orphan = { ...member }
         delete member.spawnError
         await writeTeam(root, team)
         orphan = undefined
-        return true
+        return { accepted: true, receipt }
       })
     } catch (error: unknown) {
       if (orphan !== undefined) {
@@ -715,7 +745,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       if (error instanceof Error && typeof error.stack === 'string' && error.stack !== '') reason = error.stack
       ctx.logger.warn(`agent-teams: member dispatch failed for ${memberName}: ${String(error)}`)
       await recordSpawnError(reason)
-      return false
+      return { accepted: false }
     }
   }
 
@@ -750,7 +780,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           // only touched when the mutation names one, so a plan revision cannot
           // silently widen a member's tool set.
           if (mutation.toolPolicy !== undefined) {
-            const selected = memberToolSelection(config, captain, trimmedOptional(mutation.toolPolicy))
+            const selected = memberToolSelection(config, captain, optionalToolPolicyId(mutation.toolPolicy))
             member.toolPolicy = selected.toolPolicy
             member.toolFilter = selected.toolFilter
           }
@@ -952,7 +982,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           members: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
             name: { type: 'string', required: true }, role: { type: 'string' },
             provider: { type: 'string' }, model: { type: 'string' }, reasoning_effort: { type: 'string' },
-            tool_policy: { type: 'string', description: 'Optional owner-declared tool-policy id for this member.' },
+            tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
           } } },
           tasks: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
             id: { type: 'string', required: true, description: 'Local reference used by dependencies in this plan; the result maps it to a durable task id.' },
@@ -1178,7 +1208,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             model: { type: 'string', description: 'Optional member model; defaults to the current staged route.' },
             reasoning_effort: { type: 'string', description: 'Optional member reasoning effort.' },
             execution_prompt: { type: 'string', description: 'Optional member-specific execution prompt.' },
-            tool_policy: { type: 'string', description: 'Optional owner-declared tool-policy id for this member; an empty string clears it back to the unchanged default tool set.' },
+            tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
           },
         },
       },
@@ -1316,7 +1346,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       model: { type: 'string', description: 'Optional model override (used verbatim, including any "/" in the id). Omit for the configured memberModel default (paired with memberLlmProvider when set) or the captain\'s current model.' },
       reasoning_effort: { type: 'string', description: 'Optional reasoning effort override: one of the target model\'s supported effort ids, or "default" to force its default. When omitted, the captain\'s effort is inherited only for the same provider/model; a changed route uses the target default.' },
       executionPrompt: { type: 'string', description: 'Optional member-specific execution prompt. It remains editable while staged.' },
-      tool_policy: { type: 'string', description: 'Optional id of a tool policy declared by the deployment owner (config toolPolicies). It restricts which global tools this member sees and may invoke: a policy allow-list also keeps the four coordination tools, and captain-only tools can never be reopened. Omit for the unchanged default tool set.' },
+      tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
     },
     output: {
       schema: {
@@ -1368,7 +1398,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           reasoningEffort: trimmedOptional(args.reasoning_effort),
           fallback: config.fallback,
         }, exec.signal)
-        const toolSelection = memberToolSelection(config, captain, trimmedOptional(args.tool_policy))
+        const toolSelection = memberToolSelection(config, captain, optionalToolPolicyId(args.tool_policy))
         const member: TeamMember = {
           id: '',
           name: memberName,
@@ -2016,6 +2046,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           const transition = transitionError(task.status, args.status)
           if (transition !== undefined) throw new Error(transition)
           task.status = args.status
+          if (args.status === 'completed' || args.status === 'failed' || args.status === 'cancelled') task.parking = undefined
         }
         if (args.output !== undefined) task.output = args.output
         if (args.verdict !== undefined) task.verdict = args.verdict as ReviewVerdict
@@ -2178,6 +2209,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     parameters: {
       source_task_id: { type: 'string', description: 'Sender task, NOT the recipient task. Members include it with source_attempt_id. Captains sending guidance normally omit both source fields.' },
       source_attempt_id: { type: 'string', description: 'Sender execution capability paired with source_task_id. Stale reports are rejected. Omit for ordinary captain guidance.' },
+      report_kind: { type: 'string', enum: ['progress', 'final'], description: 'Defaults to progress. final requires exact source_task_id/source_attempt_id and is the only kind that may suppress the matching native settlement.' },
       to: { type: 'string', required: true, description: 'Recipient: "captain" or a member name.' },
       content: { type: 'string', required: true, description: 'The message text.' },
       from: { type: 'string', description: 'Sender (defaults to the caller: the captain, or the calling member).' },
@@ -2214,18 +2246,44 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         }
         const sourceTaskId = args.source_task_id?.trim() || undefined
         const sourceAttemptId = args.source_attempt_id?.trim() || undefined
+        const reportKind: NonNullable<TeamMessage['reportKind']> = args.report_kind === 'final' ? 'final' : 'progress'
         if ((sourceTaskId === undefined) !== (sourceAttemptId === undefined)) throw new Error('send_message requires source_task_id and source_attempt_id together')
+        if (reportKind === 'final' && sourceTaskId === undefined) {
+          throw new Error('send_message report_kind=final requires exact source_task_id and source_attempt_id')
+        }
+        if (reportKind === 'final' && to !== CAPTAIN_KEY) {
+          throw new Error('send_message report_kind=final is a captain settlement report')
+        }
         const source = sourceTaskId === undefined
           ? identity.kind === 'member' ? memberOpenTask(fresh, identity.name) ?? fresh.tasks.filter(item => item.assignee === identity.name && item.attemptId !== undefined).sort((a, b) => b.updatedAt - a.updatedAt)[0] : undefined
           : requireTask(fresh, sourceTaskId)
         if (sourceTaskId !== undefined && (source?.assignee !== identity.name || source.attemptId !== sourceAttemptId)) {
           throw new Error('stale or foreign source attempt; stop sending results from the revoked task')
         }
-        const sourceFields = source?.attemptId === undefined ? {} : { sourceTaskId: source.id, sourceAttemptId: source.attemptId, sourceTaskStatus: source.status }
+        const sourceMember = identity.kind === 'member' ? requireMember(fresh, identity.name) : undefined
+        const sourceActivationId = source?.attemptActivationId ?? sourceMember?.currentActivationId
+        const sourceLease = sourceActivationId === undefined ? undefined : fresh.activations?.find(lease => lease.activationId === sourceActivationId)
+        const sourceIdentity: Partial<TeamMessage> = sourceMember === undefined ? {} : {
+          sourceMemberId: sourceMember.id,
+          sourceMemberGeneration: source?.attemptGeneration ?? sourceLease?.memberGeneration ?? sourceMember.generation ?? 1,
+          ...sourceActivationId === undefined ? {} : { sourceActivationId },
+          ...(source?.attemptActivationEpoch ?? sourceLease?.activationEpoch) === undefined ? {} : {
+            sourceActivationEpoch: source?.attemptActivationEpoch ?? sourceLease!.activationEpoch,
+          },
+        }
+        const sourceFields: Partial<TeamMessage> = {
+          reportKind,
+          ...source?.attemptId === undefined ? {} : { sourceTaskId: source.id, sourceAttemptId: source.attemptId, sourceTaskStatus: source.status },
+          ...sourceIdentity,
+        }
         const owned = to === CAPTAIN_KEY ? undefined : memberOpenTask(fresh, requireMember(fresh, to).name)
         const duplicate = (await readMailbox(stateRoot, fresh.id, to)).find(message => message.from === from
           && message.content === args.content && message.taskId === owned?.id && message.attemptId === owned?.attemptId
           && message.sourceTaskId === sourceFields.sourceTaskId && message.sourceAttemptId === sourceFields.sourceAttemptId && message.sourceTaskStatus === sourceFields.sourceTaskStatus
+          && message.reportKind === reportKind && message.sourceMemberId === sourceFields.sourceMemberId
+          && message.sourceMemberGeneration === sourceFields.sourceMemberGeneration
+          && message.sourceActivationId === sourceFields.sourceActivationId
+          && message.sourceActivationEpoch === sourceFields.sourceActivationEpoch
           && isCurrentMail(fresh, message) && (message.attemptId !== undefined || message.sourceAttemptId !== undefined || message.readAt === undefined))
         if (duplicate !== undefined) return { kind: 'duplicate' as const, message: duplicate, from }
         if (to === CAPTAIN_KEY) {
@@ -2284,19 +2342,15 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       }
       let delivered: 'wake' | 'mailbox' = 'mailbox'
       if (captain !== undefined) {
-        const text = mailboxPrompt(prepared.fresh.id, prepared.recipient.name, [prepared.message])
-        const accepted = await dispatchMember(captain, prepared.fresh.id, prepared.recipient.name, text, exec.signal, 'steer', prepared.message.attemptId)
-        delivered = accepted ? 'wake' : 'mailbox'
-        if (accepted) {
-          await withTeamLock(teamLockKey(stateRoot, prepared.fresh.id), () => (
-            markMailboxDelivered(stateRoot, prepared.fresh.id, prepared.recipient.name, [prepared.message.id])
-          ))
-        }
-      }
-      if (delivered === 'mailbox') {
+        // The scheduler owns the exact delivery lease and allocates a new
+        // durable activation only when this is an idle/cold resume.
         await withTeamLock(teamLockKey(stateRoot, prepared.fresh.id), () => (
           releaseMailboxDelivery(stateRoot, prepared.fresh.id, prepared.recipient.name, [prepared.message.id])
         ))
+        await scheduler.kickMember(workspace, prepared.fresh.id, prepared.recipient.name, captain)
+        const current = await readMailbox(stateRoot, prepared.fresh.id, prepared.recipient.name)
+        const accepted = current.find(message => message.id === prepared.message.id)
+        delivered = accepted?.deliveredAt !== undefined ? 'wake' : 'mailbox'
       }
       return {
         message_id: prepared.message.id,
@@ -2599,7 +2653,7 @@ async function initializeProfileTeam(input: {
       provider: trimmedOptional(member.provider),
       model: trimmedOptional(member.model),
       reasoning_effort: trimmedOptional(member.reasoning_effort),
-      tool_policy: trimmedOptional(member.tool_policy),
+      tool_policy: optionalToolPolicyId(member.tool_policy),
     })),
   }
   const profile = resolveTeamProfile(inlinePlan === undefined ? input.config.profiles : { [input.profileName]: inlinePlan }, input.profileName, input.config.maxMembers)
@@ -2871,14 +2925,14 @@ function renderStatus(value: JsonValue): string {
     delivery?: { ok: boolean; blockers: string[]; warnings?: string[] }
     warnings?: string[]
   }
-  const flags = [
+  const flags = orderedUniqueStrings([
     team.halted ? 'halted' : undefined,
     team.escalated ? 'escalated' : undefined,
     team.deliverable ? 'deliverable' : undefined,
     team.loop_state && team.loop_state !== 'running' && team.loop_state !== 'halted' && team.loop_state !== 'escalated'
       ? team.loop_state
       : undefined,
-  ].filter((item): item is string => item !== undefined)
+  ])
   const lines: string[] = [
     `Team "${team.team_name}"${team.description ? ` — ${team.description}` : ''}${flags.length > 0 ? ` [${flags.join(', ')}]` : ''}`,
     ...team.profile === undefined ? [] : [`Profile: ${team.profile.name}${team.profile.task_planning ? ` [${team.profile.task_planning}]` : ''}${team.profile.protocol ? ` — ${team.profile.protocol}` : ''}`],

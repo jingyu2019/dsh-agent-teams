@@ -13,15 +13,30 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import type { TeamTask } from './types.ts';
+import { type MemberStartResult } from './harness-compat.ts';
+import type { ActivationLease, TeamTask } from './types.ts';
 /** Per-dependency output cap in the assignment prompt. */
 export declare const DEPENDENCY_OUTPUT_MAX_CHARS = 2000;
 /** Combined dependency-output budget in the assignment prompt. */
 export declare const DEPENDENCY_OUTPUTS_TOTAL_MAX_CHARS = 12000;
+export interface DispatchRequest {
+    readonly attemptId?: string;
+    readonly activationId?: string;
+    readonly dispatchToken?: string;
+    readonly newChild: boolean;
+    readonly reservedChildId: string;
+}
+export interface DispatchResult {
+    readonly accepted: boolean;
+    readonly receipt?: MemberStartResult;
+}
+export type MailboxActivationDecision = 'allocate' | 'reuse' | 'wait';
+/** Decide whether a mailbox wake may start a new run for this child. */
+export declare function mailboxActivationDecision(leases: readonly ActivationLease[], memberId: string, liveRunning: boolean): MailboxActivationDecision;
 export interface SchedulerConfig {
     readonly stateDir: string;
     readonly executionPrompt?: string;
-    readonly dispatch?: (captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', attemptId?: string) => Promise<boolean>;
+    readonly dispatch?: (captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', request?: DispatchRequest) => Promise<boolean | DispatchResult>;
 }
 export interface TeamScheduler {
     /** Try to give every genuinely idle/ready member one unit of ready work. */
@@ -42,6 +57,10 @@ export interface DispatchTicket {
     readonly memberId: string;
     readonly attempt: number;
     readonly attemptId: string;
+    readonly activationId: string;
+    readonly dispatchToken: string;
+    readonly newChild: boolean;
+    readonly preDispatchSessionSeq: number;
     readonly previousAssignee?: string;
     /** True when this ticket rotates an unobserved durable open attempt. */
     readonly recoveredOwned: boolean;

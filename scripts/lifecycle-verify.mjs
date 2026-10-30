@@ -15,6 +15,7 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 import { haltTeamWork, registerAgentTeamsTools } from '../lib/tools.js'
 import { buildActivationDirective, invokedAgentTeamsGoal, invokedAgentTeamsInvocation, installAgentTeamsGestureBoundary, profileCommandName, registerAgentTeamsCommand } from '../lib/command.js'
 import { readArchivedTeam, readMailbox, readTeam, readUnreadMailbox } from '../lib/state.js'
+import { FINAL_REPORT_GRACE_MS, isCurrentMail, isFinalReportForSettlement } from '../lib/mailbox.js'
 import { assembleTeamSnapshot, collectArchivedTeamsActivity } from '../lib/snapshot.js'
 
 const deliveryHarness = process.argv.includes('--delivery-harness')
@@ -1545,6 +1546,24 @@ try {
   check('failed member drain never reports a successful archive', archiveRejected && await readTeam(stateRoot, 'batch-plan') !== undefined && await readArchivedTeam(stateRoot, 'batch-plan') === undefined)
   await call('agent_teams_delete', {})
   check('archive retries drain previously removed roster rows', await readTeam(stateRoot, 'batch-plan') === undefined && !liveAgents.has(batchWorker.id))
+
+  const exactLease = { activationId: 'a1', memberId: 'child-1', memberGeneration: 2 }
+  const exactFinal = { id: 'm1', from: 'worker', to: 'captain', content: 'done', ts: 1, reportKind: 'final',
+    sourceTaskId: 't1', sourceAttemptId: 'attempt-1', sourceTaskStatus: 'in_progress', sourceMemberId: 'child-1',
+    sourceMemberGeneration: 2, sourceActivationId: 'a1', sourceActivationEpoch: 3, deliveredAt: 1 }
+  const exactTeam = { id: 'w1', name: 'W1', captainSessionId: 'captain', createdAt: 1, taskSeq: 1, members: [],
+    tasks: [{ id: 't1', subject: 'Work', status: 'completed', assignee: 'worker', dependencies: [], attempt: 1,
+      attemptId: 'attempt-1', attemptActivationId: 'a1', attemptGeneration: 2, createdAt: 1, updatedAt: 1 }] }
+  check('W1 final grace default is 500ms', FINAL_REPORT_GRACE_MS === 500)
+  check('W1 exact final report binds settlement', isFinalReportForSettlement(exactTeam, exactFinal, 'child-1', exactLease))
+  check('W1 progress never suppresses settlement', !isFinalReportForSettlement(exactTeam, { ...exactFinal, reportKind: 'progress' }, 'child-1', exactLease))
+  check('W1 old attempt cannot suppress settlement', !isFinalReportForSettlement(exactTeam, { ...exactFinal, sourceAttemptId: 'old' }, 'child-1', exactLease))
+  check('W1 old activation cannot suppress settlement', !isFinalReportForSettlement(exactTeam, { ...exactFinal, sourceActivationId: 'old' }, 'child-1', exactLease))
+  check('W1 old generation cannot suppress settlement', !isFinalReportForSettlement(exactTeam, { ...exactFinal, sourceMemberGeneration: 1 }, 'child-1', exactLease))
+  check('W1 different task cannot suppress settlement', !isFinalReportForSettlement(exactTeam, { ...exactFinal, sourceTaskId: 't2' }, 'child-1', exactLease))
+  check('W1 final-before-update remains readable', isCurrentMail(exactTeam, exactFinal))
+  check('W1 progress does not inherit final readability', !isCurrentMail(exactTeam, { ...exactFinal, reportKind: 'progress' }))
+  check('W1 final source status cannot be fabricated as foreign', isCurrentMail(exactTeam, { ...exactFinal, sourceActivationEpoch: 99 }))
 } finally {
   await rm(workspace, { recursive: true, force: true })
 }

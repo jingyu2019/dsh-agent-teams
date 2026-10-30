@@ -22,9 +22,10 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store';
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client';
 import { type ActivityTeam } from './activity-monitor.ts';
+import { type StatusRenderer } from './status-presentation.ts';
 import type { AgentTeamsCardData } from './agent-teams-card-definition.ts';
 import type { AgentTeamsTranslate } from './locales.ts';
-export declare function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, onNavigate, t, historic, workspace }: {
+export declare function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, onNavigate, t, historic, workspace, motionPaused, statusRenderer }: {
     readonly team: ActivityTeam;
     readonly modelDirectory?: ModelDirectory;
     readonly onContinuePlanning?: () => void;
@@ -34,6 +35,10 @@ export declare function TeamSection({ team, modelDirectory, onContinuePlanning, 
     readonly t: AgentTeamsTranslate;
     readonly historic?: boolean;
     readonly workspace?: boolean;
+    /** Parent surface is hidden (for example, a collapsed floater). */
+    readonly motionPaused?: boolean;
+    /** Optional visual replacement; lifecycle mapping is unchanged. */
+    readonly statusRenderer?: StatusRenderer;
 }): import("react").JSX.Element;
 /** Legacy conversation cards may outlive their host archive. Project their
  * durable roster through the same rebuilt panel instead of a second UI. */

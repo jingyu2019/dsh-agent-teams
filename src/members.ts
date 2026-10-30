@@ -19,7 +19,7 @@ import { foldSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
 import { createUserMessage, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { join } from 'node:path'
-import { agentTeamsSource, observedSessionFormatVersion, type SessionFormatBearer, guardSubagentCreation, startMember, usesManagedActivations, guardSubagentDelivery, installContinuableMemberSetup, memberToolFilter, queueMemberPrompt, restrictableToolNames, startMemberWithLenientFilter, steerMemberPrompt, sessionOwnEvents } from './harness-compat.ts'
+import { agentTeamsSource, boundAgentRun, recordBoundAgentDiagnostic, observedSessionFormatVersion, type MemberStartResult, type SessionFormatBearer, guardSubagentCreation, startMember, usesManagedActivations, guardSubagentDelivery, installContinuableMemberSetup, memberToolFilter, queueMemberPrompt, restrictableToolNames, startMemberWithLenientFilter, steerMemberPrompt, sessionOwnEvents } from './harness-compat.ts'
 import { markMailboxDelivered, appendMailbox, CAPTAIN_KEY, createMessage, readRetiredMemberIds, readTeamSync, readTeam, releaseMailboxDelivery, withTeamLock, writeTeam } from './state.ts'
 import { mailboxPrompt } from './mailbox.ts'
 import { nearestLiveLead } from './lineage.ts'
@@ -623,6 +623,7 @@ export function installMemberSelectionRuntime(
   stateDir: string,
   onFailureSettled?: (workspace: string, teamId: string, memberName: string) => Promise<void>,
 ): MemberSelectionRuntime {
+  const managedHost = usesManagedActivations(ctx.subagents)
   const pending = new Map<string, MemberLlmSelection>()
   const pendingSetup = new Map<string, NonNullable<TeamMember['runtimeSetup']>>()
   installContinuableMemberSetup(ctx, (childCtx, child) => {
@@ -702,6 +703,17 @@ export function installMemberSelectionRuntime(
     const disposeFailure = childCtx.on('agent/error', async (payload) => {
       if (payload.agent.id !== child.id || payload.turn === lastFailedTurn) return
       lastFailedTurn = payload.turn
+      if (recordBoundAgentDiagnostic(payload.agent, payload.error instanceof Error ? payload.error.message : String(payload.error))) {
+        // stopReason remains the only settlement authority. A request/turn
+        // error is diagnostic evidence for the exact managed run.
+        return
+      }
+      if (managedHost) {
+        // A managed activation without its exact Agent binding is stale. It
+        // must not fall through to the member-name legacy failure path.
+        ctx.logger.warn(`agent-teams: ignored unbound managed agent/error for ${child.id}`)
+        return
+      }
       try {
         // Capture the attempt synchronously at the event, before any lock wait
         // can let a captain reassign it or replace the member/team generation.
@@ -745,6 +757,16 @@ export function installMemberSelectionRuntime(
     let switched = false
     const disposeFallback = childCtx.on('agent/request-error', async (payload, next) => {
       if (payload.agent.id !== child.id || payload.signal.aborted) return next()
+      if (recordBoundAgentDiagnostic(payload.agent, `${payload.failure.code}: ${payload.failure.message}`)) {
+        // A route-owned AgentTeams activation records the failure and returns
+        // undefined, deliberately suppressing the host retry policy. The exact
+        // subagent/end then moves the durable route/task state.
+        return undefined
+      }
+      if (managedHost) {
+        ctx.logger.warn(`agent-teams: ignored unbound managed agent/request-error for ${child.id}`)
+        return undefined
+      }
       const transition = selectFallbackRoute(selectionRef.current ?? { provider: selection.provider, model: selection.model }, fallback, payload.failure.code, switched)
       // selectFallbackRoute only retries when a fallback route exists; the
       // explicit guard narrows that fact for the compiler.
@@ -910,7 +932,7 @@ export async function spawnMember(
   initialPrompt?: string,
   resolvedFilter?: MemberToolFilter,
   relaxableDeny?: readonly string[],
-): Promise<void> {
+): Promise<MemberStartResult> {
   // Fail loud at the first use: provider registration is a sibling plugin's
   // effect and may settle after this plugin mounts. Capability checks here
   // mirror what startContinuable would reject, with an actionable error.
@@ -945,6 +967,7 @@ export async function spawnMember(
       return selections.withPending(captain.id, label, llmSelection, () => startMember(ctx.subagents, {
         provider: config.provider,
         label,
+        ...(member.id === '' ? {} : { childId: member.id as import('@deepseek-ai/dsh-session').SessionId }),
         request: {
           prompt: [{ type: 'text', text: initialPrompt ?? memberWelcome(team, member.name) }],
           parent: captain,
@@ -972,6 +995,9 @@ export async function spawnMember(
     requestedFilter,
     relaxableDeny,
   )
+  if (member.id !== '' && member.id !== start.childId) {
+    throw new Error(`agent-teams: reserved child id ${member.id} does not match activation ${start.childId}`)
+  }
   member.id = start.childId
   if (usesManagedActivations(ctx.subagents)) {
     member.runtimeSetup = { persona: memberPersona(team, member, stateDir, config.executionPrompt), toolFilter: acceptedFilter }
@@ -980,6 +1006,7 @@ export async function spawnMember(
   // a policy keeps its public record shape. Legacy descriptors or runtimeSetup
   // restore the filter on cold resume, depending on the host generation.
   if (member.toolFilter !== undefined) member.toolFilter = { ...acceptedFilter }
+  return start
 }
 
 /**

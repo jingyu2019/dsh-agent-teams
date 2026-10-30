@@ -47,6 +47,8 @@ interface RuntimeBoundary {
 export interface MemberStartSpec {
   provider: string
   label: string
+  /** Plugin-reserved durable child id for a first start. */
+  childId?: SessionId
   request: {
     parent: Agent
     prompt: ContentBlock[]
@@ -61,25 +63,79 @@ interface CreationBoundary {
   startContinuable?: (spec: MemberStartSpec) => Promise<{ childId: SessionId }>
   startActivation?: (spec: MemberStartSpec & { delivery: 'parent' }) => Promise<{
     childId: SessionId
+    messageId?: MessageId
     result: Promise<unknown>
+    dispose?: () => Promise<void>
   }>
+}
+
+/** Exact process handle returned by a managed activation. */
+export interface MemberStartResult {
+  childId: SessionId
+  managed: boolean
+  messageId?: MessageId
+  result?: Promise<unknown>
+  dispose?: () => Promise<void>
+}
+
+/** Process-local correlation from the exact live Agent to one durable lease. */
+export interface AgentRunBinding {
+  teamId: string
+  activationId: string
+  hostRunId: string
+  memberId: string
+  memberGeneration: number
+  activationEpoch: number
+  recordDiagnostic?: (diagnostic: string) => void
+}
+
+const agentRuns = new WeakMap<Agent, AgentRunBinding>()
+
+/** Bind the exact live Agent object to its run/activation. */
+export function bindAgentRun(agent: Agent, binding: AgentRunBinding): void {
+  agentRuns.set(agent, binding)
+}
+
+/** Resolve an AgentTeams run without falling back to member name or latest task. */
+export function boundAgentRun(agent: Agent): AgentRunBinding | undefined {
+  return agentRuns.get(agent)
+}
+
+/** Drop process-local correlation once the exact lease is released. */
+export function unbindAgentRun(agent: Agent): void {
+  agentRuns.delete(agent)
+}
+
+/** Record a route-owned diagnostic only through the exact live Agent binding. */
+export function recordBoundAgentDiagnostic(agent: Agent, diagnostic: string): boolean {
+  const binding = agentRuns.get(agent)
+  if (binding === undefined) return false
+  binding.recordDiagnostic?.(diagnostic)
+  return true
 }
 export function usesManagedActivations(runtime: Context['subagents']): boolean {
   return typeof (runtime as unknown as CreationBoundary).startActivation === 'function'
 }
 
-export async function startMember(runtime: Context['subagents'], spec: MemberStartSpec): Promise<{ childId: SessionId }> {
+export async function startMember(runtime: Context['subagents'], spec: MemberStartSpec): Promise<MemberStartResult> {
   const host = runtime as unknown as CreationBoundary
   if (typeof host.startActivation === 'function') {
     const { persona: _persona, toolFilter: _filter, ...request } = spec.request
     const activation = await host.startActivation.call(runtime, { ...spec, request, delivery: 'parent' })
-    // Preserve native settlement as the missing-report/error fallback on both
-    // fresh and resumed activations. mailbox.ts deduplicates successful reports.
+    // The lifecycle pair is canonical; result/dispose remain exact fallback
+    // handles for a missing end. Never discard their rejection unobserved.
     void activation.result.catch(() => undefined)
-    return activation
+    return {
+      childId: activation.childId,
+      managed: true,
+      ...activation.messageId === undefined ? {} : { messageId: activation.messageId },
+      result: activation.result,
+      ...activation.dispose === undefined ? {} : { dispose: activation.dispose },
+    }
   }
   if (typeof host.startContinuable !== 'function') return unsupported('missing member creation API')
-  return host.startContinuable.call(runtime, spec)
+  const created = await host.startContinuable.call(runtime, spec)
+  return { ...created, managed: false }
 }
 
 /** Wrap every available creation API, restoring only this plugin's own methods. */

@@ -146,6 +146,13 @@ export interface TeamTask {
     handoffFromMemberId?: string;
     /** A handoff is quiescing the old owner; the scheduler must not dispatch it yet. */
     reassigning?: boolean;
+    /** Exact member identity/generation bound to the current attempt. */
+    attemptMemberId?: string;
+    attemptGeneration?: number;
+    attemptActivationId?: string;
+    attemptActivationEpoch?: number;
+    /** Exact completed activation awaiting a captain decision. */
+    parking?: TaskParking;
     /** Quality-gate kind. Missing values are treated as `work`. */
     kind?: TaskKind;
     /** Review / requirements / repair loop index, 1-based when present. */
@@ -214,6 +221,76 @@ export interface TeamTask {
     createdAt: number;
     updatedAt: number;
 }
+/** Why one managed subagent activation exists. */
+export type ActivationPurpose = 'bootstrap' | 'task' | 'mailbox';
+/** Durable state of one managed activation. */
+export type ActivationState = 'pending' | 'started' | 'ended' | 'rejected' | 'recovering' | 'orphaned' | 'released';
+/** Canonical terminal reasons exposed by the subagent lifecycle. */
+export type ActivationStopReason = 'completed' | 'max-tokens' | 'aborted' | 'error' | 'refusal' | 'unknown';
+/** One exact managed activation and its durable settlement authority. */
+export interface ActivationLease {
+    activationId: string;
+    dispatchToken: string;
+    teamId: string;
+    memberId: string;
+    memberGeneration: number;
+    activationEpoch: number;
+    purpose: ActivationPurpose;
+    taskId?: string;
+    attempt?: number;
+    attemptId?: string;
+    hostRunId?: string;
+    hostMessageId?: string;
+    /** Inclusive half-open session-log offset captured before host delivery. */
+    preDispatchSessionSeq: number;
+    startObserved: boolean;
+    endObserved: boolean;
+    settlementApplied?: boolean;
+    promptCommittedAt?: number;
+    turnStartObservedSeq?: number;
+    turnEndObserved?: {
+        reason: string;
+        seq?: number;
+    };
+    recoveryDecision?: 'none' | 'rolled_back' | 'synthesized_end' | 'orphaned_parked';
+    state: ActivationState;
+    permitHeld: boolean;
+    createdAt: number;
+    startedAt?: number;
+    endedAt?: number;
+    releasedAt?: number;
+    stopReason?: ActivationStopReason;
+    lastAssistantMessage?: string;
+    diagnostic?: string;
+}
+/** Durable captain notification outbox entry for parking/failure notices. */
+export interface NotificationLedgerEntry {
+    id: string;
+    messageId: string;
+    teamId: string;
+    memberId: string;
+    memberGeneration: number;
+    activationId: string;
+    taskId?: string;
+    attemptId?: string;
+    kind: 'parked' | 'failed' | 'settlement_unknown';
+    content: string;
+    state: 'pending' | 'appended' | 'delivered' | 'read' | 'superseded';
+    noticeDueAt: number;
+    createdAt: number;
+    appendedAt?: number;
+    deliveredAt?: number;
+}
+/** Durable parking marker on an open task whose exact activation ended. */
+export interface TaskParking {
+    memberId: string;
+    memberGeneration: number;
+    activationId: string;
+    activationEpoch: number;
+    attemptId: string;
+    noticeDueAt: number;
+    noticeKey: string;
+}
 /** Member lifecycle status. */
 export type MemberStatus = 'idle' | 'working' | 'removed';
 /** One team member: a continuable subagent plus its team-side record. */
@@ -259,6 +336,11 @@ export interface TeamMember {
     };
     joinedAt: number;
     status: MemberStatus;
+    /** Monotonic execution generation; legacy members normalize to 1 in memory. */
+    generation?: number;
+    /** Latest exact activation assigned to this member. */
+    currentActivationId?: string;
+    lastActivationEpoch?: number;
     /** Execution admission is closed while a failed/pending handoff is drained. */
     stopping?: boolean;
     /**
@@ -292,6 +374,13 @@ export interface TeamMessage {
     sourceTaskStatus?: TaskStatus;
     /** Cancelled delivery is retained for audit but must not wake the recipient. */
     discardedAt?: number;
+    /** Omitted means progress; only an exact final can suppress native settlement. */
+    reportKind?: 'progress' | 'final';
+    /** Exact member generation/activation that authored a task report. */
+    sourceMemberId?: string;
+    sourceMemberGeneration?: number;
+    sourceActivationId?: string;
+    sourceActivationEpoch?: number;
 }
 /** Snapshot of the named profile used to seed a team. */
 export interface TeamModelFallback {
@@ -352,4 +441,12 @@ export interface TeamState {
     reviewPolicy?: ReviewPolicy;
     /** Set when an automatic review/repair loop hits its configured ceiling. */
     escalated?: boolean;
+    /** Monotonic activation epoch allocator. */
+    activationSeq?: number;
+    /** Active plus bounded recent exact activation leases. */
+    activations?: ActivationLease[];
+    /** Monotonic notification outbox sequence. */
+    notificationSeq?: number;
+    /** Durable parking/failure notice outbox. */
+    notifications?: NotificationLedgerEntry[];
 }

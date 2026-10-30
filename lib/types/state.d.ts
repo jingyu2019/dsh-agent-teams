@@ -71,6 +71,8 @@ export declare const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly Task
 export declare function transitionError(current: TaskStatus, next: TaskStatus): string | undefined;
 /** Activate the task's current generation for one owner and return its capability id. */
 export declare function activateTaskAttempt(task: TeamTask, assignee: string): string;
+/** Clear fields bound to one exact activation/attempt. */
+export declare function clearTaskActivation(task: TeamTask): void;
 /** Start a fresh task generation for one owner. */
 export declare function beginTaskAttempt(task: TeamTask, assignee: string): string;
 /**
@@ -143,6 +145,8 @@ export declare function createMessage(from: string, to: string, content: string)
  * @param message - the message to append.
  */
 export declare function appendMailbox(stateRoot: string, teamId: string, agentKey: string, message: TeamMessage): Promise<void>;
+/** Append one deterministic durable notice unless its id already exists. */
+export declare function appendMailboxOnce(stateRoot: string, teamId: string, agentKey: string, message: TeamMessage): Promise<boolean>;
 /**
  * Read one agent's whole mailbox, oldest first.
  * @param stateRoot - resolved absolute state root directory.
