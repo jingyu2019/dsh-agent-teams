@@ -105,6 +105,10 @@ test('#70 attachment scope rejects traversal, secrets, symlinks, hardlinks and m
       /excluded from delivery/,
     )
   }
+  await assert.rejects(
+    () => copyAttachment({ ...base, sourcePath: 'config.txt', artifactRoots: [{ id: 'git-case', path: join(workspace, 'artifacts/.GIT'), allowRead: true }] }),
+    /excluded from delivery/,
+  )
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/link.txt' }), /symlink/)
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/hard.txt' }), /hard links/)
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/bad.png' }), /PNG signature/)
