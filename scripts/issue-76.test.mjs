@@ -4,6 +4,7 @@ import {
   classifyRouteFailure,
   createRouteCursor,
   normalizeRouteChain,
+  applyRouteToSelection,
   recordPersistedRouteFailure,
   recordRouteFailure,
   routeCursorReady,
@@ -121,6 +122,13 @@ test('persisted AUTH failure binds the exact activation and advances the member 
   const after = await readTeam(stateRoot, 'bind')
   assert.equal(after.members[0].activeModel, 'second')
   assert.equal(after.tasks[0].attemptRoute.currentRouteIndex, 1)
+})
+
+test('resident selection updates to the persisted fallback route', () => {
+  const ref = { current: { provider: 'p', model: 'primary' } }
+  applyRouteToSelection(ref, second)
+  assert.deepEqual(ref.current, { provider: 'p', model: 'second' })
+  assert.deepEqual(ref.assembled, { provider: 'p', model: 'second' })
 })
 
 test('stale route failure cannot mask max-tokens terminal settlement', async () => {

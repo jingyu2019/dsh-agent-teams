@@ -12,7 +12,7 @@
  * @module dsh-agent-teams/members
  */
 import type { Context } from '@deepseek-ai/cordis';
-import { type Agent } from '@deepseek-ai/dsh-agent';
+import { type Agent, type ModelSelection } from '@deepseek-ai/dsh-agent';
 import type { Session } from '@deepseek-ai/dsh-session';
 import { type MemberStartResult, type SessionFormatBearer } from './harness-compat.ts';
 import type { MemberToolFilter } from './tool-policies.ts';
@@ -245,6 +245,11 @@ export interface PersistedRouteFailure {
     readonly route?: TeamModelFallback;
     readonly advanced: boolean;
 }
+/** Apply one durable route to a resident child's live request selection. */
+export declare function applyRouteToSelection(ref: {
+    current: ModelSelection;
+    assembled?: ModelSelection;
+}, route: TeamModelFallback): void;
 /**
  * Persist one request failure against the exact activation's task attempt.
  * The activation binding, rather than the current member name, selects the

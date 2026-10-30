@@ -554,6 +554,16 @@ export interface PersistedRouteFailure {
   readonly advanced: boolean
 }
 
+/** Apply one durable route to a resident child's live request selection. */
+export function applyRouteToSelection(
+  ref: { current: ModelSelection; assembled?: ModelSelection },
+  route: TeamModelFallback,
+): void {
+  const next = { provider: route.provider, model: route.model }
+  ref.current = next
+  ref.assembled = next
+}
+
 /**
  * Persist one request failure against the exact activation's task attempt.
  * The activation binding, rather than the current member name, selects the
@@ -973,8 +983,7 @@ export function installMemberSelectionRuntime(
             // Keep the resident child's next request on the durable route.
             // Cold resumes already derive this from member.activeProvider;
             // this is the live-child counterpart for the *next* activation.
-            selectionRef.current = { provider: routeFailure.route.provider, model: routeFailure.route.model }
-            selectionRef.assembled = selectionRef.current
+            applyRouteToSelection(selectionRef, routeFailure.route)
           }
         }
         // A route-owned AgentTeams activation records the failure and returns
