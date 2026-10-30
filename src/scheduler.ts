@@ -576,14 +576,19 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
         const now = Date.now()
         const route = task.attemptRoute
         if (stopReason !== 'completed') {
-          if (route?.lastFailure !== undefined && route.state !== 'exhausted') {
+          const routeFailureMatches = route?.lastFailure !== undefined
+            && route.lastFailure.activationId === lease.activationId
+            && route.state !== 'exhausted'
+            && route.lastFailure.class !== 'budget'
+            && route.lastFailure.class !== 'unknown'
+          if (stopReason === 'error' && routeFailureMatches) {
             // The request-error listener already persisted a same-route wait or
             // a route advance. That path deliberately leaves the task open and
             // does not create a parking marker; releasing this permit is enough
             // to wake the next route activation after nextActionAt.
           } else {
             task.status = 'failed'
-            const routeHint = route?.lastFailure === undefined
+            const routeHint = !routeFailureMatches || route?.lastFailure === undefined
               ? stopReason === 'max-tokens' ? ' (increase_budget_or_transfer)' : ''
               : ` (route ${route.currentRouteIndex + 1} ${route.lastFailure.code}; ${route.lastFailure.class === 'budget' ? 'increase_budget_or_transfer' : 'no retry remains'})`
             const base = stopReason === 'unknown'
