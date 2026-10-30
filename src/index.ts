@@ -93,6 +93,8 @@ export interface Config {
   maxMembers?: number
   /** Global cap on simultaneous member activations (defaults to `maxMembers`). */
   maxConcurrentWorkers?: number
+  /** Prompt-only permission to emit multiple AgentTeams tool calls per response. */
+  parallelToolCalls?: boolean
   /** Named multi-role team profiles. */
   profiles?: Record<string, TeamProfileConfig>
   /**
@@ -180,12 +182,13 @@ export const Config: z<Config> = z.object({
   memberMaxDepth: z.natural().default(0),
   maxMembers: z.natural().min(1).default(8),
   maxConcurrentWorkers: z.natural().min(1),
+  parallelToolCalls: z.boolean().default(false),
   promptSectionOrder: z.natural().default(117),
   slashCommand: z.boolean().default(true),
 })
 
 /** The model-facing usage policy: when and how to drive AgentTeams. */
-export function usageSectionText(toolNames: string, profilesText = ''): string {
+export function usageSectionText(toolNames: string, profilesText = '', parallelToolCalls = false): string {
   return `AgentTeams captain protocol:
 1. Inspect current team state when needed, using agent_teams_status. Continue existing work without duplicating its roster/tasks. Create only when no current team exists, with the user's goal as description and approval="required"; automatic approval requires an explicit request to run immediately. Staged plans never spawn or schedule work.
 2. Add each needed role once; members inherit your model route unless another is requested/needed. A requested profile goes to create({profile}); it supplies its roster. Seed profiles also supply tasks; captain-planning profiles require your DAG. Do not duplicate either. A member may also select one owner-declared tool policy by id (tool_policy on add_member, a plan member, or a profile member): it is the only way to change which global tools that member sees and may invoke, and you can never pass raw allow/deny lists.
@@ -197,7 +200,7 @@ export function usageSectionText(toolNames: string, profilesText = ''): string {
 8. When full quality mode is requested: requirements → implementation → verification → review → integration. Plan the entire DAG while staged, including implementation before requirements finishes and integration depending on review round 1. Failed review automatically adds repair + next review and rewires pending downstream gates. Do not recreate this loop, omit integration or depend on a failed task. Review acceptance judges the latest implementation. Do not put smoke-test scripts into task instructions.
 9. Halted means the user stopped work (including the captain turn). Resume only on a later explicit user request with a reason, via agent_teams_resume or create_task({resume:true,resumeReason}); creating tasks alone never resumes. Escalated means the review loop hit its limit, not a halt. Deployment requires explicit user confirmation.
 10. Wait for all required tasks to be terminal and members idle/ready, present results, then delete/archive unless the user wants to continue. Never discard unfinished work without authorization.
-Tools: ${toolNames}${profilesText === '' ? '' : `\n\n${profilesText}`}`
+Tools: ${toolNames}${profilesText === '' ? '' : `\n\n${profilesText}`}${parallelToolCalls ? '\n\nParallel Emission is enabled: you may emit several AgentTeams tool calls in one assistant response. Calls still execute in their declared order; dependency ids must exist, and do not rely on a same-response forward reference succeeding. Never use parallel emission for exclusive lifecycle transitions.' : ''}`
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -212,6 +215,7 @@ export function apply(ctx: Context, config: Config): void {
     memberMaxDepth: config.memberMaxDepth ?? 0,
     maxMembers: config.maxMembers ?? 8,
     maxConcurrentWorkers: config.maxConcurrentWorkers ?? config.maxMembers ?? 8,
+    parallelToolCalls: config.parallelToolCalls ?? false,
     profiles: config.profiles ?? {},
     // Owner configuration is validated once, at mount: an empty or malformed
     // policy must never reach a member creation path.
@@ -231,7 +235,7 @@ export function apply(ctx: Context, config: Config): void {
     order: config.promptSectionOrder,
     // Keep the bounded profile directory available without extra tool calls.
     // installTeamCapabilities snapshots this once; no business state rewrites it.
-    captainPrompt: () => usageSectionText(TEAM_TOOL_NAMES.join(', '), formatProfilesForPrompt(config.profiles)),
+    captainPrompt: () => usageSectionText(TEAM_TOOL_NAMES.join(', '), formatProfilesForPrompt(config.profiles), resolved.parallelToolCalls === true),
   })
 
   // Deterministic activation surfaces: the closed-namespace `/agent-teams`

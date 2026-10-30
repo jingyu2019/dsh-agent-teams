@@ -37,6 +37,8 @@ export interface MemberRuntimeConfig {
         provider: string;
         model: string;
     }[];
+    /** Prompt-only opt-in for multiple AgentTeams calls in one response. */
+    parallelToolCalls?: boolean;
 }
 /** Durable provider/model/reasoning snapshot for one member. */
 export interface MemberLlmSelection {
@@ -292,7 +294,7 @@ export declare function installMemberSelectionRuntime(ctx: Context, stateDir: st
  * @param stateDir - configured state directory, so the member can locate the
  *   team files with its own file tools.
  */
-export declare function memberPersona(team: TeamState, member: TeamMember, stateDir: string, executionPrompt?: string): string;
+export declare function memberPersona(team: TeamState, member: TeamMember, stateDir: string, executionPrompt?: string, parallelToolCalls?: boolean): string;
 /**
  * The initial user message delivered when the member is created.
  * Counts non-terminal tasks already assigned to this member on the in-memory draft.

@@ -52,6 +52,8 @@ export interface MemberRuntimeConfig {
   fallback?: { provider: string; model: string }
   /** Ordered additional routes after the primary route. */
   fallbacks?: { provider: string; model: string }[]
+  /** Prompt-only opt-in for multiple AgentTeams calls in one response. */
+  parallelToolCalls?: boolean
 }
 
 /** Durable provider/model/reasoning snapshot for one member. */
@@ -1063,6 +1065,7 @@ export function memberPersona(
   member: TeamMember,
   stateDir: string,
   executionPrompt?: string,
+  parallelToolCalls = false,
 ): string {
   const goal = team.description?.trim() || '(not provided)'
   const injectedPrompt = member.executionPrompt?.trim() || executionPrompt?.trim()
@@ -1096,7 +1099,8 @@ Working rules:
 7. If you already own an open attempt (claimed or in_progress) and receive mail, treat it as guidance for that same attempt_id unless the mail explicitly tells you to stop or fail. Do not claim a new task in that turn.
 8. Do not start a teammate's assigned task. Do not privately tell the next-stage member to start; the scheduler assigns unlocked work after you become idle.
 9. You are a worker: do not create or delete teams, reassign tasks, or add/remove members — that is the captain's job.
-10. Quality-gate kinds carry a contract (kind, objective, inScope, acceptance, verify). Stay inside inScope. Do not mark your own implementation as review pass. Review/requirements complete only with verdict=pass; needs_revision/reject must fail with findings. Mail is not a formal next review. Completed work must not be repeated to attach late evidence: call update_task on the original task with its attempt_id and acceptanceResults/commandsRun/evidence_note; supplements are append-only and cannot change its verdict.`
+10. Quality-gate kinds carry a contract (kind, objective, inScope, acceptance, verify). Stay inside inScope. Do not mark your own implementation as review pass. Review/requirements complete only with verdict=pass; needs_revision/reject must fail with findings. Mail is not a formal next review. Completed work must not be repeated to attach late evidence: call update_task on the original task with its attempt_id and acceptanceResults/commandsRun/evidence_note; supplements are append-only and cannot change its verdict.${parallelToolCalls ? `
+11. Parallel Emission is enabled: you may emit several AgentTeams tool calls in one assistant response. Exclusive tools still execute in order; dependency ids must already exist, and do not assume a forward reference created later in the same response is valid.` : ''}`
 }
 
 /**
@@ -1177,7 +1181,7 @@ export async function spawnMember(
   const start = await startMemberWithLenientFilter(
     toolFilter => {
       acceptedFilter = toolFilter
-      const setup = { persona: memberPersona(team, member, stateDir, config.executionPrompt), toolFilter }
+      const setup = { persona: memberPersona(team, member, stateDir, config.executionPrompt, config.parallelToolCalls), toolFilter }
       return selections.withPending(captain.id, label, llmSelection, () => startMember(ctx.subagents, {
         provider: config.provider,
         label,
@@ -1185,7 +1189,7 @@ export async function spawnMember(
         request: {
           prompt: [{ type: 'text', text: initialPrompt ?? memberWelcome(team, member.name) }],
           parent: captain,
-          persona: memberPersona(team, member, stateDir, config.executionPrompt),
+          persona: memberPersona(team, member, stateDir, config.executionPrompt, config.parallelToolCalls),
           // Depth deny entries name host tools; resolve them against the
           // running host's registry so a renamed delegation tool cannot abort
           // the spawn (see memberToolFilter). Depth is still enforced by the
@@ -1214,7 +1218,7 @@ export async function spawnMember(
   }
   member.id = start.childId
   if (usesManagedActivations(ctx.subagents)) {
-    member.runtimeSetup = { persona: memberPersona(team, member, stateDir, config.executionPrompt), toolFilter: acceptedFilter }
+    member.runtimeSetup = { persona: memberPersona(team, member, stateDir, config.executionPrompt, config.parallelToolCalls), toolFilter: acceptedFilter }
   }
   // Only a policy member carries a persisted filter snapshot; a member without
   // a policy keeps its public record shape. Legacy descriptors or runtimeSetup

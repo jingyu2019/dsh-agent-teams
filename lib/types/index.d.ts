@@ -61,6 +61,8 @@ export interface Config {
     maxMembers?: number;
     /** Global cap on simultaneous member activations (defaults to `maxMembers`). */
     maxConcurrentWorkers?: number;
+    /** Prompt-only permission to emit multiple AgentTeams tool calls per response. */
+    parallelToolCalls?: boolean;
     /** Named multi-role team profiles. */
     profiles?: Record<string, TeamProfileConfig>;
     /**
@@ -84,5 +86,5 @@ export interface Config {
 }
 export declare const Config: z<Config>;
 /** The model-facing usage policy: when and how to drive AgentTeams. */
-export declare function usageSectionText(toolNames: string, profilesText?: string): string;
+export declare function usageSectionText(toolNames: string, profilesText?: string, parallelToolCalls?: boolean): string;
 export declare function apply(ctx: Context, config: Config): void;

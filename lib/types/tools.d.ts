@@ -36,6 +36,8 @@ export interface ToolsConfig {
     maxMembers: number;
     /** Global cap on simultaneous activation permits (defaults to maxMembers). */
     maxConcurrentWorkers?: number;
+    /** Whether prompts may explicitly permit several AgentTeams calls per response. */
+    parallelToolCalls?: boolean;
     /** Named team profiles from the active DSH profile. */
     profiles: Record<string, import('./profiles.ts').TeamProfileConfig>;
     /** Owner-declared reusable member tool policies, keyed by policy id (#59). */

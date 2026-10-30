@@ -38,6 +38,8 @@ export interface SchedulerConfig {
     readonly executionPrompt?: string;
     /** Global cap on active activation permits; undefined preserves legacy unbounded scheduling. */
     readonly maxConcurrentWorkers?: number;
+    /** Prompt-only opt-in for multiple AgentTeams calls in one response. */
+    readonly parallelToolCalls?: boolean;
     readonly dispatch?: (captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', request?: DispatchRequest) => Promise<boolean | DispatchResult>;
 }
 /** Count permits that still pin a managed activation. */
@@ -102,6 +104,6 @@ export interface DispatchTicket {
 export declare function collectCompletedDependencyOutputs(tasks: readonly TeamTask[], taskId: string, warn?: (message: string) => void): DependencyOutput[];
 /** Format completed-dependency outputs with per-item and total truncation. */
 export declare function formatDependencyOutputs(items: readonly DependencyOutput[]): string;
-export declare function assignmentPrompt(ticket: DispatchTicket, stateDir: string, teamId: string, workOrderWarnings?: readonly string[]): string;
+export declare function assignmentPrompt(ticket: DispatchTicket, stateDir: string, teamId: string, workOrderWarnings?: readonly string[], parallelToolCalls?: boolean): string;
 /** Install one scheduler and its member activity observer. */
 export declare function installTeamScheduler(ctx: Context, config: SchedulerConfig): TeamScheduler;
