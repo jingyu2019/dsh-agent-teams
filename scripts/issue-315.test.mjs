@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -88,10 +89,22 @@ test('#315 invalid preset input fails before persistence and disabled library re
     () => f.call('agent_teams_save_agent_preset', { name: 'Bad', role: 'x', provider: 'p', model: 'm', execution_prompt: 'x', skill_ids: ['missing-skill'] }),
     /unknown skill|skill id|missing-skill/i,
   )
+  await assert.rejects(
+    () => f.call('agent_teams_save_agent_preset', { name: 'Bad model', role: 'x', provider: 'p', model: 'missing-model', execution_prompt: 'x', skill_ids: [] }),
+    /missing-model|model/i,
+  )
   assert.equal((await loadAgentLibrary(f.stateRoot)).presets.length, 0)
   const disabled = await fixture(t, { enabled: false })
   await assert.rejects(
     () => disabled.call('agent_teams_save_agent_preset', { name: 'Off', role: 'x', provider: 'p', model: 'm', execution_prompt: 'x', skill_ids: [] }),
     /library is disabled/,
   )
+})
+
+test('#315 preset selection has a UI listing and manual-create picker', () => {
+  const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
+  const panel = readFileSync(new URL('../src/client/ActivityPanel.tsx', import.meta.url), 'utf8')
+  assert.match(source, /path: '\/plugins\/dsh-agent-teams\/agent-library'/u)
+  assert.match(panel, /agent-library\?sessionId=/u)
+  assert.match(panel, /preset_id: presetId/u)
 })

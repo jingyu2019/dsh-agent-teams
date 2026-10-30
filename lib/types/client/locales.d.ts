@@ -58,6 +58,8 @@ export declare const zh: {
     'manual.description': string;
     'manual.name': string;
     'manual.member': string;
+    'manual.preset': string;
+    'manual.presetNone': string;
     'manual.task': string;
     'manual.submit': string;
     'manual.creating': string;
@@ -329,6 +331,8 @@ export declare const en: {
     'manual.description': string;
     'manual.name': string;
     'manual.member': string;
+    'manual.preset': string;
+    'manual.presetNone': string;
     'manual.task': string;
     'manual.submit': string;
     'manual.creating': string;

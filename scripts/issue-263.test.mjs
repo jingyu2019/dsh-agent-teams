@@ -76,17 +76,17 @@ test('#263 task mutation timeline is durable, ordered, attributed and idempotent
 
   const team = await readTeam(f.stateRoot, 'timeline-team')
   const taskTimeline = team.timeline.filter(entry => entry.taskId === 't1')
-  assert.deepEqual(taskTimeline.map(entry => entry.action), ['task.claimed', 'task.started', 'task.completed'])
-  assert.deepEqual(taskTimeline.map(entry => entry.actor), ['worker', 'worker', 'worker'])
-  assert.deepEqual(taskTimeline.map(entry => entry.taskId), ['t1', 't1', 't1'])
-  assert.deepEqual(taskTimeline.map(entry => entry.attemptId), [claim.attempt_id, claim.attempt_id, claim.attempt_id])
-  assert.deepEqual(taskTimeline.map(entry => entry.id), ['tl3', 'tl4', 'tl5'])
-  assert.deepEqual(team.timeline.slice(0, 2).map(entry => entry.action), ['team.created', 'member.added'])
+  assert.deepEqual(taskTimeline.map(entry => entry.action), ['task.created', 'task.claimed', 'task.started', 'task.completed'])
+  assert.deepEqual(taskTimeline.map(entry => entry.actor), ['captain', 'worker', 'worker', 'worker'])
+  assert.deepEqual(taskTimeline.map(entry => entry.taskId), ['t1', 't1', 't1', 't1'])
+  assert.deepEqual(taskTimeline.slice(1).map(entry => entry.attemptId), [claim.attempt_id, claim.attempt_id, claim.attempt_id])
+  assert.deepEqual(taskTimeline.map(entry => entry.id), ['tl3', 'tl4', 'tl5', 'tl6'])
+  assert.deepEqual(team.timeline.slice(0, 3).map(entry => entry.action), ['team.created', 'member.added', 'task.created'])
 
   const reread = await readTeam(f.stateRoot, 'timeline-team')
   assert.deepEqual(reread.timeline, team.timeline)
   const snapshot = await assembleTeamSnapshot(f.ctx, f.stateRoot, f.workspace, reread)
-  assert.deepEqual(snapshot.timeline.map(entry => entry.action), ['team.created', 'member.added', 'task.claimed', 'task.started', 'task.completed'])
+  assert.deepEqual(snapshot.timeline.map(entry => entry.action), ['team.created', 'member.added', 'task.created', 'task.claimed', 'task.started', 'task.completed'])
 })
 
 test('#263 timeline is capped at 500 entries while retaining monotonic ids', () => {

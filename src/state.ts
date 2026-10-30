@@ -382,6 +382,9 @@ export async function createTeamDir(stateRoot: string, state: TeamState): Promis
     for (const member of state.members) {
       appendTimeline(state, { action: 'member.added', actor: CAPTAIN_KEY, to: member.name })
     }
+    for (const task of state.tasks) {
+      appendTimeline(state, { action: 'task.created', actor: CAPTAIN_KEY, taskId: task.id, ...task.assignee === undefined ? {} : { to: task.assignee } })
+    }
   }
   const dir = join(stateRoot, state.id)
   await mkdir(join(dir, 'inbox'), { recursive: true })

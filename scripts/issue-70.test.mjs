@@ -85,6 +85,10 @@ test('#70 attachment scope rejects traversal, secrets, symlinks, hardlinks and m
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: '.env' }), /outside the current task scope|excluded from delivery/)
   await assert.rejects(() => copyAttachment({ ...base, allowedScopes: ['.'], sourcePath: '.env' }), /excluded from delivery/)
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: '.agent-teams/other/team.json' }), /outside the current task scope|excluded from delivery/)
+  await assert.rejects(
+    () => copyAttachment({ ...base, sourcePath: 'team.json', artifactRoots: [{ id: 'state', path: join(stateRoot, 'other'), allowRead: true }] }),
+    /excluded from delivery/,
+  )
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/link.txt' }), /symlink/)
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/hard.txt' }), /hard links/)
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/bad.png' }), /PNG signature/)

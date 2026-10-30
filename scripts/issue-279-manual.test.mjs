@@ -67,8 +67,20 @@ test('#279 manual create is exposed through the authenticated local route and pa
   assert.match(source, /path: '\/plugins\/dsh-agent-teams\/plan\/create'/u)
   assert.match(source, /plan\/create-capability/u)
   assert.match(source, /payload\['nonce'\]/u)
+  assert.match(source, /workspaceId: captain\.session\.header\.cwd/u)
+  assert.match(source, /operation: 'create-staged-team'/u)
   assert.match(source, /agentTeamsRuntime\.createStagedTeam/u)
   assert.match(panel, /ManualTeamDialog/u)
   assert.match(panel, /\/plan\/create/u)
   assert.match(panel, /plan\/create-capability/u)
+})
+
+test('#279 concurrent manual creation serializes on the captain lock', async t => {
+  const f = await fixture(t)
+  const results = await Promise.allSettled([
+    f.runtime.createStagedTeam(f.captain, { name: 'First Team', members: [{ name: 'a' }], tasks: [] }),
+    f.runtime.createStagedTeam(f.captain, { name: 'Second Team', members: [{ name: 'b' }], tasks: [] }),
+  ])
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1)
+  assert.equal(results.filter(result => result.status === 'rejected').length, 1)
 })
