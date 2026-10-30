@@ -217,7 +217,9 @@ export declare function discardMailboxMessages(stateRoot: string, teamId: string
  * staged plan has no child session, so this is the only history that follows
  * the rename.
  */
-export declare function renameMailboxOwner(stateRoot: string, teamId: string, from: string, to: string): Promise<void>;
+export declare function renameMailboxOwner(stateRoot: string, teamId: string, from: string, to: string, ops?: {
+    remove?: (path: string) => Promise<void>;
+}): Promise<void>;
 /** Filesystem primitives used by {@link replaceFileAtomicOrDirect}; injectable for tests. */
 export interface AtomicReplacePrimitives {
     rename: (from: string, to: string) => Promise<void>;

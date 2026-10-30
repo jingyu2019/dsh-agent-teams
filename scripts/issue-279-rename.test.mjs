@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { appendMailbox, createMessage, createTeamDir, readMailbox, readTeam } from '../lib/state.js'
+import { appendMailbox, createMessage, createTeamDir, readMailbox, readTeam, renameMailboxOwner } from '../lib/state.js'
 import { registerAgentTeamsTools } from '../lib/tools.js'
 
 function fakeAgent(id, cwd) {
@@ -127,6 +127,26 @@ test('#279 a later batch failure rolls back before any mailbox move', async t =>
   )
   const team = await readTeam(f.stateRoot, 'rename-team')
   assert.equal(team.members[0].name, 'old')
+  assert.equal((await readMailbox(f.stateRoot, 'rename-team', 'old')).length, 1)
+  assert.equal((await readMailbox(f.stateRoot, 'rename-team', 'new')).length, 0)
+})
+
+
+test('#279 mailbox move removes its destination if source removal fails', async t => {
+  const f = await fixture(t)
+  await appendMailbox(f.stateRoot, 'rename-team', 'old', createMessage('old', 'captain', 'keep me'))
+  const inbox = join(f.stateRoot, 'rename-team', 'inbox')
+  const oldFile = join(inbox, 'old.jsonl')
+  const newFile = join(inbox, 'new.jsonl')
+  await assert.rejects(
+    () => renameMailboxOwner(f.stateRoot, 'rename-team', 'old', 'new', {
+      remove: async path => {
+        if (path === oldFile) throw new Error('source removal failed')
+        await rm(path, { force: true })
+      },
+    }),
+    /source removal failed/,
+  )
   assert.equal((await readMailbox(f.stateRoot, 'rename-team', 'old')).length, 1)
   assert.equal((await readMailbox(f.stateRoot, 'rename-team', 'new')).length, 0)
 })
