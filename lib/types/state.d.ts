@@ -291,6 +291,8 @@ export declare function readArchivedTeam(stateRoot: string, teamId: string): Pro
  * @returns the archived team ids, empty when the archive does not exist.
  */
 export declare function listArchivedTeamIds(stateRoot: string): Promise<string[]>;
+/** Permanently remove one archived team directory after explicit user approval. */
+export declare function deleteArchivedTeamDir(stateRoot: string, teamId: string): Promise<boolean>;
 /** Visual task state for the activity panel. */
 export type VisualTaskState = 'blocked' | 'open' | 'claimed' | 'running' | 'completed' | 'failed' | 'cancelled';
 /**
