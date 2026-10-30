@@ -1378,42 +1378,71 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         createdAt: Date.now(), members: resolvedMembers, tasks: [], taskSeq: 0, phase: 'running',
       }
       const receipts: Array<Awaited<ReturnType<typeof spawnMember>>> = []
+      const disposedReceipts = new WeakSet<object>()
+      const disposeReceipt = async (receipt: Awaited<ReturnType<typeof spawnMember>>): Promise<void> => {
+        if (disposedReceipts.has(receipt)) return
+        disposedReceipts.add(receipt)
+        await receipt.dispose?.()
+      }
       const results: Array<{ member: string; status: 'completed' | 'failed' | 'timeout' | 'cancelled'; output: string; stopReason: string; diagnostic?: string }> = []
       let cursor = 0
       const runOne = async (index: number): Promise<void> => {
         const member = resolvedMembers[index]!
         const selection = selections[index]!
         let receipt: Awaited<ReturnType<typeof spawnMember>> | undefined
+        const activation = new AbortController()
+        let timeout: ReturnType<typeof setTimeout> | undefined
+        let timedOut = false
+        let interrupted = false
+        let rejectInterruption: (reason: unknown) => void = () => undefined
+        const interruption = new Promise<never>((_, reject) => { rejectInterruption = reject })
+        void interruption.catch(() => undefined)
+        const abort = (): void => {
+          interrupted = true
+          const reason = exec.signal.reason ?? new DOMException('cancelled', 'AbortError')
+          activation.abort(reason)
+          rejectInterruption(reason)
+        }
+        exec.signal.addEventListener('abort', abort, { once: true })
+        if (exec.signal.aborted) abort()
+        timeout = setTimeout(() => {
+          timedOut = true
+          const error = new Error('__timeout__')
+          activation.abort(error)
+          rejectInterruption(error)
+        }, timeoutMs)
         try {
           exec.signal.throwIfAborted()
-          receipt = await spawnMember(ctx, memberRuntime(config), memberSelections, selection, captain, syntheticTeam, member, config.stateDir, exec.signal, args.prompt, member.toolFilter, memberRelaxableDeny(config, member))
+          const start = spawnMember(ctx, memberRuntime(config), memberSelections, selection, captain, syntheticTeam, member, config.stateDir, activation.signal, args.prompt, member.toolFilter, memberRelaxableDeny(config, member))
+          // A timed-out or cancelled start may still finish later. Dispose that
+          // late lease instead of leaving an orphan child behind.
+          void start.then(
+            acquired => interrupted || timedOut ? disposeReceipt(acquired).catch(() => undefined) : undefined,
+            () => undefined,
+          )
+          receipt = await Promise.race([start, interruption])
           receipts.push(receipt)
-          const outcome = await new Promise<unknown>((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error('__timeout__')), timeoutMs)
-            const abort = (): void => {
-              clearTimeout(timer)
-              reject(exec.signal.reason ?? new DOMException('cancelled', 'AbortError'))
-            }
-            if (exec.signal.aborted) return abort()
-            exec.signal.addEventListener('abort', abort, { once: true })
-            const result = receipt?.result ?? Promise.resolve({ stopReason: 'completed' })
-            void result.then(
-              value => { clearTimeout(timer); exec.signal.removeEventListener('abort', abort); resolve(value) },
-              error => { clearTimeout(timer); exec.signal.removeEventListener('abort', abort); reject(error) },
-            )
-          })
+          const result = receipt.result ?? Promise.resolve({ stopReason: 'completed' })
+          const outcome = await Promise.race([result, interruption])
           const normalized = normalizeDirectResult(outcome)
-          results[index] = { member: member.name, status: normalized.stopReason === 'completed' ? 'completed' : 'failed', ...normalized }
-        } catch (error: unknown) {
-          const aborted = exec.signal.aborted
-          const timedOut = error instanceof Error && error.message === '__timeout__'
           results[index] = {
             member: member.name,
-            status: aborted ? 'cancelled' : timedOut ? 'timeout' : 'failed',
+            status: normalized.stopReason === 'completed' ? 'completed' : normalized.stopReason === 'aborted' ? 'cancelled' : 'failed',
+            ...normalized,
+          }
+        } catch (error: unknown) {
+          const aborted = exec.signal.aborted
+          const isTimeout = timedOut || (error instanceof Error && error.message === '__timeout__')
+          results[index] = {
+            member: member.name,
+            status: aborted ? 'cancelled' : isTimeout ? 'timeout' : 'failed',
             output: '',
-            stopReason: aborted ? 'cancelled' : timedOut ? 'timeout' : 'error',
+            stopReason: aborted ? 'cancelled' : isTimeout ? 'timeout' : 'error',
             diagnostic: error instanceof Error ? error.message : String(error),
           }
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout)
+          exec.signal.removeEventListener('abort', abort)
         }
       }
       const workers = Array.from({ length: Math.min(concurrency, selected.length) }, async () => {
@@ -1427,7 +1456,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       try {
         await Promise.all(workers)
       } finally {
-        await Promise.allSettled(receipts.map(receipt => receipt.dispose?.() ?? Promise.resolve()))
+        await Promise.allSettled(receipts.map(disposeReceipt))
       }
       return { results: results.map((result, index) => result ?? ({ member: selected[index]!.name, status: 'failed', output: '', stopReason: 'error', diagnostic: 'invocation produced no result' })) }
     },
