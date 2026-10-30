@@ -15,6 +15,7 @@ import { type MemberToolPolicy } from './tool-policies.ts';
 import type { ArtifactSnapshot } from './types.ts';
 import { type MemberRuntimeConfig } from './members.ts';
 import { type TeamState, type TeamTask } from './types.ts';
+import { type SkillBindingConfig } from './profiles.ts';
 export { steerCaptainReport } from './members.ts';
 /** Resolved plugin config consumed by the tools. */
 export interface ToolsConfig {
@@ -46,6 +47,8 @@ export interface ToolsConfig {
     profiles: Record<string, import('./profiles.ts').TeamProfileConfig>;
     /** Owner-declared reusable member tool policies, keyed by policy id (#59). */
     toolPolicies: Record<string, MemberToolPolicy>;
+    /** Owner-declared skill snippets selected by id (#244). */
+    skills?: Record<string, SkillBindingConfig>;
 }
 /** Browser/UI mutations allowed while a plan is waiting for approval. */
 export type StagedPlanMutation = {

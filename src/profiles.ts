@@ -9,6 +9,7 @@
  * @module dsh-agent-teams/profiles
  */
 
+import { createHash } from 'node:crypto'
 import { CAPTAIN_KEY, sanitizeKey } from './state.ts'
 
 /** Hard cap on named profiles so the usage prompt cannot grow without bound. */
@@ -17,10 +18,14 @@ export const MAX_TEAM_PROFILES = 16
 export const MAX_PROFILE_TASKS = 32
 /** Protocol excerpt length in the usage / prompt listing. */
 export const PROFILE_PROTOCOL_PROMPT_LIMIT = 240
+/** Hard cap on owner skills a single member may select. */
+export const MAX_MEMBER_SKILLS = 8
+/** Hard cap on owner-declared skill entries. */
+export const MAX_OWNER_SKILLS = 128
 
 const PROFILE_KEYS = ['description', 'protocol', 'executionPrompt', 'fallback', 'fallbacks', 'members', 'tasks', 'taskPlanning', 'reviewPolicy'] as const
 const REVIEW_POLICY_KEYS = ['requirementsMinRounds', 'requirementsMaxRounds', 'codeMaxRounds', 'maxRepairAttempts', 'requiredReviewers'] as const
-const MEMBER_KEYS = ['name', 'role', 'provider', 'model', 'reasoning_effort', 'executionPrompt', 'fallback', 'fallbacks', 'tool_policy'] as const
+const MEMBER_KEYS = ['name', 'role', 'provider', 'model', 'reasoning_effort', 'executionPrompt', 'fallback', 'fallbacks', 'tool_policy', 'skills'] as const
 const FALLBACK_KEYS = ['provider', 'model'] as const
 const TASK_KEYS = ['id', 'subject', 'description', 'assignee', 'dependencies'] as const
 
@@ -45,6 +50,23 @@ export interface TeamProfileMemberConfig {
    * profile only names a configured policy; it never carries raw tool lists.
    */
   tool_policy?: string
+  /** Owner-declared skill ids selected by reference; never raw prompt bundles (#244). */
+  skills?: string[]
+}
+
+/** One owner-declared reusable skill snippet. */
+export interface SkillBindingConfig {
+  version: string
+  prompt: string
+  /** Optional owner-declared tool-policy id, never a raw tool/MCP list. */
+  toolPolicy?: string
+}
+/** A member's frozen owner-skill selection. */
+export interface ResolvedMemberSkills {
+  ids: string[]
+  prompt: string
+  sha256: string
+  toolPolicy?: string
 }
 
 /** One seed-task row in a named team-profile template (unresolved). */
@@ -86,6 +108,7 @@ export interface NormalizedProfileMember {
   fallback?: TeamModelFallbackConfig
   fallbacks?: TeamModelFallbackConfig[]
   toolPolicy?: string
+  skills?: string[]
 }
 
 /** A profile seed task after assignee canonicalization; `sourceIndex` is the YAML order. */
@@ -122,6 +145,96 @@ export interface AgentTeamsInvocation {
 export interface ListedTeamProfile {
   name: string
   config: TeamProfileConfig
+}
+
+/**
+ * Validate the owner skill catalog once at config resolution. IDs are trimmed;
+ * a blank/duplicate ID, blank version/prompt, or malformed tool-policy id
+ * fails before any roster is persisted.
+ */
+export function normalizeSkillCatalog(
+  skills: Record<string, SkillBindingConfig> | undefined | null,
+): Record<string, SkillBindingConfig> {
+  if (skills === undefined || skills === null) return {}
+  if (typeof skills !== 'object' || Array.isArray(skills)) throw new Error('AgentTeams skills must be an object keyed by skill id')
+  const entries = Object.entries(skills)
+  if (entries.length > MAX_OWNER_SKILLS) throw new Error(`too many AgentTeams skills (${entries.length}); the limit is ${MAX_OWNER_SKILLS}`)
+  const seen = new Set<string>()
+  const result: Record<string, SkillBindingConfig> = {}
+  for (const [rawId, raw] of entries) {
+    const id = rawId.trim()
+    if (id === '') throw new Error('configured AgentTeams skills include an empty id')
+    if (seen.has(id)) throw new Error(`configured AgentTeams skills have duplicate id "${id}"`)
+    seen.add(id)
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error(`skill "${id}" must be an object`)
+    const version = typeof raw.version === 'string' ? raw.version.trim() : ''
+    const prompt = typeof raw.prompt === 'string' ? raw.prompt.trim() : ''
+    const toolPolicy = typeof raw.toolPolicy === 'string' ? raw.toolPolicy.trim() : undefined
+    if (version === '') throw new Error(`skill "${id}".version must be a non-empty string`)
+    if (prompt === '') throw new Error(`skill "${id}".prompt must be a non-empty string`)
+    if (toolPolicy !== undefined && toolPolicy === '') throw new Error(`skill "${id}".toolPolicy must not be blank when present`)
+    result[id] = { version, prompt, ...toolPolicy === undefined ? {} : { toolPolicy } }
+  }
+  return result
+}
+
+/** Canonical prompt text for one member's selected owner skills. */
+export function renderMemberSkillPrompt(ids: readonly string[], catalog: Record<string, SkillBindingConfig>): string {
+  if (ids.length === 0) return ''
+  return [
+    'Owner-declared skills selected for this member (apply exactly once; IDs, not raw captain input):',
+    ...ids.map((id) => {
+      const skill = catalog[id]!
+      return `### ${id} (v${skill.version})\n${skill.prompt}`
+    }),
+  ].join('\n\n')
+}
+
+/**
+ * Resolve selected skill ids before persistence or child creation. Unknown,
+ * blank, duplicate or over-limit ids fail atomically. Skill-provided tool
+ * policies must agree with each other and with the member's explicit policy.
+ */
+export function resolveMemberSkills(
+  catalog: Record<string, SkillBindingConfig>,
+  selected: readonly string[] | undefined,
+  memberToolPolicy?: string,
+): ResolvedMemberSkills {
+  if (selected === undefined || selected.length === 0) {
+    const explicitPolicy = memberToolPolicy?.trim()
+    return {
+      ids: [], prompt: '', sha256: createHash('sha256').update('').digest('hex'),
+      ...explicitPolicy === undefined || explicitPolicy === '' ? {} : { toolPolicy: explicitPolicy },
+    }
+  }
+  if (!Array.isArray(selected)) throw new Error('member skills must be an array of skill ids')
+  if (selected.length > MAX_MEMBER_SKILLS) throw new Error(`a member may select at most ${MAX_MEMBER_SKILLS} skills`)
+  const ids: string[] = []
+  const seen = new Set<string>()
+  for (let index = 0; index < selected.length; index += 1) {
+    const raw = selected[index]
+    if (typeof raw !== 'string' || raw.trim() === '') throw new Error(`member skills[${index}] must be a non-empty skill id`)
+    const id = raw.trim()
+    if (seen.has(id)) throw new Error(`member skill id "${id}" is duplicated`)
+    if (catalog[id] === undefined) throw new Error(`unknown owner-declared skill id "${id}"`)
+    seen.add(id)
+    ids.push(id)
+  }
+  const declaredPolicies = new Set(ids.flatMap((id) => catalog[id]!.toolPolicy === undefined ? [] : [catalog[id]!.toolPolicy!]))
+  if (declaredPolicies.size > 1) throw new Error('selected skills declare conflicting tool policies')
+  const skillPolicy = declaredPolicies.values().next().value as string | undefined
+  const explicitPolicy = memberToolPolicy?.trim()
+  if (skillPolicy !== undefined && explicitPolicy !== undefined && skillPolicy !== explicitPolicy) {
+    throw new Error(`member tool policy "${explicitPolicy}" conflicts with skill tool policy "${skillPolicy}"`)
+  }
+  const prompt = renderMemberSkillPrompt(ids, catalog)
+  const toolPolicy = skillPolicy !== undefined ? skillPolicy : explicitPolicy
+  return {
+    ids,
+    prompt,
+    sha256: createHash('sha256').update(prompt).digest('hex'),
+    ...toolPolicy === undefined || toolPolicy === '' ? {} : { toolPolicy },
+  }
 }
 
 /**
@@ -477,10 +590,25 @@ function normalizeMember(
   const fallback = normalizeFallback(raw['fallback'], `${path}.fallback`)
   const fallbacks = normalizeFallbacks(raw['fallbacks'], `${path}.fallbacks`)
   const toolPolicy = optionalNonEmptyString(raw['tool_policy'], `${path}.tool_policy`)
+  const skills = normalizeMemberSkillIds(raw['skills'], `${path}.skills`)
   if (provider !== undefined && model === undefined) {
     throw new Error(`profile member "${name}" sets provider without model`)
   }
-  return omitUndefined({ name, role, provider, model, reasoningEffort, executionPrompt, fallback, fallbacks, toolPolicy })
+  return omitUndefined({ name, role, provider, model, reasoningEffort, executionPrompt, fallback, fallbacks, toolPolicy, skills })
+}
+
+function normalizeMemberSkillIds(value: unknown, path: string): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new Error(`${path} must be an array of skill ids`)
+  if (value.length > MAX_MEMBER_SKILLS) throw new Error(`${path} may contain at most ${MAX_MEMBER_SKILLS} skill ids`)
+  const seen = new Set<string>()
+  return value.map((item, index) => {
+    if (typeof item !== 'string' || item.trim() === '') throw new Error(`${path}[${index}] must be a non-empty skill id`)
+    const id = item.trim()
+    if (seen.has(id)) throw new Error(`${path} duplicates skill id "${id}"`)
+    seen.add(id)
+    return id
+  })
 }
 
 function normalizeFallback(value: unknown, path: string): TeamModelFallbackConfig | undefined {

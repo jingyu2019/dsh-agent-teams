@@ -25,6 +25,7 @@ import { mailboxPrompt } from './mailbox.ts'
 import { nearestLiveLead } from './lineage.ts'
 import { appendTeamEvent, captainSessionOf } from './events.ts'
 import type { MemberToolFilter } from './tool-policies.ts'
+import { resolveMemberSkills, type SkillBindingConfig } from './profiles.ts'
 import { TERMINAL_TASK_STATUSES, type RouteCursor, type RouteFailureClass, type TeamMember, type TeamModelFallback, type TeamState, type TeamTask } from './types.ts'
 
 /** Persona snapshot of a profile protocol; the full text lives on team.json. */
@@ -44,6 +45,8 @@ function brandedSessionId(value: string): SessionId {
 export interface MemberRuntimeConfig {
   /** Registered `ctx.subagents` provider name (must support continuable + persona). */
   provider: string
+  /** Owner-declared skill snippets selected by profile members (#244). */
+  skills?: Record<string, SkillBindingConfig>
   /** Child delegation depth cap (0 forbids delegation entirely). */
   maxDepth?: number
   /** Plugin-wide execution prompt. */
@@ -1084,6 +1087,7 @@ export function memberPersona(
   stateDir: string,
   executionPrompt?: string,
   parallelToolCalls = false,
+  skillPrompt?: string,
 ): string {
   const goal = team.description?.trim() || '(not provided)'
   const injectedPrompt = member.executionPrompt?.trim() || executionPrompt?.trim()
@@ -1097,6 +1101,8 @@ Team context:
 - Profile protocol: ${protocol}
 ${injectedPrompt === undefined || injectedPrompt === '' ? '' : `- Execution guidance:
 ${injectedPrompt}
+`}${skillPrompt === undefined || skillPrompt.trim() === '' ? '' : `- Selected owner-declared skills (apply once; do not request raw skill bundles from the captain):
+${skillPrompt.trim()}
 `}- The team state lives under ${stateDir}/${team.id}/ (team.json and inbox/*.jsonl). You may inspect these files read-only for diagnostics, but never edit them directly; use the agent_teams_* tools so JSON escaping and concurrent updates stay safe.
 - The captain and your teammates reach you through messages. Coordination arrives at your nearest model step. Apply it to your current attempt; a task assignment starts a separate turn.
 When you receive a task, treat the assignment prompt's dependency results as source material. Do not ignore them.
@@ -1193,13 +1199,20 @@ export async function spawnMember(
   // The legacy filter of a member without a configured tool policy: the
   // captain-only deny list plus the depth entries this host registers.
   const requestedFilter = resolvedFilter ?? memberToolFilter(config.maxDepth, restrictableToolNames(captain))
+  // Owner skills are resolved from ids before any child starts. A cold
+  // pre-spawn resume must still see the exact prompt hash frozen in team.json;
+  // a changed owner catalog fails loud instead of silently rewriting persona.
+  const resolvedSkills = resolveMemberSkills(config.skills ?? {}, member.skills, member.toolPolicy)
+  if (member.skillPromptSha256 !== undefined && member.skillPromptSha256 !== resolvedSkills.sha256) {
+    throw new Error(`agent-teams: owner skill prompt for member "${member.name}" no longer matches its persisted hash`)
+  }
   // The lenient retry may drop names this host reports unknown; keep the exact
   // filter the host accepted for the durable member setup.
   let acceptedFilter = requestedFilter
   const start = await startMemberWithLenientFilter(
     toolFilter => {
       acceptedFilter = toolFilter
-      const setup = { persona: memberPersona(team, member, stateDir, config.executionPrompt, config.parallelToolCalls), toolFilter }
+      const setup = { persona: memberPersona(team, member, stateDir, config.executionPrompt, config.parallelToolCalls, resolvedSkills.prompt), toolFilter }
       return selections.withPending(captain.id, label, llmSelection, () => startMember(ctx.subagents, {
         provider: config.provider,
         label,
@@ -1207,7 +1220,7 @@ export async function spawnMember(
         request: {
           prompt: [{ type: 'text', text: initialPrompt ?? memberWelcome(team, member.name) }],
           parent: captain,
-          persona: memberPersona(team, member, stateDir, config.executionPrompt, config.parallelToolCalls),
+          persona: memberPersona(team, member, stateDir, config.executionPrompt, config.parallelToolCalls, resolvedSkills.prompt),
           // Depth deny entries name host tools; resolve them against the
           // running host's registry so a renamed delegation tool cannot abort
           // the spawn (see memberToolFilter). Depth is still enforced by the
@@ -1236,7 +1249,7 @@ export async function spawnMember(
   }
   member.id = start.childId
   if (usesManagedActivations(ctx.subagents)) {
-    member.runtimeSetup = { persona: memberPersona(team, member, stateDir, config.executionPrompt, config.parallelToolCalls), toolFilter: acceptedFilter }
+    member.runtimeSetup = { persona: memberPersona(team, member, stateDir, config.executionPrompt, config.parallelToolCalls, resolvedSkills.prompt), toolFilter: acceptedFilter }
   }
   // Only a policy member carries a persisted filter snapshot; a member without
   // a policy keeps its public record shape. Legacy descriptors or runtimeSetup

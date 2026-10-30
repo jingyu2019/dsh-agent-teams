@@ -18,6 +18,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { appendTeamEvent, captainSessionOf } from './events.ts'
 import {
   amendTaskContract,
@@ -25,6 +26,7 @@ import {
   markMailboxDelivered,
   discardMailboxMessages,
   appendMailbox,
+  appendMailboxOnce,
   archiveTeamDir,
   beginTaskAttempt,
   CAPTAIN_KEY,
@@ -91,7 +93,7 @@ import {
 import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamMessage, type TeamState, type TeamTask } from './types.ts'
 import { collectCompletedDependencyOutputs, formatDependencyOutputs, installTeamScheduler, type DispatchRequest, type DispatchResult } from './scheduler.ts'
 import { installMailboxAdmission, isCurrentMail, mailboxContent, mailboxPrompt, readCurrentMailbox } from './mailbox.ts'
-import { resolveTeamProfile } from './profiles.ts'
+import { resolveMemberSkills, resolveTeamProfile, type SkillBindingConfig } from './profiles.ts'
 import { forkLineageNote, leadIdentityOf, leadIdentityOfAsync, nearestLiveLead, sessionLeadsTeam, sessionLeadsTeamAsync } from './lineage.ts'
 
 export { steerCaptainReport } from './members.ts'
@@ -126,6 +128,8 @@ export interface ToolsConfig {
   profiles: Record<string, import('./profiles.ts').TeamProfileConfig>
   /** Owner-declared reusable member tool policies, keyed by policy id (#59). */
   toolPolicies: Record<string, MemberToolPolicy>
+  /** Owner-declared skill snippets selected by id (#244). */
+  skills?: Record<string, SkillBindingConfig>
 }
 
 /** Browser/UI mutations allowed while a plan is waiting for approval. */
@@ -699,6 +703,71 @@ export function stagedPlanFeedbackContext(teamName: string): string {
   ].join('\n')
 }
 
+/** Stable task id order: numeric suffix first, then lexical. */
+function stableTaskIds(ids: readonly string[]): string[] {
+  return [...ids].sort((a, b) => a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' }))
+}
+
+/** One deterministic collect projection with machine-readable blockers. */
+function collectTaskView(task: TeamTask, all: readonly TeamTask[]): { id: string; subject: string; status: TeamTask['status']; assignee?: string; attempt?: number; attempt_id?: string; output?: string; verdict?: string; blockers: string[] } {
+  const blockers: string[] = []
+  if (task.status === 'pending' || task.status === 'claimed' || task.status === 'in_progress') {
+    blockers.push(`not terminal: ${task.status}`)
+    const waiting = task.dependencies.filter(id => all.find(candidate => candidate.id === id)?.status !== 'completed')
+    if (waiting.length > 0) blockers.push(`waiting on ${waiting.join(',')}`)
+  }
+  if (task.status === 'failed') blockers.push(task.output?.trim() || 'task failed')
+  if (task.status === 'cancelled') blockers.push(task.output?.trim() || 'task cancelled')
+  if (task.verdict === 'needs_revision' || task.verdict === 'reject') blockers.push(`verdict: ${task.verdict}`)
+  return {
+    id: task.id,
+    subject: task.subject,
+    status: task.status,
+    ...task.assignee === undefined ? {} : { assignee: task.assignee },
+    ...task.attempt === undefined ? {} : { attempt: task.attempt },
+    ...task.attemptId === undefined ? {} : { attempt_id: task.attemptId },
+    ...task.output === undefined ? {} : { output: task.output },
+    ...task.verdict === undefined ? {} : { verdict: task.verdict },
+    blockers,
+  }
+}
+
+/** Deterministic no-model aggregation of the collected task views. */
+function extractiveCollectDigest(tasks: readonly ReturnType<typeof collectTaskView>[]): string {
+  return tasks.map(task => `${task.id}\t${task.status}\t${task.subject}\t${(task.output ?? '').replace(/\s+/gu, ' ').trim().slice(0, 500)}`).join('\n')
+}
+
+/** Minimal team reference for post-mutation scheduler wakes. */
+function freshTeamRef(team: TeamState, captain: Agent): TeamState {
+  return { ...team, captainSessionId: captain.id }
+}
+
+/** Extract a stable text/stopReason pair from a host activation result. */
+function normalizeDirectResult(value: unknown): { output: string; stopReason: string; diagnostic?: string } {
+  if (typeof value === 'string') return { output: value, stopReason: 'completed' }
+  if (value === null || typeof value !== 'object') return { output: '', stopReason: 'completed' }
+  const record = value as Record<string, unknown>
+  const stopReason = typeof record['stopReason'] === 'string' && record['stopReason'] !== ''
+    ? record['stopReason'] : 'completed'
+  const textOf = (input: unknown): string => {
+    if (typeof input === 'string') return input
+    if (!Array.isArray(input)) return ''
+    return input.flatMap((block) => {
+      if (typeof block === 'string') return [block]
+      if (block !== null && typeof block === 'object' && (block as Record<string, unknown>)['type'] === 'text'
+        && typeof (block as Record<string, unknown>)['text'] === 'string') {
+        return [(block as Record<string, unknown>)['text'] as string]
+      }
+      return []
+    }).join('\n')
+  }
+  const output = [record['lastAssistantMessage'], record['output'], record['message'], record['text']]
+    .map(textOf).find(text => text !== '') ?? ''
+  const diagnostic = typeof record['diagnostic'] === 'string' && record['diagnostic'] !== ''
+    ? record['diagnostic'] : undefined
+  return { output, stopReason, ...diagnostic === undefined ? {} : { diagnostic } }
+}
+
 /**
  * Register every `agent_teams_*` tool into the shared tools registry.
  * @param ctx - the plugin context (injects `tools`).
@@ -792,6 +861,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             fallback: member.fallback,
             fallbacks: member.fallbacks,
           }, signal)
+          const nextPolicyId = mutation.toolPolicy === undefined ? member.toolPolicy : optionalToolPolicyId(mutation.toolPolicy)
+          // Re-resolve the member's frozen skill selection against this edit.
+          // A conflicting tool policy fails before the batch is written.
+          resolveMemberSkills(config.skills ?? {}, member.skills, nextPolicyId)
           member.role = trimmedOptional(mutation.role)
           member.provider = selection.provider
           member.model = selection.model
@@ -889,6 +962,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       validateStagedGraph(fresh, true)
       const selections = []
       for (const member of fresh.members) {
+        const frozenSkills = resolveMemberSkills(config.skills ?? {}, member.skills, member.toolPolicy)
+        if (member.skillPromptSha256 !== undefined && member.skillPromptSha256 !== frozenSkills.sha256) {
+          throw new Error(`owner skill prompt for member "${member.name}" no longer matches its persisted hash`)
+        }
         const selection = await resolveMemberLlmSelection(ctx, captain, {
           provider: member.provider, model: member.model, reasoningEffort: member.reasoningEffort,
           fallback: member.fallback, fallbacks: member.fallbacks,
@@ -1009,6 +1086,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             name: { type: 'string', required: true }, role: { type: 'string' },
             provider: { type: 'string' }, model: { type: 'string' }, reasoning_effort: { type: 'string' },
             tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
+            skills: { type: 'array', items: { type: 'string' }, description: 'Optional owner-declared skill ids; unknown ids fail before persistence.' },
           } } },
           tasks: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
             id: { type: 'string', required: true, description: 'Local reference used by dependencies in this plan; the result maps it to a durable task id.' },
@@ -1207,6 +1285,155 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   }))
 
   ctx.tools.register(defineTool({
+    name: 'agent_teams_invoke_profile',
+    description: 'Invoke one or more explicitly named members from a configured profile without creating a Team, DAG, task records, or durable .agent-teams state. Member provider/model/reasoning/persona/tool-policy/skill configuration is reused exactly. Results are keyed by member and returned in request order.',
+    parameters: {
+      profile: { type: 'string', required: true, description: 'Configured profile name.' },
+      members: { type: 'array', items: { type: 'string' }, required: true, description: 'Explicit member names from that profile. Unnamed members never start.' },
+      prompt: { type: 'string', required: true, description: 'Task prompt used by every selected member.' },
+      timeoutMs: { type: 'number', description: 'Per-member timeout in milliseconds (default 180000, min 1000, max 1800000).' },
+      concurrency: { type: 'number', description: 'Maximum simultaneous direct invocations (default 2, min 1, max 4).' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          results: {
+            type: 'array', required: true,
+            items: { type: 'object', additionalProperties: false, properties: {
+              member: { type: 'string', required: true },
+              status: { type: 'string', required: true },
+              output: { type: 'string', required: true },
+              stopReason: { type: 'string', required: true },
+              diagnostic: { type: 'string' },
+            } },
+          },
+        },
+      },
+      render: (args, value) => [{
+        type: 'text',
+        text: `Direct profile invocation (${value.results.length} member${value.results.length === 1 ? '' : 's'}):\n${value.results.map(item => `${item.member} [${item.status}/${item.stopReason}]${item.output === '' ? '' : `\n${item.output}`}${item.diagnostic === undefined ? '' : `\nDiagnostic: ${item.diagnostic}`}`).join('\n\n')}`,
+      }],
+    },
+    async execute(args, exec) {
+      const captain = requireCaptain(exec)
+      const profileName = args.profile.trim()
+      if (profileName === '') throw new Error('profile must not be empty')
+      if (typeof args.prompt !== 'string' || args.prompt.trim() === '') throw new Error('prompt must not be empty')
+      const names = args.members.map((name) => name.trim())
+      if (names.length === 0) throw new Error('select at least one profile member')
+      if (new Set(names).size !== names.length) throw new Error('profile member names must be unique')
+      if (names.some(name => name === '')) throw new Error('profile member names must not be empty')
+      const concurrency = args.concurrency ?? 2
+      if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 4) {
+        throw new Error('concurrency must be an integer from 1 to 4')
+      }
+      const timeoutMs = args.timeoutMs ?? 180_000
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 1_800_000) {
+        throw new Error('timeoutMs must be an integer from 1000 to 1800000')
+      }
+      // Resolve and validate the whole selected roster before the first child
+      // start. Invalid input therefore performs zero model calls.
+      const profile = resolveTeamProfile(config.profiles, profileName, config.maxMembers)
+      const byName = new Map(profile.members.map(member => [member.name, member]))
+      for (const name of names) {
+        if (!byName.has(name)) throw new Error(`profile "${profile.name}" has no member "${name}"`)
+      }
+      const selected = names.map(name => byName.get(name)!)
+      const selections: Awaited<ReturnType<typeof resolveMemberLlmSelection>>[] = []
+      const resolvedMembers: TeamMember[] = []
+      for (const template of selected) {
+        const selection = await resolveMemberLlmSelection(ctx, captain, {
+          provider: template.provider,
+          model: template.model,
+          defaultModel: config.memberModel,
+          defaultProvider: config.memberLlmProvider,
+          reasoningEffort: template.reasoningEffort,
+          fallback: template.fallback ?? profile.fallback ?? config.fallback,
+          fallbacks: template.fallbacks ?? profile.fallbacks ?? config.fallbacks,
+        }, exec.signal)
+        selections.push(selection)
+        const skillSelection = resolveMemberSkills(config.skills ?? {}, template.skills, template.toolPolicy)
+        const toolSelection = memberToolSelection(config, captain, skillSelection.toolPolicy ?? template.toolPolicy)
+        resolvedMembers.push({
+          id: '', name: template.name, role: template.role,
+          provider: selection.provider, model: selection.model,
+          reasoningEffort: selection.reasoningEffort,
+          executionPrompt: template.executionPrompt ?? profile.executionPrompt ?? config.executionPrompt,
+          ...selection.fallback === undefined ? {} : { fallback: selection.fallback },
+          ...selection.fallbacks === undefined ? {} : { fallbacks: selection.fallbacks },
+          ...toolSelection,
+          ...skillSelection.ids.length === 0 ? {} : { skills: skillSelection.ids, skillPromptSha256: skillSelection.sha256 },
+          joinedAt: Date.now(), status: 'idle',
+        })
+      }
+      await validateMemberLlmSelections(ctx, selections, exec.signal)
+      const labelId = `direct-${createHash('sha256').update(`${Date.now()}\0${names.join('\0')}\0${args.prompt}`).digest('hex').slice(0, 12)}`
+      const syntheticTeam: TeamState = {
+        name: `Direct profile ${profile.name}`,
+        id: labelId,
+        description: args.prompt,
+        profile: { name: profile.name, protocol: profile.protocol, executionPrompt: profile.executionPrompt },
+        captainSessionId: captain.id,
+        createdAt: Date.now(), members: resolvedMembers, tasks: [], taskSeq: 0, phase: 'running',
+      }
+      const receipts: Array<Awaited<ReturnType<typeof spawnMember>>> = []
+      const results: Array<{ member: string; status: 'completed' | 'failed' | 'timeout' | 'cancelled'; output: string; stopReason: string; diagnostic?: string }> = []
+      let cursor = 0
+      const runOne = async (index: number): Promise<void> => {
+        const member = resolvedMembers[index]!
+        const selection = selections[index]!
+        let receipt: Awaited<ReturnType<typeof spawnMember>> | undefined
+        try {
+          exec.signal.throwIfAborted()
+          receipt = await spawnMember(ctx, memberRuntime(config), memberSelections, selection, captain, syntheticTeam, member, config.stateDir, exec.signal, args.prompt, member.toolFilter, memberRelaxableDeny(config, member))
+          receipts.push(receipt)
+          const outcome = await new Promise<unknown>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('__timeout__')), timeoutMs)
+            const abort = (): void => {
+              clearTimeout(timer)
+              reject(exec.signal.reason ?? new DOMException('cancelled', 'AbortError'))
+            }
+            if (exec.signal.aborted) return abort()
+            exec.signal.addEventListener('abort', abort, { once: true })
+            const result = receipt?.result ?? Promise.resolve({ stopReason: 'completed' })
+            void result.then(
+              value => { clearTimeout(timer); exec.signal.removeEventListener('abort', abort); resolve(value) },
+              error => { clearTimeout(timer); exec.signal.removeEventListener('abort', abort); reject(error) },
+            )
+          })
+          const normalized = normalizeDirectResult(outcome)
+          results[index] = { member: member.name, status: normalized.stopReason === 'completed' ? 'completed' : 'failed', ...normalized }
+        } catch (error: unknown) {
+          const aborted = exec.signal.aborted
+          const timedOut = error instanceof Error && error.message === '__timeout__'
+          results[index] = {
+            member: member.name,
+            status: aborted ? 'cancelled' : timedOut ? 'timeout' : 'failed',
+            output: '',
+            stopReason: aborted ? 'cancelled' : timedOut ? 'timeout' : 'error',
+            diagnostic: error instanceof Error ? error.message : String(error),
+          }
+        }
+      }
+      const workers = Array.from({ length: Math.min(concurrency, selected.length) }, async () => {
+        for (;;) {
+          const index = cursor
+          cursor += 1
+          if (index >= selected.length) return
+          await runOne(index)
+        }
+      })
+      try {
+        await Promise.all(workers)
+      } finally {
+        await Promise.allSettled(receipts.map(receipt => receipt.dispose?.() ?? Promise.resolve()))
+      }
+      return { results: results.map((result, index) => result ?? ({ member: selected[index]!.name, status: 'failed', output: '', stopReason: 'error', diagnostic: 'invocation produced no result' })) }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'agent_teams_edit_plan',
     description: 'Atomically revise an AgentTeams plan. While staged, edit tasks and roster without starting work. While running, only update_task is allowed, and only for pending tasks with no prior attempt: correct dependencies, assignees or descriptions before they start; newly ready work is scheduled after commit. Never edit active/finished attempts. Submit dependent edits in order. Never modify .agent-teams files directly.',
     parameters: {
@@ -1373,6 +1600,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       reasoning_effort: { type: 'string', description: 'Optional reasoning effort override: one of the target model\'s supported effort ids, or "default" to force its default. When omitted, the captain\'s effort is inherited only for the same provider/model; a changed route uses the target default.' },
       executionPrompt: { type: 'string', description: 'Optional member-specific execution prompt. It remains editable while staged.' },
       tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
+      skills: { type: 'array', items: { type: 'string' }, description: 'Optional owner-declared skill ids (max 8, unique). Unknown ids fail before persistence; never pass raw prompt text.' },
     },
     output: {
       schema: {
@@ -1425,7 +1653,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           fallback: config.fallback,
           fallbacks: config.fallbacks,
         }, exec.signal)
-        const toolSelection = memberToolSelection(config, captain, optionalToolPolicyId(args.tool_policy))
+        const skillSelection = resolveMemberSkills(config.skills ?? {}, args.skills, optionalToolPolicyId(args.tool_policy))
+        const toolSelection = memberToolSelection(config, captain, skillSelection.toolPolicy)
         const member: TeamMember = {
           id: '',
           name: memberName,
@@ -1436,6 +1665,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ...selection.fallback === undefined ? {} : { fallback: selection.fallback },
           executionPrompt: trimmedOptional(args.executionPrompt),
           ...toolSelection,
+          ...skillSelection.ids.length === 0 ? {} : { skills: skillSelection.ids, skillPromptSha256: skillSelection.sha256 },
           joinedAt: Date.now(),
           status: 'idle',
         }
@@ -1464,6 +1694,133 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       await scheduler.kickMember(workspace, team.id, created.member_name, await liveLeadAnchorAgent(ctx, team, captain))
       const latest = (await readTeam(stateRoot, team.id))?.members.find(member => member.name === created.member_name)
       return latest === undefined ? created : { ...created, member_id: latest.id, status: latest.status }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_teams_update_member_route',
+    description: 'Change an idle running-team member\'s primary route. Rejects staged/halted/removed/stopping members, live running turns, and members with an open task attempt. Validation and persistence are atomic; the next turn cold-resumes with the new route and existing task/attempt identity is untouched.',
+    parameters: {
+      member_name: { type: 'string', required: true, description: 'Existing running-team member name.' },
+      provider: { type: 'string', description: 'Optional replacement LLM provider. Omit to retain the current provider.' },
+      model: { type: 'string', description: 'Optional replacement model. Omit to retain the current model.' },
+      reasoning_effort: { type: 'string', description: 'Optional reasoning effort, or "default" to use the target model default.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        member_name: { type: 'string', required: true },
+        provider: { type: 'string', required: true },
+        model: { type: 'string', required: true },
+        reasoning_effort: { type: 'string' },
+      } },
+      render: (_args, value) => [{ type: 'text', text: `Member "${value.member_name}" route updated to ${value.provider}/${value.model}${value.reasoning_effort === undefined ? '' : ` (reasoning ${value.reasoning_effort})`}; it applies on the next turn.` }],
+    },
+    async execute(args, exec) {
+      const captain = requireCaptain(exec)
+      const workspace = workspaceOf(captain)
+      const stateRoot = stateRootOf(workspace, config)
+      const team = await requireCaptainTeam(ctx, workspace, config, captain)
+      const memberName = args.member_name.trim()
+      if (memberName === '') throw new Error('member_name must not be empty')
+      if (args.provider !== undefined && args.provider.trim() === '') throw new Error('provider must not be empty')
+      if (args.model !== undefined && args.model.trim() === '') throw new Error('model must not be empty')
+      if (args.reasoning_effort !== undefined && args.reasoning_effort.trim() === '') throw new Error('reasoning_effort must not be empty')
+      const prepared = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+        const fresh = await requireFreshCaptainTeam(ctx, stateRoot, team.id, captain.id)
+        if (fresh.phase === 'staged') throw new Error('route changes are only available after the plan is approved')
+        if (fresh.halted === true) throw new Error('team is halted; resume before changing member routes')
+        const member = requireMember(fresh, memberName)
+        if (member.status === 'removed') throw new Error(`member "${member.name}" has been removed`)
+        if (member.stopping === true) throw new Error(`member "${member.name}" is already stopping`)
+        const openTask = memberOpenTask(fresh, member.name)
+        if (openTask !== undefined) throw new Error(`member "${member.name}" owns open task "${openTask.id}"; finish or reassign it before changing its route`)
+        const activeLease = fresh.activations?.some(lease => lease.memberId === member.id && (
+          lease.permitHeld === true || lease.state === 'pending' || lease.state === 'started' || lease.state === 'recovering'))
+        const live = member.id === '' ? undefined : ctx.agents.get(member.id as SessionId)
+        if (activeLease || (live !== undefined && live.status === 'running')) {
+          throw new Error(`member "${member.name}" has an active turn; wait until it is idle with no open work`)
+        }
+        const original = {
+          provider: member.provider,
+          model: member.model,
+          reasoningEffort: member.reasoningEffort,
+          activeProvider: member.activeProvider,
+          activeModel: member.activeModel,
+          fallbackActive: member.fallbackActive,
+          spawnError: member.spawnError,
+        }
+        member.stopping = true
+        await writeTeam(stateRoot, fresh)
+        return { member: { ...member }, original }
+      })
+      let next: Awaited<ReturnType<typeof resolveMemberLlmSelection>> | undefined
+      try {
+        const requestedProvider = args.provider?.trim() || prepared.member.provider
+        const requestedModel = args.model?.trim() || prepared.member.model
+        if (requestedProvider === undefined || requestedProvider === '' || requestedModel === undefined || requestedModel === '') {
+          throw new Error(`member "${memberName}" has no complete primary route to update`)
+        }
+        const requestedEffort = args.reasoning_effort === undefined
+          ? prepared.member.reasoningEffort
+          : args.reasoning_effort.trim() === 'default' ? undefined : args.reasoning_effort.trim()
+        next = await resolveMemberLlmSelection(ctx, captain, {
+          provider: requestedProvider,
+          model: requestedModel,
+          reasoningEffort: requestedEffort,
+          fallback: prepared.member.fallback,
+          fallbacks: prepared.member.fallbacks,
+        }, exec.signal)
+        await validateMemberLlmSelections(ctx, [next], exec.signal)
+        if (prepared.member.id !== '') await drainMemberChildren(ctx.subagents, captain, [prepared.member.id as SessionId])
+        const updated = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+          const fresh = await requireFreshCaptainTeam(ctx, stateRoot, team.id, captain.id)
+          const member = requireMember(fresh, memberName)
+          member.provider = next!.provider
+          member.model = next!.model
+          if (next!.reasoningEffort === undefined) delete member.reasoningEffort
+          else member.reasoningEffort = next!.reasoningEffort
+          if (next!.fallback === undefined) delete member.fallback
+          else member.fallback = next!.fallback
+          if (next!.fallbacks === undefined) delete member.fallbacks
+          else member.fallbacks = next!.fallbacks
+          delete member.activeProvider
+          delete member.activeModel
+          delete member.fallbackActive
+          delete member.spawnError
+          member.stopping = false
+          await writeTeam(stateRoot, fresh)
+          return member
+        })
+        await scheduler.kickTeam(workspace, team.id, await liveLeadAnchorAgent(ctx, freshTeamRef(team, captain), captain))
+        return {
+          member_name: updated.name,
+          provider: updated.provider!,
+          model: updated.model!,
+          ...updated.reasoningEffort === undefined ? {} : { reasoning_effort: updated.reasoningEffort },
+        }
+      } catch (error: unknown) {
+        await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+          const fresh = await readTeam(stateRoot, team.id)
+          const member = fresh?.members.find(candidate => candidate.name === memberName)
+          if (fresh === undefined || member === undefined) return
+          if (prepared.original.provider === undefined) delete member.provider
+          else member.provider = prepared.original.provider
+          if (prepared.original.model === undefined) delete member.model
+          else member.model = prepared.original.model
+          if (prepared.original.reasoningEffort === undefined) delete member.reasoningEffort
+          else member.reasoningEffort = prepared.original.reasoningEffort
+          if (prepared.original.activeProvider === undefined) delete member.activeProvider
+          else member.activeProvider = prepared.original.activeProvider
+          if (prepared.original.activeModel === undefined) delete member.activeModel
+          else member.activeModel = prepared.original.activeModel
+          if (prepared.original.fallbackActive === undefined) delete member.fallbackActive
+          else member.fallbackActive = prepared.original.fallbackActive
+          member.stopping = false
+          member.spawnError = error instanceof Error ? error.message : String(error)
+          await writeTeam(stateRoot, fresh)
+        })
+        throw error
+      }
     },
   }))
 
@@ -2404,6 +2761,90 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   }))
 
   ctx.tools.register(defineTool({
+    name: 'agent_teams_collect',
+    description: 'Collect a deterministic join barrier for captain aggregation. Returns task outputs in stable or explicitly requested order, fails closed on nonterminal required work unless partial=true, emits one idempotent all-terminal mailbox notice, and never calls a model. digest=extractive adds a deterministic summary only.',
+    parameters: {
+      task_ids: { type: 'array', items: { type: 'string' }, description: 'Ordered required task ids. Omit to register all tasks present at first collect.' },
+      partial: { type: 'boolean', description: 'Allow a partial snapshot while some required tasks are still nonterminal. Failed/cancelled required tasks still make ok=false.' },
+      digest: { type: 'string', enum: ['none', 'extractive'], description: 'Digest mode. Defaults to none; extractive is deterministic and does not synthesize with a model.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        ok: { type: 'boolean', required: true },
+        partial: { type: 'boolean', required: true },
+        tasks: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
+          id: { type: 'string', required: true }, subject: { type: 'string', required: true },
+          status: { type: 'string', required: true }, assignee: { type: 'string' },
+          attempt: { type: 'number' }, attempt_id: { type: 'string' }, output: { type: 'string' },
+          verdict: { type: 'string' }, blockers: { type: 'array', items: { type: 'string' }, required: true },
+        } } },
+        digest: { type: 'string' },
+      } },
+      render: (_args, value) => [{ type: 'text', text: `${value.ok ? 'Join barrier ready' : 'Join barrier incomplete'}${value.partial ? ' (partial)' : ''}: ${value.tasks.map(task => `${task.id}=${task.status}`).join(', ')}${value.digest === undefined ? '' : `\n${value.digest}`}` }],
+    },
+    async execute(args, exec) {
+      const captain = requireCaptain(exec)
+      const workspace = workspaceOf(captain)
+      const stateRoot = stateRootOf(workspace, config)
+      const team = await requireCaptainTeam(ctx, workspace, config, captain)
+      const digestMode = args.digest ?? 'none'
+      if (digestMode !== 'none' && digestMode !== 'extractive') throw new Error('digest must be "none" or "extractive"')
+      return withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+        const fresh = await requireFreshCaptainTeam(ctx, stateRoot, team.id, captain.id)
+        const omitted = args.task_ids === undefined || args.task_ids.length === 0
+        const priorAll = [...(fresh.joinBarriers ?? [])].reverse().find(item => item.allTasks === true)
+        const requested = omitted && priorAll !== undefined
+          ? [...priorAll.taskIds]
+          : omitted
+            ? stableTaskIds(fresh.tasks.map(task => task.id))
+            : args.task_ids!.map(id => id.trim())
+        if (requested.length === 0) throw new Error('collect requires at least one task')
+        if (requested.some(id => id === '')) throw new Error('task_ids must not contain blank ids')
+        if (new Set(requested).size !== requested.length) throw new Error('task_ids must not contain duplicates')
+        for (const id of requested) {
+          if (!fresh.tasks.some(task => task.id === id)) throw new Error(`task "${id}" does not exist in team "${fresh.name}"`)
+        }
+        const byId = new Map(fresh.tasks.map(task => [task.id, task]))
+        const collected = requested.map(id => collectTaskView(byId.get(id)!, fresh.tasks))
+        const allTerminal = collected.every(task => !['pending', 'claimed', 'in_progress'].includes(task.status))
+        const failedRequired = collected.some(task => task.status === 'failed' || task.status === 'cancelled')
+        const partial = !allTerminal || failedRequired
+        const ok = !failedRequired && (allTerminal || args.partial === true)
+        const key = createHash('sha256').update(requested.join('\0')).digest('hex')
+        const noticeId = `join-ready:${key}`
+        const barriers = fresh.joinBarriers ?? []
+        let barrier = barriers.find(item => item.key === key)
+        if (barrier === undefined) {
+          barrier = { key, taskIds: [...requested], digest: digestMode, allTasks: omitted }
+          barriers.push(barrier)
+        } else {
+          barrier.digest = digestMode
+        }
+        // Keep only recent unique barriers; task ids are the stable identity.
+        const deduped = [...new Map(barriers.map(item => [item.key, item])).values()].slice(-32)
+        fresh.joinBarriers = deduped
+        const resultDigest = ok && digestMode === 'extractive' ? extractiveCollectDigest(collected) : undefined
+        if (allTerminal) {
+          const content = `Join barrier ${ok ? 'ready' : 'completed with required failures'} for ${requested.join(', ')}.\n${collected.map(task => `${task.id} [${task.status}] ${task.subject}${task.output === undefined ? '' : `\n${task.output.slice(0, 500)}`}`).join('\n')}`
+          const notice: TeamMessage = { id: noticeId, from: 'agent-teams', to: CAPTAIN_KEY, content, ts: Date.now() }
+          const inserted = await appendMailboxOnce(stateRoot, fresh.id, CAPTAIN_KEY, notice)
+          if (inserted || barrier.notifiedAt === undefined) {
+            barrier.notifiedAt = Date.now()
+            barrier.messageId = noticeId
+          }
+        }
+        await writeTeam(stateRoot, fresh)
+        return {
+          ok,
+          partial,
+          tasks: collected,
+          ...resultDigest === undefined ? {} : { digest: resultDigest },
+        }
+      })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'agent_teams_status',
     description: 'Team snapshot: members with live activity and tasks with status/assignee/dependencies/output. Captains also see every team mailbox; members see only their own inbox. Use after mailbox progress deliveries or for an explicit status request. After dispatch, end your turn while members work; do not repeatedly poll.',
     parameters: {},
@@ -2721,6 +3162,7 @@ async function initializeProfileTeam(input: {
       model: trimmedOptional(member.model),
       reasoning_effort: trimmedOptional(member.reasoning_effort),
       tool_policy: optionalToolPolicyId(member.tool_policy),
+      skills: Array.isArray(member.skills) ? member.skills : undefined,
     })),
   }
   const profile = resolveTeamProfile(inlinePlan === undefined ? input.config.profiles : { [input.profileName]: inlinePlan }, input.profileName, input.config.maxMembers)
@@ -2759,9 +3201,10 @@ async function initializeProfileTeam(input: {
     ...input.staged ? { phase: 'staged' as const, planReviewState: 'awaiting_review' as const } : {},
     members: profile.members.map((template, index) => {
       const selection = selections[index]!
-      // A profile member selects a policy by id; an unknown id fails here,
-      // before the team directory and any child session exist (#59).
-      const toolSelection = memberToolSelection(input.config, input.captain, template.toolPolicy)
+      // A profile member selects a policy and skills by id; unknown ids fail
+      // here, before the team directory and any child session exist (#59/#244).
+      const skillSelection = resolveMemberSkills(input.config.skills ?? {}, template.skills, template.toolPolicy)
+      const toolSelection = memberToolSelection(input.config, input.captain, skillSelection.toolPolicy ?? template.toolPolicy)
       return {
         id: '',
         name: template.name,
@@ -2773,6 +3216,7 @@ async function initializeProfileTeam(input: {
         ...selection.fallback === undefined ? {} : { fallback: selection.fallback },
         ...selection.fallbacks === undefined ? {} : { fallbacks: selection.fallbacks },
         ...toolSelection,
+        ...skillSelection.ids.length === 0 ? {} : { skills: skillSelection.ids, skillPromptSha256: skillSelection.sha256 },
         joinedAt: now,
         status: 'idle' as const,
       }
@@ -2971,6 +3415,7 @@ export function schedulerRuntimeConfig(
 export function memberRuntime(config: ToolsConfig): MemberRuntimeConfig {
   return {
     provider: config.memberProvider,
+    skills: config.skills,
     maxDepth: config.memberMaxDepth,
     executionPrompt: config.executionPrompt,
     fallback: config.fallback,

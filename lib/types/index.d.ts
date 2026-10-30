@@ -21,7 +21,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { type ToolsConfig } from './tools.ts';
-import { type TeamProfileConfig } from './profiles.ts';
+import { type SkillBindingConfig, type TeamProfileConfig } from './profiles.ts';
 import { type MemberToolPolicy } from './tool-policies.ts';
 export declare const name = "agent-teams";
 export declare const inject: string[];
@@ -83,6 +83,11 @@ export interface Config {
      * stay denied either way.
      */
     toolPolicies?: Record<string, MemberToolPolicy>;
+    /**
+     * Owner-declared reusable member skill snippets keyed by id (#244). Profile
+     * members select ids only; raw prompt bundles never come from the captain.
+     */
+    skills?: Record<string, SkillBindingConfig>;
     /** Prompt-section order for the usage policy (default `117`, after delegation policy). */
     promptSectionOrder?: number;
     /**

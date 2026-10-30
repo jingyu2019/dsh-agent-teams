@@ -40,7 +40,7 @@ import { fileURLToPath } from 'node:url'
 import { collectArchivedTeamsActivity, collectTeamsActivity } from './snapshot.ts'
 import { findTeamByCaptain } from './state.ts'
 import { leadIdentityOfAsync } from './lineage.ts'
-import { formatProfilesForPrompt, type TeamProfileConfig } from './profiles.ts'
+import { formatProfilesForPrompt, normalizeSkillCatalog, type SkillBindingConfig, type TeamProfileConfig } from './profiles.ts'
 import { parseToolPolicies, type MemberToolPolicy } from './tool-policies.ts'
 import { installTeamCapabilities } from './capabilities.ts'
 import { agentTeamsSource, observedSessionFormatVersion } from './harness-compat.ts'
@@ -114,6 +114,11 @@ export interface Config {
    * stay denied either way.
    */
   toolPolicies?: Record<string, MemberToolPolicy>
+  /**
+   * Owner-declared reusable member skill snippets keyed by id (#244). Profile
+   * members select ids only; raw prompt bundles never come from the captain.
+   */
+  skills?: Record<string, SkillBindingConfig>
   /** Prompt-section order for the usage policy (default `117`, after delegation policy). */
   promptSectionOrder?: number
   /**
@@ -168,6 +173,8 @@ export const Config: z<Config> = z.object({
       fallbacks: fallbackRoutesConfig,
       // Owner-declared tool-policy id this profile member selects (#59).
       tool_policy: z.string(),
+      // Owner-declared skill ids, never raw prompt text (#244).
+      skills: z.array(z.string()),
     })).min(1).required(),
     taskPlanning: z.union([z.const('captain'), z.const('seed')]),
     reviewPolicy: z.object({
@@ -186,6 +193,11 @@ export const Config: z<Config> = z.object({
     })),
   })).default({}),
   toolPolicies: z.dict(toolPolicyConfig).default({}),
+  skills: z.dict(z.object({
+    version: z.string().required(),
+    prompt: z.string().required(),
+    toolPolicy: z.string(),
+  })).default({}),
   memberMaxDepth: z.natural().default(0),
   maxMembers: z.natural().min(1).default(8),
   maxConcurrentWorkers: z.natural().min(1),
@@ -208,6 +220,9 @@ export function usageSectionText(toolNames: string, profilesText = '', parallelT
 8. When full quality mode is requested: requirements → implementation → verification → review → integration. Plan the entire DAG while staged, including implementation before requirements finishes and integration depending on review round 1. Failed review automatically adds repair + next review and rewires pending downstream gates. Do not recreate this loop, omit integration or depend on a failed task. Review acceptance judges the latest implementation. Do not put smoke-test scripts into task instructions.
 9. Halted means the user stopped work (including the captain turn). Resume only on a later explicit user request with a reason, via agent_teams_resume or create_task({resume:true,resumeReason}); creating tasks alone never resumes. Escalated means the review loop hit its limit, not a halt. Deployment requires explicit user confirmation.
 10. Wait for all required tasks to be terminal and members idle/ready, present results, then delete/archive unless the user wants to continue. Never discard unfinished work without authorization.
+11. For a lightweight one-off or parallel expert call, use agent_teams_invoke_profile with a configured profile and explicit member names. It starts only those members and creates no Team, DAG, task, or durable team directory.
+12. Use agent_teams_collect as the join barrier for captain aggregation. It returns deterministic order and fails closed on nonterminal required tasks unless partial=true; digest=extractive is deterministic and never a model call.
+13. Change an idle member's route with agent_teams_update_member_route only when it owns no open attempt and is not running. The new route applies on its next turn without changing task or attempt identity.
 Tools: ${toolNames}${profilesText === '' ? '' : `\n\n${profilesText}`}${parallelToolCalls ? '\n\nParallel Emission is enabled: you may emit several AgentTeams tool calls in one assistant response. Calls still execute in their declared order; dependency ids must exist, and do not rely on a same-response forward reference succeeding. Never use parallel emission for exclusive lifecycle transitions.' : ''}`
 }
 
@@ -230,6 +245,7 @@ export function resolveToolsConfig(config: Config): ToolsConfig {
     // Owner configuration is validated once, at mount: an empty or malformed
     // policy must never reach a member creation path.
     toolPolicies: parseToolPolicies(config.toolPolicies),
+    skills: normalizeSkillCatalog(config.skills),
   }
 }
 

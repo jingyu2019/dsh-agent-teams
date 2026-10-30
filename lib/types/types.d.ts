@@ -419,6 +419,10 @@ export interface TeamMember {
      * member. Cleared by the next successful start.
      */
     spawnError?: string;
+    /** Owner-declared skill ids selected for this member, in stable order (#244). */
+    skills?: string[];
+    /** SHA-256 of the exact resolved owner skill prompt frozen at member creation. */
+    skillPromptSha256?: string;
 }
 /** One mailbox message. */
 export interface TeamMessage {
@@ -521,4 +525,17 @@ export interface TeamState {
     notificationSeq?: number;
     /** Durable parking/failure notice outbox. */
     notifications?: NotificationLedgerEntry[];
+    /** Durable deterministic collect/join barriers (#195), bounded by recent use. */
+    joinBarriers?: JoinBarrier[];
+}
+/** One durable collect barrier: the ordered tasks and delivery dedupe identity. */
+export interface JoinBarrier {
+    /** Stable identity derived from the ordered task ids. */
+    key: string;
+    taskIds: string[];
+    digest: 'none' | 'extractive';
+    /** True when the ids were captured because collect omitted task_ids. */
+    allTasks?: boolean;
+    notifiedAt?: number;
+    messageId?: string;
 }

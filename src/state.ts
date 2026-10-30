@@ -950,6 +950,11 @@ function isTeamMember(value: unknown): value is TeamMember {
     && (value['runtimeSetup'] === undefined || (isRecord(value['runtimeSetup'])
       && typeof value['runtimeSetup']['persona'] === 'string'
       && isMemberToolFilter(value['runtimeSetup']['toolFilter'])))
+    && (value['skills'] === undefined || (Array.isArray(value['skills'])
+      && value['skills'].length <= 8
+      && value['skills'].every(item => typeof item === 'string' && item.trim() !== '')))
+    && (value['skillPromptSha256'] === undefined
+      || (typeof value['skillPromptSha256'] === 'string' && /^[0-9a-f]{64}$/u.test(value['skillPromptSha256'])))
     && isFiniteNumber(value['joinedAt'])
     && (value['status'] === 'idle' || value['status'] === 'working' || value['status'] === 'removed')
 }
@@ -1240,6 +1245,18 @@ function isRouteCursor(value: unknown): value is import('./types.ts').RouteCurso
       && isFiniteNumber(last['at'])))
 }
 
+/** Validate one durable collect barrier. */
+function isJoinBarrier(value: unknown): value is import('./types.ts').JoinBarrier {
+  return isRecord(value)
+    && typeof value['key'] === 'string' && value['key'] !== ''
+    && Array.isArray(value['taskIds']) && value['taskIds'].length <= 256
+    && value['taskIds'].every(item => typeof item === 'string' && item !== '')
+    && (value['digest'] === 'none' || value['digest'] === 'extractive')
+    && (value['allTasks'] === undefined || typeof value['allTasks'] === 'boolean')
+    && (value['notifiedAt'] === undefined || isFiniteNumber(value['notifiedAt']))
+    && (value['messageId'] === undefined || typeof value['messageId'] === 'string')
+}
+
 /** Validate the full team record before it can participate in authorization. */
 function isTeamState(value: unknown, expectedId: string): value is TeamState {
   if (!isRecord(value)) return false
@@ -1266,6 +1283,9 @@ function isTeamState(value: unknown, expectedId: string): value is TeamState {
     && (value['haltedAt'] === undefined || isFiniteNumber(value['haltedAt']))
     && (value['reviewPolicy'] === undefined || isReviewPolicy(value['reviewPolicy']))
     && (value['escalated'] === undefined || typeof value['escalated'] === 'boolean')
+    && (value['joinBarriers'] === undefined || (Array.isArray(value['joinBarriers'])
+      && value['joinBarriers'].length <= 32
+      && value['joinBarriers'].every(isJoinBarrier)))
   if (!validShape) return false
 
   const members = value['members'] as TeamMember[]

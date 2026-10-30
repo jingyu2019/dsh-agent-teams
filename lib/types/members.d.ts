@@ -16,6 +16,7 @@ import { type Agent, type ModelSelection } from '@deepseek-ai/dsh-agent';
 import type { Session } from '@deepseek-ai/dsh-session';
 import { type MemberStartResult, type SessionFormatBearer } from './harness-compat.ts';
 import type { MemberToolFilter } from './tool-policies.ts';
+import { type SkillBindingConfig } from './profiles.ts';
 import { type RouteCursor, type RouteFailureClass, type TeamMember, type TeamModelFallback, type TeamState, type TeamTask } from './types.ts';
 /** Persona snapshot of a profile protocol; the full text lives on team.json. */
 export declare const PERSONA_PROTOCOL_MAX_CHARS = 400;
@@ -23,6 +24,8 @@ export declare const PERSONA_PROTOCOL_MAX_CHARS = 400;
 export interface MemberRuntimeConfig {
     /** Registered `ctx.subagents` provider name (must support continuable + persona). */
     provider: string;
+    /** Owner-declared skill snippets selected by profile members (#244). */
+    skills?: Record<string, SkillBindingConfig>;
     /** Child delegation depth cap (0 forbids delegation entirely). */
     maxDepth?: number;
     /** Plugin-wide execution prompt. */
@@ -299,7 +302,7 @@ export declare function installMemberSelectionRuntime(ctx: Context, stateDir: st
  * @param stateDir - configured state directory, so the member can locate the
  *   team files with its own file tools.
  */
-export declare function memberPersona(team: TeamState, member: TeamMember, stateDir: string, executionPrompt?: string, parallelToolCalls?: boolean): string;
+export declare function memberPersona(team: TeamState, member: TeamMember, stateDir: string, executionPrompt?: string, parallelToolCalls?: boolean, skillPrompt?: string): string;
 /**
  * The initial user message delivered when the member is created.
  * Counts non-terminal tasks already assigned to this member on the in-memory draft.
