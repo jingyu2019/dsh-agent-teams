@@ -2508,3 +2508,18 @@
   background: var(--dsw-alias-bg-l1);
   font: inherit;
 }
+
+.archiveWrap { position: relative; }
+.archiveDelete {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 2px 7px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  color: var(--dsw-alias-state-error-primary);
+  background: var(--dsw-alias-bg-l2);
+  font: inherit;
+  font-size: calc(9px * var(--agent-teams-font-scale, 1));
+  cursor: pointer;
+}

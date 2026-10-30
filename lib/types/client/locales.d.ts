@@ -272,6 +272,9 @@ export declare const zh: {
     'assignment.empty': string;
     'archive.label': string;
     'archive.discardedLabel': string;
+    'archive.delete': string;
+    'archive.deleteConfirm': string;
+    'archive.deleteFailed': string;
 };
 /** AgentTeams namespace key union. */
 export type AgentTeamsLocaleKey = keyof typeof zh;
@@ -546,6 +549,9 @@ export declare const en: {
     'assignment.empty': string;
     'archive.label': string;
     'archive.discardedLabel': string;
+    'archive.delete': string;
+    'archive.deleteConfirm': string;
+    'archive.deleteFailed': string;
 };
 /** Translation function consumed by pure view helpers. */
 export type AgentTeamsTranslate = (key: AgentTeamsLocaleKey, params?: Record<string, unknown>) => string;

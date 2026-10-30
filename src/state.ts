@@ -1628,6 +1628,14 @@ export async function listArchivedTeamIds(stateRoot: string): Promise<string[]> 
   }
 }
 
+/** Permanently remove one archived team directory after explicit user approval. */
+export async function deleteArchivedTeamDir(stateRoot: string, teamId: string): Promise<boolean> {
+  if (teamId.trim() === '' || sanitizeKey(teamId) !== teamId) throw new Error('invalid archived team id')
+  if (await readArchivedTeam(stateRoot, teamId) === undefined) return false
+  await rm(join(stateRoot, 'archive', teamId), { recursive: true, force: true })
+  return true
+}
+
 // ── activity snapshot (server-side, like the Claude Code desktop watcher) ──
 
 /** Visual task state for the activity panel. */

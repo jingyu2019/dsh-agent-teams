@@ -39,7 +39,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { collectArchivedTeamsActivity, collectTeamsActivity } from './snapshot.ts'
-import { findTeamByCaptain, readTeam, sanitizeKey, withTeamLock, writeTeam } from './state.ts'
+import { deleteArchivedTeamDir, findTeamByCaptain, readArchivedTeam, readTeam, sanitizeKey, withTeamLock, writeTeam } from './state.ts'
 import { parseRasterAvatar, readManagedAvatar, storeManagedAvatar } from './avatars.ts'
 import { readAttachment } from './attachments.ts'
 import { loadAgentLibrary } from './agent-library.ts'
@@ -878,6 +878,37 @@ export function apply(ctx: Context, config: Config): void {
       res.end()
     },
   }), 'agent-teams: attachment read route')
+
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/plugins/dsh-agent-teams/archive',
+    handler: async (req, res) => {
+      if (req.method !== 'DELETE') {
+        res.writeHead(405, { allow: 'DELETE', 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
+      const url = new URL(req.url ?? '/', 'http://x')
+      const sessionId = url.searchParams.get('sessionId')?.trim() ?? ''
+      const teamId = url.searchParams.get('teamId')?.trim() ?? ''
+      const captain = sessionId === '' ? undefined : ctx.agents.get(sessionId as import('@deepseek-ai/dsh-session').SessionId)
+      if (captain === undefined || teamId === '' || sanitizeKey(teamId) !== teamId) {
+        res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ error: 'archived team not found for this session' }))
+        return
+      }
+      const stateRoot = join(captain.session.header.cwd ?? process.cwd(), resolved.stateDir)
+      const archived = await readArchivedTeam(stateRoot, teamId)
+      if (archived === undefined || archived.captainSessionId !== captain.id) {
+        res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ error: 'archived team not found for this session' }))
+        return
+      }
+      const deleted = await deleteArchivedTeamDir(stateRoot, teamId)
+      res.writeHead(deleted ? 200 : 404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(JSON.stringify({ deleted, teamId }))
+    },
+  }), 'agent-teams: archive delete route')
 
   // Whale mascot artwork: serve the packaged V2 role/action images to the
   // activity panel. An explicit allowlist guards the route (no path

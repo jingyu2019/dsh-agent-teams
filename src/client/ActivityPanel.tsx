@@ -1678,6 +1678,16 @@ export function ActivityPanel({ sessionsList, modelDirectories, openMember, t, c
                   {visibleArchived.map((team) => (
                     <div key={`${team.captainSessionId}:${team.teamId}`} data-team-id={team.teamId} data-historic className={css.archivedWrap}>
                       <span className={css.archiveLabel}>{t(team.phase === 'staged' ? 'archive.discardedLabel' : 'archive.label')}</span>
+                      <button
+                        type="button"
+                        className={css.archiveDelete}
+                        onClick={() => {
+                          if (!window.confirm(t('archive.deleteConfirm'))) return
+                          void fetch(`/plugins/dsh-agent-teams/archive?sessionId=${encodeURIComponent(team.captainSessionId)}&teamId=${encodeURIComponent(team.teamId)}`, { method: 'DELETE', cache: 'no-store' })
+                            .then(response => { if (!response.ok) window.alert(t('archive.deleteFailed')) })
+                            .catch(() => window.alert(t('archive.deleteFailed')))
+                        }}
+                      >{t('archive.delete')}</button>
                       <TeamSection team={team} onNavigate={navigateToSession} t={t} historic motionPaused={!conversationVisible || !expanded} />
                     </div>
                   ))}
