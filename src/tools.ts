@@ -1396,6 +1396,44 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   }))
 
   ctx.tools.register(defineTool({
+    name: 'agent_teams_compact_member',
+    description: 'Run the host compaction service for one live idle team member. This uses ctx.compaction.compactNow; the plugin never fabricates compaction or summarizes history itself.',
+    parameters: {
+      member_name: { type: 'string', required: true, description: 'Idle member whose live session should be compacted.' },
+      confirmed_by_user: { type: 'boolean', required: true, description: 'Set true only after the user explicitly asks to compact this member.' },
+    },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {
+      member_name: { type: 'string', required: true }, compacted: { type: 'boolean', required: true },
+    } }, render: (_args, value) => [{ type: 'text', text: value.compacted ? `Host compaction completed for member ${value.member_name}.` : `Host compaction found no safe range for member ${value.member_name}.` }] },
+    async execute(args, exec) {
+      if (args.confirmed_by_user !== true) throw new Error('compacting a member requires explicit user confirmation')
+      const captain = requireCaptain(exec)
+      const workspace = workspaceOf(captain)
+      const stateRoot = stateRootOf(workspace, config)
+      const team = await requireCaptainTeam(ctx, workspace, config, captain)
+      const member = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+        const fresh = await requireFreshCaptainTeam(ctx, stateRoot, team.id, captain.id)
+        const found = requireMember(fresh, args.member_name.trim())
+        if (found.status === 'working' || found.stopping === true) throw new Error(`member "${found.name}" is running; wait until it is idle`)
+        if (fresh.tasks.some(task => task.assignee === found.name && task.attemptId !== undefined && !TERMINAL_TASK_STATUSES.includes(task.status))) {
+          throw new Error(`member "${found.name}" still owns an open attempt`)
+        }
+        return { ...found }
+      })
+      const live = ctx.agents.get(member.id as SessionId)
+      if (live === undefined) throw new Error(`member "${member.name}" is not live; start it before compaction`)
+      const services = ctx as unknown as { compaction?: { compactNow?: (agent: { session: Agent['session']; options: { provider?: string; model?: string } }, signal: AbortSignal) => Promise<unknown> } }
+      const engine = services.compaction ?? ((ctx as unknown as { get?: (name: string) => unknown }).get?.('compaction') as typeof services.compaction)
+      if (engine?.compactNow === undefined) throw new Error('this Harness composition has no compaction service')
+      const result = await engine.compactNow(
+        { session: live.session, options: { ...live.options?.provider === undefined ? {} : { provider: live.options.provider }, ...live.options?.model === undefined ? {} : { model: live.options.model } } },
+        exec.signal,
+      )
+      return { member_name: member.name, compacted: result !== null && result !== undefined }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'agent_teams_reset_member_context',
     description: 'Reset one idle member to a fresh child context without removing its roster row, route, skills or worktree lane. Requires explicit user confirmation; refuses members with an active turn or open attempt.',
     parameters: {

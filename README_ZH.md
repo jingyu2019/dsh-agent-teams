@@ -219,6 +219,8 @@ dsh plugin --profile web add github:NanmiCoder/dsh-agent-teams
 
 `agent_teams_reset_member_context` 可在用户明确确认后退役空闲成员的子会话；成员行、路由、技能和工作树保持不变，下一项任务使用全新的子上下文。
 
+`agent_teams_compact_member` 对指定的在线空闲成员调用宿主 `ctx.compaction.compactNow`；插件不会伪造压缩，也不会自行总结历史。
+
 ## 使用边界
 
 - 一个队长同一时间只能带一个活动团队。

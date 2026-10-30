@@ -230,6 +230,8 @@ Attachments accept only regular files in the sender's task scope or an owner-con
 
 `agent_teams_reset_member_context` retires an idle member's child session after explicit user confirmation. The roster row, route, skills and worktree lane stay; the next task starts a fresh child context.
 
+`agent_teams_compact_member` invokes the host `ctx.compaction.compactNow` service for one live idle member; the plugin does not fabricate compaction or summarize history itself.
+
 ## Boundaries
 
 - One captain leads one active team at a time.
