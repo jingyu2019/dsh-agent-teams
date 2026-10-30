@@ -17,6 +17,7 @@ import type { Session } from '@deepseek-ai/dsh-session';
 import { type MemberStartResult, type SessionFormatBearer } from './harness-compat.ts';
 import type { MemberToolFilter } from './tool-policies.ts';
 import { type SkillBindingConfig } from './profiles.ts';
+import { type WorktreeConfig } from './worktrees.ts';
 import { type RouteCursor, type RouteFailureClass, type TeamMember, type TeamModelFallback, type TeamState, type TeamTask } from './types.ts';
 /** Persona snapshot of a profile protocol; the full text lives on team.json. */
 export declare const PERSONA_PROTOCOL_MAX_CHARS = 400;
@@ -42,6 +43,8 @@ export interface MemberRuntimeConfig {
     }[];
     /** Prompt-only opt-in for multiple AgentTeams calls in one response. */
     parallelToolCalls?: boolean;
+    /** Opt-in member-lane worktree isolation (#287). */
+    worktrees?: WorktreeConfig;
 }
 /** Durable provider/model/reasoning snapshot for one member. */
 export interface MemberLlmSelection {

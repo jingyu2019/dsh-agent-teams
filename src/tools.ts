@@ -27,6 +27,7 @@ import {
   discardMailboxMessages,
   appendMailbox,
   appendMailboxOnce,
+  appendTimeline,
   archiveTeamDir,
   beginTaskAttempt,
   CAPTAIN_KEY,
@@ -43,6 +44,7 @@ import {
   releaseMailboxDelivery,
   releaseActivationPermitsForDrainedMembers,
   releaseLegacyPermitForIdle,
+  renameMailboxOwner,
   readTeam,
   sanitizeKey,
   transitionError,
@@ -77,7 +79,10 @@ import { readArtifactScope, snapshotWorkspacePaths, workspacePathExists } from '
 import { agentTeamsSource, observedSessionFormatVersion, restrictableToolNames } from './harness-compat.ts'
 import { memberSpawnRelaxableDeny, optionalToolPolicy, requireToolPolicy, resolveMemberToolFilter, type MemberToolFilter, type MemberToolPolicy } from './tool-policies.ts'
 import type { ContractAmendmentInput } from './state.ts'
-import type { AcceptanceResult, ArtifactDigest, ArtifactSnapshot, CommandResult, ReviewFinding, ReviewVerdict, TaskKind } from './types.ts'
+import type { AcceptanceResult, ArtifactDigest, ArtifactRootConfig, ArtifactSnapshot, CommandResult, ReviewFinding, ReviewVerdict, TaskKind } from './types.ts'
+import { AttachmentError, copyAttachments } from './attachments.ts'
+import { deleteAgentPreset, loadAgentLibrary, saveAgentPreset } from './agent-library.ts'
+import { captureLaneState, preserveLane } from './worktrees.ts'
 import {
   deliverToMember,
   installRetiredMemberGuard,
@@ -130,6 +135,12 @@ export interface ToolsConfig {
   toolPolicies: Record<string, MemberToolPolicy>
   /** Owner-declared skill snippets selected by id (#244). */
   skills?: Record<string, SkillBindingConfig>
+  /** Owner-configured local roots for captain attachments (#70). */
+  artifactRoots?: ArtifactRootConfig[]
+  /** Opt-in immutable global agent preset library (#315). */
+  agentLibrary?: { enabled: boolean }
+  /** Opt-in member-lane worktree isolation (#287). */
+  worktrees?: import('./worktrees.ts').WorktreeConfig
 }
 
 /** Browser/UI mutations allowed while a plan is waiting for approval. */
@@ -137,6 +148,8 @@ export type StagedPlanMutation =
   | {
       action: 'update_member'
       memberName: string
+      /** Staged-only replacement display name; all staged references move atomically. */
+      newName?: string
       role?: string | null
       provider: string
       model: string
@@ -163,11 +176,20 @@ export type StagedPlanMutation =
   | { action: 'remove_task'; taskId: string }
   | { action: 'remove_member'; memberName: string }
 
+/** Browser-authored staged team inputs (#279). Every member/task is persisted before approval. */
+export interface ManualStagedTeamInput {
+  name: string
+  description?: string
+  members: Array<{ name: string; role?: string; provider?: string; model?: string; reasoning_effort?: string; executionPrompt?: string; tool_policy?: string; skills?: string[]; preset_id?: string }>
+  tasks?: Array<{ subject: string; description?: string; assignee?: string; dependencies?: string[] }>
+}
+
 /** Runtime bridge shared by model-facing tools and the Web staging surface. */
 export interface AgentTeamsRuntime {
   isPendingMember(agent: Agent): boolean
   updateStagedPlan(captain: Agent, teamId: string, mutation: StagedPlanMutation, signal?: AbortSignal): Promise<TeamState>
   updateStagedPlanBatch(captain: Agent, teamId: string, mutations: readonly StagedPlanMutation[], signal?: AbortSignal): Promise<TeamState>
+  createStagedTeam(captain: Agent, input: ManualStagedTeamInput, signal?: AbortSignal): Promise<TeamState>
   approveStagedTeam(captain: Agent, teamId: string, signal?: AbortSignal): Promise<{ teamId: string; members: number; tasks: number }>
   continueStagedPlanning(captain: Agent, teamId: string): Promise<{ teamId: string; alreadyWaiting: boolean }>
   discardStagedTeam(captain: Agent, teamId: string): Promise<{ teamId: string }>
@@ -854,6 +876,15 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         if (mutation.action === 'update_member') {
           const member = requireMember(fresh, mutation.memberName)
           if (member.id !== '') throw new Error(`staged member "${member.name}" was already spawned`)
+          let renameTo: string | undefined
+          if (mutation.newName !== undefined) {
+            const nextName = mutation.newName.trim()
+            if (nextName === '') throw new Error('new member name must not be empty')
+            if (sanitizeKey(nextName) === CAPTAIN_KEY) throw new Error(`member name "${nextName}" is reserved for the captain`)
+            const collision = fresh.members.find(candidate => candidate !== member && sanitizeKey(candidate.name) === sanitizeKey(nextName))
+            if (collision !== undefined) throw new Error(`member name "${nextName}" collides with "${collision.name}"`)
+            renameTo = nextName === member.name ? undefined : nextName
+          }
           const selection = await resolveMemberLlmSelection(ctx, captain, {
             provider: mutation.provider,
             model: mutation.model,
@@ -865,6 +896,24 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           // Re-resolve the member's frozen skill selection against this edit.
           // A conflicting tool policy fails before the batch is written.
           resolveMemberSkills(config.skills ?? {}, member.skills, nextPolicyId)
+          const selectedTool = mutation.toolPolicy === undefined
+            ? undefined
+            : memberToolSelection(config, captain, optionalToolPolicyId(mutation.toolPolicy))
+          if (renameTo !== undefined) {
+            const previousName = member.name
+            member.name = renameTo
+            for (const task of fresh.tasks) {
+              if (task.assignee === previousName) task.assignee = renameTo
+            }
+            const renameReviewer = (policy: import('./types.ts').ReviewPolicy | undefined): void => {
+              if (policy?.requiredReviewers === undefined) return
+              policy.requiredReviewers = policy.requiredReviewers.map(name => name === previousName ? renameTo! : name)
+            }
+            renameReviewer(fresh.reviewPolicy)
+            renameReviewer(fresh.profile?.reviewPolicy)
+            appendTimeline(fresh, { action: 'member.renamed', actor: CAPTAIN_KEY, from: previousName, to: renameTo })
+            await renameMailboxOwner(stateRoot, fresh.id, previousName, renameTo)
+          }
           member.role = trimmedOptional(mutation.role)
           member.provider = selection.provider
           member.model = selection.model
@@ -873,10 +922,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           // The roster editor replaces route/prompt fields; the tool policy is
           // only touched when the mutation names one, so a plan revision cannot
           // silently widen a member's tool set.
-          if (mutation.toolPolicy !== undefined) {
-            const selected = memberToolSelection(config, captain, optionalToolPolicyId(mutation.toolPolicy))
-            member.toolPolicy = selected.toolPolicy
-            member.toolFilter = selected.toolFilter
+          if (selectedTool !== undefined) {
+            member.toolPolicy = selectedTool.toolPolicy
+            member.toolFilter = selectedTool.toolFilter
           }
         } else if (mutation.action === 'update_task') {
           const task = requireTask(fresh, mutation.taskId)
@@ -948,6 +996,45 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   const updateStagedPlan: AgentTeamsRuntime['updateStagedPlan'] = async (captain, teamId, mutation, signal) => (
     updateStagedPlanBatch(captain, teamId, [mutation], signal)
   )
+
+  const createStagedTeam: AgentTeamsRuntime['createStagedTeam'] = async (captain, input, signal) => {
+    const workspace = workspaceOf(captain)
+    const stateRoot = stateRootOf(workspace, config)
+    const teamName = input.name.trim()
+    if (teamName === '') throw new Error('team name must not be empty')
+    if (input.members.length === 0) throw new Error('a manual team needs at least one member')
+    const teamId = sanitizeKey(teamName)
+    const current = await findTeamByParticipant(stateRoot, captain.id, await leadIdentityOfAsync(ctx, captain.session))
+    if (current !== undefined) throw new Error(`you already belong to team "${current.name}"; archive it before creating another`)
+    return withTeamLock(captainLockKey(stateRoot, captain.id), async () => withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+      if (await readTeam(stateRoot, teamId) !== undefined) throw new Error(`team id "${teamId}" is taken`)
+      const created = await initializeProfileTeam({
+        ctx,
+        config,
+        memberSelections,
+        captain,
+        exec: { agent: captain, callId: 'manual-staged-create', signal: signal ?? new AbortController().signal } as ToolRunContext,
+        stateRoot,
+        teamName,
+        teamId,
+        profileName: 'manual',
+        inlinePlan: {
+          taskPlanning: 'seed',
+          members: input.members,
+          tasks: (input.tasks ?? []).map((task, index) => ({
+            id: `m${index + 1}`,
+            subject: task.subject,
+            description: task.description,
+            assignee: task.assignee,
+            dependencies: task.dependencies,
+          })),
+        },
+        description: input.description,
+        staged: true,
+      })
+      return created.state
+    }))
+  }
 
   const approveStagedTeam: AgentTeamsRuntime['approveStagedTeam'] = async (captain, teamId, signal) => {
     const workspace = workspaceOf(captain)
@@ -1087,6 +1174,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             provider: { type: 'string' }, model: { type: 'string' }, reasoning_effort: { type: 'string' },
             tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
             skills: { type: 'array', items: { type: 'string' }, description: 'Optional owner-declared skill ids; unknown ids fail before persistence.' },
+            preset_id: { type: 'string', description: 'Optional immutable global agent preset id; its settings are copied into this plan member.' },
           } } },
           tasks: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
             id: { type: 'string', required: true, description: 'Local reference used by dependencies in this plan; the result maps it to a durable task id.' },
@@ -1463,6 +1551,109 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   }))
 
   ctx.tools.register(defineTool({
+    name: 'agent_teams_list_agent_presets',
+    description: 'List immutable global agent presets. The library is opt-in through agentLibrary.enabled. Presets are reusable configuration snapshots, not live sessions or Teams.',
+    parameters: {},
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          enabled: { type: 'boolean', required: true },
+          presets: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
+            id: { type: 'string', required: true }, revision: { type: 'number', required: true }, name: { type: 'string', required: true },
+            role: { type: 'string', required: true }, provider: { type: 'string' }, model: { type: 'string' },
+            reasoning_effort: { type: 'string' }, execution_prompt: { type: 'string', required: true },
+            skill_ids: { type: 'array', items: { type: 'string' }, required: true }, tool_policy: { type: 'string' },
+          } } },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: value.enabled ? `Agent presets (${value.presets.length}):\n${value.presets.map(preset => `${preset.id} r${preset.revision} ${preset.name} — ${preset.role || 'no role'}`).join('\n')}` : 'Agent preset library is disabled.' }],
+    },
+    async execute(_args, exec) {
+      const enabled = config.agentLibrary?.enabled === true
+      if (!enabled) return { enabled: false, presets: [] }
+      const captain = requireCaptain(exec)
+      const library = await loadAgentLibrary(stateRootOf(workspaceOf(captain), config))
+      return { enabled: true, presets: library.presets.map(preset => ({
+        id: preset.id, revision: preset.revision, name: preset.name, role: preset.role,
+        ...preset.provider === undefined ? {} : { provider: preset.provider },
+        ...preset.model === undefined ? {} : { model: preset.model },
+        ...preset.reasoningEffort === undefined ? {} : { reasoning_effort: preset.reasoningEffort },
+        execution_prompt: preset.executionPrompt, skill_ids: preset.skillIds,
+        ...preset.toolPolicy === undefined ? {} : { tool_policy: preset.toolPolicy },
+      })) }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_teams_save_agent_preset',
+    description: 'Create or revise one immutable global agent preset. Provider/model/skill/tool-policy validation happens before persistence. Updating a preset never changes a Team that already copied an older revision.',
+    parameters: {
+      id: { type: 'string', description: 'Existing preset id; omit to create.' },
+      name: { type: 'string', required: true, description: 'Unique preset name.' },
+      role: { type: 'string', description: 'Role description.' },
+      provider: { type: 'string', description: 'Optional LLM provider; omitted uses the captain/provider default.' },
+      model: { type: 'string', description: 'Optional LLM model; provider and model must be supplied together for an explicit route.' },
+      reasoning_effort: { type: 'string' },
+      execution_prompt: { type: 'string', description: 'Reusable member persona / execution prompt.' },
+      skill_ids: { type: 'array', items: { type: 'string' }, description: 'Owner-declared skill ids.' },
+      tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        id: { type: 'string', required: true }, revision: { type: 'number', required: true },
+        name: { type: 'string', required: true }, role: { type: 'string', required: true },
+        provider: { type: 'string', required: true }, model: { type: 'string', required: true },
+      } },
+      render: (_args, value) => [{ type: 'text', text: `Agent preset "${value.name}" saved as ${value.id} revision ${value.revision} (${value.provider}/${value.model}).` }],
+    },
+    async execute(args, exec) {
+      if (config.agentLibrary?.enabled !== true) throw new Error('agent preset library is disabled; enable agentLibrary.enabled')
+      const captain = requireCaptain(exec)
+      const stateRoot = stateRootOf(workspaceOf(captain), config)
+      const name = args.name.trim()
+      if (name === '') throw new Error('preset name must not be empty')
+      const role = args.role?.trim() ?? ''
+      const skillIds = [...new Set((args.skill_ids ?? []).map(id => id.trim()).filter(Boolean))]
+      if (skillIds.length > 8) throw new Error('at most 8 preset skill ids are allowed')
+      const policyId = optionalToolPolicyId(args.tool_policy)
+      const skills = resolveMemberSkills(config.skills ?? {}, skillIds, policyId)
+      const selection = await resolveMemberLlmSelection(ctx, captain, {
+        provider: args.provider?.trim() || undefined,
+        model: args.model?.trim() || undefined,
+        defaultModel: config.memberModel,
+        defaultProvider: config.memberLlmProvider,
+        reasoningEffort: args.reasoning_effort?.trim() || undefined,
+        fallback: config.fallback,
+        fallbacks: config.fallbacks,
+      }, exec.signal)
+      const executionPrompt = args.execution_prompt?.trim() || role || name
+      const preset = await saveAgentPreset(stateRoot, {
+        ...args.id === undefined || args.id.trim() === '' ? {} : { id: args.id.trim() },
+        name, role, provider: selection.provider, model: selection.model,
+        ...selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort },
+        executionPrompt, skillIds: skills.ids,
+        ...skills.toolPolicy === undefined ? {} : { toolPolicy: skills.toolPolicy },
+      })
+      return { id: preset.id, revision: preset.revision, name: preset.name, role: preset.role, provider: preset.provider ?? selection.provider, model: preset.model ?? selection.model }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_teams_delete_agent_preset',
+    description: 'Delete a global agent preset. Existing Teams keep their copied member settings.',
+    parameters: { id: { type: 'string', required: true, description: 'Preset id.' } },
+    output: { schema: { type: 'object', additionalProperties: false, properties: { deleted: { type: 'boolean', required: true }, id: { type: 'string', required: true } } }, render: (_args, value) => [{ type: 'text', text: value.deleted ? `Agent preset ${value.id} deleted.` : `Agent preset ${value.id} was not found.` }] },
+    async execute(args, exec) {
+      if (config.agentLibrary?.enabled !== true) throw new Error('agent preset library is disabled; enable agentLibrary.enabled')
+      const captain = requireCaptain(exec)
+      const id = args.id.trim()
+      if (id === '') throw new Error('preset id must not be empty')
+      return { deleted: await deleteAgentPreset(stateRootOf(workspaceOf(captain), config), id), id }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'agent_teams_edit_plan',
     description: 'Atomically revise an AgentTeams plan. While staged, edit tasks and roster without starting work. While running, only update_task is allowed, and only for pending tasks with no prior attempt: correct dependencies, assignees or descriptions before they start; newly ready work is scheduled after commit. Never edit active/finished attempts. Submit dependent edits in order. Never modify .agent-teams files directly.',
     parameters: {
@@ -1480,6 +1671,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
               enum: ['update_member', 'update_task', 'add_task', 'remove_task', 'remove_member'],
             },
             member_name: { type: 'string', description: 'Member name for update_member or remove_member.' },
+            new_name: { type: 'string', description: 'Staged-only replacement member name. Renames the member and every staged task/reviewer reference atomically.' },
             task_id: { type: 'string', description: 'Task id for update_task or remove_task.' },
             subject: { type: 'string', description: 'Required for add_task; optional replacement for update_task.' },
             description: { type: 'string', description: 'Optional task description.' },
@@ -1529,6 +1721,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           return {
             action: 'update_member',
             memberName,
+            ...operation.new_name === undefined ? {} : { newName: operation.new_name },
             role: operation.role ?? member.role,
             provider: operation.provider?.trim() || member.provider || '',
             model: operation.model?.trim() || member.model || '',
@@ -1630,6 +1823,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       executionPrompt: { type: 'string', description: 'Optional member-specific execution prompt. It remains editable while staged.' },
       tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
       skills: { type: 'array', items: { type: 'string' }, description: 'Optional owner-declared skill ids (max 8, unique). Unknown ids fail before persistence; never pass raw prompt text.' },
+      preset_id: { type: 'string', description: 'Optional immutable global agent preset id. Its route, role, prompt, skills and policy are copied into this member; explicit arguments override individual fields.' },
     },
     output: {
       schema: {
@@ -1673,33 +1867,44 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         if (fresh.members.filter((candidate) => candidate.status !== 'removed').length >= config.maxMembers) {
           throw new Error(`team "${fresh.name}" is at its member cap (${config.maxMembers})`)
         }
+        const presetId = args.preset_id?.trim() || undefined
+        let preset: import('./types.ts').AgentPresetV1 | undefined
+        if (presetId !== undefined) {
+          if (config.agentLibrary?.enabled !== true) throw new Error('agent preset library is disabled; enable agentLibrary.enabled')
+          const library = await loadAgentLibrary(stateRoot)
+          preset = library.presets.find(candidate => candidate.id === presetId)
+          if (preset === undefined) throw new Error(`agent preset "${presetId}" was not found`)
+        }
         const selection = await resolveMemberLlmSelection(ctx, captain, {
-          provider: trimmedOptional(args.provider),
-          model: trimmedOptional(args.model),
+          provider: trimmedOptional(args.provider) ?? preset?.provider,
+          model: trimmedOptional(args.model) ?? preset?.model,
           defaultModel: config.memberModel,
           defaultProvider: config.memberLlmProvider,
-          reasoningEffort: trimmedOptional(args.reasoning_effort),
+          reasoningEffort: trimmedOptional(args.reasoning_effort) ?? preset?.reasoningEffort,
           fallback: config.fallback,
           fallbacks: config.fallbacks,
         }, exec.signal)
-        const skillSelection = resolveMemberSkills(config.skills ?? {}, args.skills, optionalToolPolicyId(args.tool_policy))
+        const policyId = optionalToolPolicyId(args.tool_policy !== undefined ? args.tool_policy : preset?.toolPolicy)
+        const skillSelection = resolveMemberSkills(config.skills ?? {}, args.skills ?? preset?.skillIds, policyId)
         const toolSelection = memberToolSelection(config, captain, skillSelection.toolPolicy)
         const member: TeamMember = {
           id: '',
           name: memberName,
-          role: args.role,
+          role: trimmedOptional(args.role) ?? preset?.role,
           provider: selection.provider,
           model: selection.model,
           reasoningEffort: selection.reasoningEffort,
           ...selection.fallback === undefined ? {} : { fallback: selection.fallback },
-          executionPrompt: trimmedOptional(args.executionPrompt),
+          executionPrompt: trimmedOptional(args.executionPrompt) ?? preset?.executionPrompt,
           ...toolSelection,
           ...skillSelection.ids.length === 0 ? {} : { skills: skillSelection.ids, skillPromptSha256: skillSelection.sha256 },
+          ...preset === undefined ? {} : { presetId: preset.id, presetRevision: preset.revision },
           joinedAt: Date.now(),
           status: 'idle',
         }
         await validateMemberLlmSelections(ctx, [selection], exec.signal)
         fresh.members.push(member)
+        appendTimeline(fresh, { action: 'member.added', actor: CAPTAIN_KEY, to: member.name })
         await writeTeam(stateRoot, fresh)
         appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/member-added', {
           teamId: fresh.id,
@@ -1891,6 +2096,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           requeued.push(task.id)
         }
         member.status = 'removed'
+        appendTimeline(fresh, { action: 'member.removed', actor: CAPTAIN_KEY, from: member.name })
         await discardMailboxMessages(stateRoot, fresh.id, member.name, (await readUnreadMailbox(stateRoot, fresh.id, member.name)).map(message => message.id))
         await writeTeam(stateRoot, fresh)
         appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/member-removed', {
@@ -2047,6 +2253,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         }
         fresh.taskSeq += 1
         fresh.tasks.push(task)
+        appendTimeline(fresh, { action: 'task.created', actor: CAPTAIN_KEY, taskId: task.id, ...task.assignee === undefined ? {} : { to: task.assignee } })
         await writeTeam(stateRoot, fresh)
         appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/task-created', {
           teamId: fresh.id,
@@ -2135,6 +2342,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ? undefined
           : fresh.members.find(member => member.name === task.assignee && member.status !== 'removed')
         invalidateTaskAttempt(task, target, true)
+        appendTimeline(fresh, { action: 'task.reassigned', actor: CAPTAIN_KEY, taskId: task.id, from: previousAssignee, to: target })
         if (previousMember !== undefined) {
           previousMember.stopping = true
           task.handoffFromMemberId = previousMember.id
@@ -2289,6 +2497,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           throw new Error(`member "${assignee}" is busy with ${busy.id}; finish or reassign it first`)
         }
         const attemptId = beginTaskAttempt(task, assignee)
+        appendTimeline(fresh, { action: 'task.claimed', actor: assignee, taskId: task.id, attemptId })
         await writeTeam(stateRoot, fresh)
         appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/task-updated', {
           teamId: fresh.id,
@@ -2464,6 +2673,22 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             clearTaskProbe(task)
           }
         }
+        if (task.worktreeLaneId !== undefined && args.status !== undefined && TERMINAL_TASK_STATUSES.includes(args.status)) {
+          const lane = fresh.worktreeLanes?.find(candidate => candidate.laneId === task.worktreeLaneId)
+          if (lane !== undefined) {
+            try {
+              const captured = await captureLaneState(lane)
+              task.worktreeCommit = captured.commit
+              task.worktreeDirty = captured.dirty
+              task.worktreeChangedPaths = captured.changedPaths
+              lane.commit = captured.commit
+              lane.dirty = captured.dirty
+            } catch (error: unknown) {
+              lane.error = error instanceof Error ? error.message : String(error)
+              ctx.logger.warn(`agent-teams: could not capture worktree state for ${lane.laneId}: ${String(error)}`)
+            }
+          }
+        }
         if (args.output !== undefined) task.output = args.output
         if (args.verdict !== undefined) task.verdict = args.verdict as ReviewVerdict
         if (findings !== undefined) task.findings = findings
@@ -2495,6 +2720,19 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             CAPTAIN_KEY,
             `Quality-gate loop escalated after ${task.id} (${task.kind ?? 'review'} verdict=${task.verdict}). Automatic repair/review stopped.${followUp.reason === undefined ? '' : ` Reason: ${followUp.reason}.`}${followUp.excludedFindings === undefined ? '' : ` Findings left for the user (default-excluded paths, not a member's to edit): ${followUp.excludedFindings.join(', ')}.`}`,
           ))
+        }
+        if (args.status !== undefined) {
+          appendTimeline(fresh, {
+            action: args.status === 'in_progress' ? 'task.started' : args.status === 'completed' ? 'task.completed' : args.status === 'failed' ? 'task.failed' : 'task.cancelled',
+            actor: identity.name,
+            taskId: task.id,
+            ...task.attemptId === undefined ? {} : { attemptId: task.attemptId },
+            ...task.output === undefined ? {} : { result: task.output },
+            ...task.verdict === undefined ? {} : { verdict: task.verdict },
+          })
+        }
+        for (const created of followUp?.created ?? []) {
+          appendTimeline(fresh, { action: 'task.created', actor: CAPTAIN_KEY, taskId: created.id, ...created.assignee === undefined ? {} : { to: created.assignee } })
         }
         await writeTeam(stateRoot, fresh)
         if (followUpMessage !== undefined) await appendMailbox(stateRoot, fresh.id, CAPTAIN_KEY, followUpMessage)
@@ -2588,6 +2826,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         }
         Object.assign(task, result.task)
         task.updatedAt = Date.now()
+        appendTimeline(fresh, { action: 'task.amended', actor: CAPTAIN_KEY, taskId: task.id, result: args.reason })
         await writeTeam(stateRoot, fresh)
         return {
           taskId: task.id,
@@ -2628,6 +2867,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       report_kind: { type: 'string', enum: ['progress', 'final'], description: 'Defaults to progress. final requires exact source_task_id/source_attempt_id and is the only kind that may suppress the matching native settlement.' },
       to: { type: 'string', required: true, description: 'Recipient: "captain" or a member name.' },
       content: { type: 'string', required: true, description: 'The message text.' },
+      attachments: { type: 'array', items: { type: 'string' }, description: 'Optional local file paths. Members may attach current-task deliverables/inScope files only; captains may attach files under configured artifactRoots. Remote URLs are rejected.' },
       from: { type: 'string', description: 'Sender (defaults to the caller: the captain, or the calling member).' },
     },
     output: {
@@ -2702,8 +2942,29 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           && message.sourceActivationEpoch === sourceFields.sourceActivationEpoch
           && isCurrentMail(fresh, message) && (message.attemptId !== undefined || message.sourceAttemptId !== undefined || message.readAt === undefined))
         if (duplicate !== undefined) return { kind: 'duplicate' as const, message: duplicate, from }
+        let attachments: import('./types.ts').MessageAttachment[] = []
+        if ((args.attachments?.length ?? 0) > 0) {
+          const scopes = identity.kind === 'member' && source !== undefined
+            ? [...(source.deliverables ?? []), ...(source.inScope ?? [])]
+            : []
+          try {
+            attachments = await copyAttachments({
+              workspace,
+              stateRoot,
+              teamId: fresh.id,
+              paths: args.attachments ?? [],
+              allowedScopes: scopes,
+              artifactRoots: config.artifactRoots,
+            })
+          } catch (error: unknown) {
+            if (error instanceof AttachmentError) throw new Error(`attachment rejected: ${error.message}`)
+            throw error
+          }
+        }
         if (to === CAPTAIN_KEY) {
-          const message = { ...createMessage(from, CAPTAIN_KEY, args.content), ...sourceFields, deliveryClaimedAt: Date.now() }
+          const message = { ...createMessage(from, CAPTAIN_KEY, args.content), ...sourceFields, ...attachments.length === 0 ? {} : { attachments }, deliveryClaimedAt: Date.now() }
+          appendTimeline(fresh, { action: 'message.sent', actor: from, taskId: message.taskId, from, to: CAPTAIN_KEY, result: args.content })
+          await writeTeam(stateRoot, fresh)
           await appendMailbox(stateRoot, fresh.id, CAPTAIN_KEY, message)
           appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/message-sent', {
             teamId: fresh.id,
@@ -2719,9 +2980,11 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           throw new Error(`team "${fresh.name}" is halted; call agent_teams_resume before waking a member`)
         }
         const recipient = requireMember(fresh, to)
-        const message = { ...createMessage(from, recipient.name, args.content), ...sourceFields, deliveryClaimedAt: Date.now(),
+        const message = { ...createMessage(from, recipient.name, args.content), ...sourceFields, ...attachments.length === 0 ? {} : { attachments }, deliveryClaimedAt: Date.now(),
           ...owned?.attemptId === undefined ? {} : { taskId: owned.id, attemptId: owned.attemptId },
         }
+        appendTimeline(fresh, { action: 'message.sent', actor: from, taskId: message.taskId, from, to: recipient.name, result: args.content })
+        await writeTeam(stateRoot, fresh)
         await appendMailbox(stateRoot, fresh.id, recipient.name, message)
         appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/message-sent', {
           teamId: fresh.id,
@@ -3141,6 +3404,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/team-deleted', {
           teamId: fresh.id,
         })
+        for (const lane of fresh.worktreeLanes ?? []) preserveLane(lane)
+        await writeTeam(stateRoot, fresh)
         // Archive, not delete: tasks (with their dependency graph) and the
         // mailboxes stay on disk for later review and dependency rebuilds.
         await archiveTeamDir(stateRoot, fresh.id)
@@ -3157,6 +3422,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     isPendingMember: memberSelections.isPendingMember,
     updateStagedPlan,
     updateStagedPlanBatch,
+    createStagedTeam,
     approveStagedTeam,
     continueStagedPlanning,
     discardStagedTeam,
@@ -3179,20 +3445,33 @@ async function initializeProfileTeam(input: {
   description?: string
   staged: boolean
 }): Promise<{ committed: true; state: TeamState }> {
+  const requestedPresetIds = input.inlinePlan?.members.map(member => member.presetId?.trim()).filter((id): id is string => id !== undefined && id !== '') ?? []
+  if (requestedPresetIds.length > 0 && input.config.agentLibrary?.enabled !== true) throw new Error('agent preset library is disabled; enable agentLibrary.enabled')
+  const presetLibrary = requestedPresetIds.length === 0 ? undefined : await loadAgentLibrary(input.stateRoot)
+  const presetById = new Map((presetLibrary?.presets ?? []).map(preset => [preset.id, preset]))
+  for (const id of requestedPresetIds) {
+    if (!presetById.has(id)) throw new Error(`agent preset "${id}" was not found`)
+  }
   // Tool gateways can materialize omitted optional strings as blanks (#234).
   // Normalize only the tool-supplied roster; owner profile validation remains
   // strict, and required fields, unknown policies and route pairing still fail.
   const inlinePlan = input.inlinePlan === undefined ? undefined : {
     ...input.inlinePlan,
-    members: input.inlinePlan.members.map(member => ({
-      ...member,
-      role: trimmedOptional(member.role),
-      provider: trimmedOptional(member.provider),
-      model: trimmedOptional(member.model),
-      reasoning_effort: trimmedOptional(member.reasoning_effort),
-      tool_policy: optionalToolPolicyId(member.tool_policy),
-      skills: Array.isArray(member.skills) ? member.skills : undefined,
-    })),
+    members: input.inlinePlan.members.map(member => {
+      const presetId = member.presetId ?? (member as { preset_id?: string }).preset_id
+      const preset = presetId === undefined ? undefined : presetById.get(presetId)
+      return {
+        ...member,
+        ...presetId === undefined ? {} : { presetId },
+        role: trimmedOptional(member.role) ?? preset?.role,
+        provider: trimmedOptional(member.provider) ?? preset?.provider,
+        model: trimmedOptional(member.model) ?? preset?.model,
+        reasoning_effort: trimmedOptional(member.reasoning_effort) ?? preset?.reasoningEffort,
+        executionPrompt: member.executionPrompt ?? preset?.executionPrompt,
+        tool_policy: optionalToolPolicyId(member.tool_policy) ?? preset?.toolPolicy,
+        skills: Array.isArray(member.skills) ? member.skills : preset?.skillIds,
+      }
+    }),
   }
   const profile = resolveTeamProfile(inlinePlan === undefined ? input.config.profiles : { [input.profileName]: inlinePlan }, input.profileName, input.config.maxMembers)
   const selections: Awaited<ReturnType<typeof resolveMemberLlmSelection>>[] = []
@@ -3246,6 +3525,7 @@ async function initializeProfileTeam(input: {
         ...selection.fallbacks === undefined ? {} : { fallbacks: selection.fallbacks },
         ...toolSelection,
         ...skillSelection.ids.length === 0 ? {} : { skills: skillSelection.ids, skillPromptSha256: skillSelection.sha256 },
+        ...template.presetId === undefined ? {} : { presetId: template.presetId, presetRevision: presetById.get(template.presetId)!.revision },
         joinedAt: now,
         status: 'idle' as const,
       }

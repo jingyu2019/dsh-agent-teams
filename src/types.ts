@@ -264,6 +264,19 @@ export interface TeamTask {
   revisions?: TaskRevision[]
   createdAt: number
   updatedAt: number
+  /** Opt-in member-lane worktree binding (#287). */
+  worktreeLaneId?: string
+  workspace?: {
+    kind: 'member_lane'
+    laneId: string
+    worktreePath: string
+    branch: string
+    baseRef: string
+  }
+  /** Captured at completion; cleanup/integration stay explicit. */
+  worktreeCommit?: string
+  worktreeDirty?: boolean
+  worktreeChangedPaths?: string[]
 }
 
 /** Honest host-owned context lifecycle capability for one durable member. */
@@ -474,6 +487,11 @@ export interface TeamMember {
   skills?: string[]
   /** SHA-256 of the exact resolved owner skill prompt frozen at member creation. */
   skillPromptSha256?: string
+  /** Immutable global preset copied into this member (#315). */
+  presetId?: string
+  presetRevision?: number
+  /** Stable member-lane worktree binding (#287). */
+  worktreeLaneId?: string
 }
 
 /** One mailbox message. */
@@ -507,6 +525,80 @@ export interface TeamMessage {
   sourceMemberGeneration?: number
   sourceActivationId?: string
   sourceActivationEpoch?: number
+  /** Safe-copied local attachments, never paths read at render time. */
+  attachments?: MessageAttachment[]
+}
+
+/** Owner-configured root from which a captain may attach files. */
+export interface ArtifactRootConfig {
+  id: string
+  path: string
+  allowRead: boolean
+  allowTeamIds?: string[]
+}
+
+/** Metadata for one safe-copied mailbox attachment. */
+export interface MessageAttachment {
+  id: string
+  name: string
+  mime: string
+  bytes: number
+  sha256: string
+  storageRef: `attachments/${string}`
+  source: {
+    workspaceId: string
+    sourcePath: string
+    sourceRealpathHash: string
+    device: string
+    inode: string
+    size: number
+    mtimeMs: number
+    sha256: string
+  }
+}
+
+/** Local-only raster avatar override. No remote URL form is accepted in v1. */
+export type AvatarRef =
+  | { kind: 'builtin'; role: string }
+  | { kind: 'managed'; sha256: string; ext: 'png' | 'jpg' | 'webp' }
+
+/** Immutable revision of a reusable global agent preset (#315). */
+export interface AgentPresetV1 {
+  schemaVersion: 1
+  id: string
+  revision: number
+  name: string
+  role: string
+  provider?: string
+  model?: string
+  reasoningEffort?: string
+  executionPrompt: string
+  skillIds: string[]
+  toolPolicy?: string
+  avatar?: AvatarRef
+  createdAt: number
+  updatedAt: number
+}
+
+/** Durable activity action shown in the team timeline. */
+export type TimelineAction =
+  | 'team.created' | 'member.added' | 'member.removed' | 'member.renamed'
+  | 'task.created' | 'task.claimed' | 'task.started' | 'task.completed'
+  | 'task.failed' | 'task.cancelled' | 'task.reassigned' | 'task.amended'
+  | 'message.sent' | 'message.delivered' | 'message.read'
+
+/** One append-only activity entry. Newest entries are at the end of TeamState.timeline. */
+export interface TimelineEntry {
+  id: string
+  at: number
+  actor: string
+  action: TimelineAction
+  taskId?: string
+  attemptId?: string
+  result?: string
+  verdict?: string
+  from?: string
+  to?: string
 }
 
 /** Snapshot of the named profile used to seed a team. */
@@ -582,6 +674,32 @@ export interface TeamState {
   notifications?: NotificationLedgerEntry[]
   /** Durable deterministic collect/join barriers (#195), bounded by recent use. */
   joinBarriers?: JoinBarrier[]
+  /** Bounded durable activity history, oldest first, capped at 500 entries. */
+  timeline?: TimelineEntry[]
+  /** Monotonic timeline id allocator; survives cap eviction. */
+  timelineSeq?: number
+  /** Per-member local avatar overrides keyed by member display name. */
+  memberAvatars?: Record<string, AvatarRef>
+  /** Optional role-wide local avatar overrides. */
+  roleAvatars?: Record<string, AvatarRef>
+  /** Opt-in member-lane worktrees. One lane belongs to one resident child. */
+  worktreeLanes?: WorktreeLane[]
+}
+
+/** One member-lane worktree; path/branch/base never change under a resident child. */
+export interface WorktreeLane {
+  laneId: string
+  teamId: string
+  memberId: string
+  repoRoot: string
+  worktreePath: string
+  branch: string
+  baseRef: string
+  state: 'preparing' | 'ready' | 'integrating' | 'cleaned' | 'failed' | 'preserved'
+  createdAt: number
+  commit?: string
+  dirty?: boolean
+  error?: string
 }
 
 /** One durable collect barrier: the ordered tasks and delivery dedupe identity. */

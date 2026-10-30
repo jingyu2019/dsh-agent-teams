@@ -12,7 +12,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { type MemberToolPolicy } from './tool-policies.ts';
-import type { ArtifactSnapshot } from './types.ts';
+import type { ArtifactRootConfig, ArtifactSnapshot } from './types.ts';
 import { type MemberRuntimeConfig } from './members.ts';
 import { type TeamState, type TeamTask } from './types.ts';
 import { type SkillBindingConfig } from './profiles.ts';
@@ -49,11 +49,21 @@ export interface ToolsConfig {
     toolPolicies: Record<string, MemberToolPolicy>;
     /** Owner-declared skill snippets selected by id (#244). */
     skills?: Record<string, SkillBindingConfig>;
+    /** Owner-configured local roots for captain attachments (#70). */
+    artifactRoots?: ArtifactRootConfig[];
+    /** Opt-in immutable global agent preset library (#315). */
+    agentLibrary?: {
+        enabled: boolean;
+    };
+    /** Opt-in member-lane worktree isolation (#287). */
+    worktrees?: import('./worktrees.ts').WorktreeConfig;
 }
 /** Browser/UI mutations allowed while a plan is waiting for approval. */
 export type StagedPlanMutation = {
     action: 'update_member';
     memberName: string;
+    /** Staged-only replacement display name; all staged references move atomically. */
+    newName?: string;
     role?: string | null;
     provider: string;
     model: string;
@@ -81,11 +91,34 @@ export type StagedPlanMutation = {
     action: 'remove_member';
     memberName: string;
 };
+/** Browser-authored staged team inputs (#279). Every member/task is persisted before approval. */
+export interface ManualStagedTeamInput {
+    name: string;
+    description?: string;
+    members: Array<{
+        name: string;
+        role?: string;
+        provider?: string;
+        model?: string;
+        reasoning_effort?: string;
+        executionPrompt?: string;
+        tool_policy?: string;
+        skills?: string[];
+        preset_id?: string;
+    }>;
+    tasks?: Array<{
+        subject: string;
+        description?: string;
+        assignee?: string;
+        dependencies?: string[];
+    }>;
+}
 /** Runtime bridge shared by model-facing tools and the Web staging surface. */
 export interface AgentTeamsRuntime {
     isPendingMember(agent: Agent): boolean;
     updateStagedPlan(captain: Agent, teamId: string, mutation: StagedPlanMutation, signal?: AbortSignal): Promise<TeamState>;
     updateStagedPlanBatch(captain: Agent, teamId: string, mutations: readonly StagedPlanMutation[], signal?: AbortSignal): Promise<TeamState>;
+    createStagedTeam(captain: Agent, input: ManualStagedTeamInput, signal?: AbortSignal): Promise<TeamState>;
     approveStagedTeam(captain: Agent, teamId: string, signal?: AbortSignal): Promise<{
         teamId: string;
         members: number;

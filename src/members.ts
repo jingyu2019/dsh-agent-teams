@@ -26,6 +26,7 @@ import { nearestLiveLead } from './lineage.ts'
 import { appendTeamEvent, captainSessionOf } from './events.ts'
 import type { MemberToolFilter } from './tool-policies.ts'
 import { resolveMemberSkills, type SkillBindingConfig } from './profiles.ts'
+import { createWorktreeLane, type WorktreeConfig } from './worktrees.ts'
 import { TERMINAL_TASK_STATUSES, type RouteCursor, type RouteFailureClass, type TeamMember, type TeamModelFallback, type TeamState, type TeamTask } from './types.ts'
 
 /** Persona snapshot of a profile protocol; the full text lives on team.json. */
@@ -57,6 +58,8 @@ export interface MemberRuntimeConfig {
   fallbacks?: { provider: string; model: string }[]
   /** Prompt-only opt-in for multiple AgentTeams calls in one response. */
   parallelToolCalls?: boolean
+  /** Opt-in member-lane worktree isolation (#287). */
+  worktrees?: WorktreeConfig
 }
 
 /** Durable provider/model/reasoning snapshot for one member. */
@@ -1196,6 +1199,36 @@ export async function spawnMember(
     throw new Error(`agent-teams: provider "${config.provider}" cannot restrict captain-only tools for members`)
   }
   const label = `${MEMBER_LABEL_PREFIX}${team.id}:${member.name}`
+  let lane: import('./types.ts').WorktreeLane | undefined
+  if (config.worktrees?.enabled === true) {
+    if (config.worktrees.root === undefined || config.worktrees.root.trim() === '') {
+      throw new Error('agent-teams: worktrees.root is required when worktree isolation is enabled')
+    }
+    if (member.worktreeLaneId === undefined) {
+      lane = await createWorktreeLane({
+        teamId: team.id,
+        memberId: member.id || member.name,
+        workspace: captain.session.header.cwd ?? process.cwd(),
+        root: config.worktrees.root,
+        baseRef: config.worktrees.baseRef,
+      })
+      member.worktreeLaneId = lane.laneId
+      team.worktreeLanes = [...(team.worktreeLanes ?? []), lane]
+    } else {
+      lane = team.worktreeLanes?.find(candidate => candidate.laneId === member.worktreeLaneId && candidate.state !== 'cleaned')
+      if (lane === undefined) throw new Error(`agent-teams: member "${member.name}" references a missing worktree lane`)
+    }
+    for (const task of team.tasks) {
+      if (task.assignee !== member.name) continue
+      if (task.worktreeLaneId !== undefined && task.worktreeLaneId !== lane.laneId) {
+        throw new Error(`agent-teams: task "${task.id}" is bound to another member lane`)
+      }
+      task.worktreeLaneId = lane.laneId
+      task.workspace = { kind: 'member_lane', laneId: lane.laneId, worktreePath: lane.worktreePath, branch: lane.branch, baseRef: lane.baseRef }
+    }
+  } else if (member.worktreeLaneId !== undefined || team.tasks.some(task => task.assignee === member.name && task.worktreeLaneId !== undefined)) {
+    throw new Error('agent-teams: this team has worktree-bound tasks but worktree isolation is disabled')
+  }
   // The legacy filter of a member without a configured tool policy: the
   // captain-only deny list plus the depth entries this host registers.
   const requestedFilter = resolvedFilter ?? memberToolFilter(config.maxDepth, restrictableToolNames(captain))
@@ -1220,6 +1253,7 @@ export async function spawnMember(
         request: {
           prompt: [{ type: 'text', text: initialPrompt ?? memberWelcome(team, member.name) }],
           parent: captain,
+          ...lane === undefined ? {} : { cwd: lane.worktreePath },
           persona: memberPersona(team, member, stateDir, config.executionPrompt, config.parallelToolCalls, resolvedSkills.prompt),
           // Depth deny entries name host tools; resolve them against the
           // running host's registry so a renamed delegation tool cannot abort

@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { MemberToolFilter } from './tool-policies.ts'
-import { FINDING_SEVERITIES, REVIEW_VERDICTS, TASK_KINDS, TERMINAL_TASK_STATUSES, type ContextLifecycleCapability, type ReviewFinding, type TaskProbe, type TaskStatus, type TeamMember, type TeamMessage, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
+import { FINDING_SEVERITIES, REVIEW_VERDICTS, TASK_KINDS, TERMINAL_TASK_STATUSES, type AvatarRef, type ContextLifecycleCapability, type MessageAttachment, type ReviewFinding, type TaskProbe, type TaskStatus, type TeamMember, type TeamMessage, type TeamProfileSnapshot, type TeamState, type TeamTask, type TimelineAction, type TimelineEntry, type WorktreeLane } from './types.ts'
 import { hasValidQualityTaskFields, isReviewPolicy, isValidFindingLine, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
 import { teamLeadMatch, type LeadIdentity } from './lineage.ts'
 
@@ -52,6 +52,8 @@ export type { ContractAmendmentInput } from './quality-gates.ts'
 export const CAPTAIN_KEY = 'captain'
 /** A crashed live-delivery attempt becomes retryable after this interval. */
 const MAILBOX_DELIVERY_LEASE_MS = 60_000
+/** Bounded durable timeline retained in team.json. */
+export const TIMELINE_CAP = 500
 /** Durable deny-list for AgentTeams members that must never be resumed. */
 const RETIRED_MEMBERS_FILE = 'retired-members.json'
 
@@ -81,6 +83,34 @@ export async function withTeamLock<T>(key: string, fn: () => Promise<T>): Promis
     // that already appended itself owns the map slot; keep its entry.
     if (locks.get(key) === tail) locks.delete(key)
   }
+}
+
+/** Caller-provided timeline fields; id and timestamp are allocated here. */
+export type TimelineEntryInput = Omit<TimelineEntry, 'id' | 'at'> & { at?: number }
+
+/**
+ * Append one durable activity entry and evict the oldest entries above the
+ * bound. Callers invoke this inside the team lock immediately before the same
+ * `writeTeam` that persists the mutation, so a repeated read never creates
+ * duplicate history.
+ */
+export function appendTimeline(team: TeamState, input: TimelineEntryInput): TimelineEntry {
+  const sequence = (team.timelineSeq ?? team.timeline?.length ?? 0) + 1
+  team.timelineSeq = sequence
+  const entry: TimelineEntry = {
+    id: `tl${sequence}`,
+    at: input.at ?? Date.now(),
+    actor: input.actor,
+    action: input.action,
+    ...input.taskId === undefined ? {} : { taskId: input.taskId },
+    ...input.attemptId === undefined ? {} : { attemptId: input.attemptId },
+    ...input.result === undefined ? {} : { result: input.result },
+    ...input.verdict === undefined ? {} : { verdict: input.verdict },
+    ...input.from === undefined ? {} : { from: input.from },
+    ...input.to === undefined ? {} : { to: input.to },
+  }
+  team.timeline = [...(team.timeline ?? []), entry].slice(-TIMELINE_CAP)
+  return entry
 }
 
 /**
@@ -347,6 +377,12 @@ export async function releaseLegacyPermitForIdle(
  * @param state - the initial team record.
  */
 export async function createTeamDir(stateRoot: string, state: TeamState): Promise<void> {
+  if (!state.timeline?.some(entry => entry.action === 'team.created')) {
+    appendTimeline(state, { action: 'team.created', actor: CAPTAIN_KEY })
+    for (const member of state.members) {
+      appendTimeline(state, { action: 'member.added', actor: CAPTAIN_KEY, to: member.name })
+    }
+  }
   const dir = join(stateRoot, state.id)
   await mkdir(join(dir, 'inbox'), { recursive: true })
   await atomicWriteText(join(dir, 'team.json'), JSON.stringify(state, null, 2))
@@ -731,6 +767,49 @@ export async function discardMailboxMessages(stateRoot: string, teamId: string, 
   await mutateMailbox(stateRoot, teamId, agentKey, ids, message => ({ ...message, discardedAt: message.discardedAt ?? Date.now() }))
 }
 
+/**
+ * Move one staged member's mailbox to its new sanitized key and rewrite the
+ * address fields of every durable message. Callers hold the team lock; a
+ * staged plan has no child session, so this is the only history that follows
+ * the rename.
+ */
+export async function renameMailboxOwner(
+  stateRoot: string,
+  teamId: string,
+  from: string,
+  to: string,
+): Promise<void> {
+  const fromKey = sanitizeKey(from)
+  const toKey = sanitizeKey(to)
+  if (fromKey === toKey) return
+  const fromFile = join(stateRoot, teamId, 'inbox', `${fromKey}.jsonl`)
+  const toFile = join(stateRoot, teamId, 'inbox', `${toKey}.jsonl`)
+  let raw: string
+  try {
+    raw = await readFile(fromFile, 'utf8')
+  } catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+  const lines = raw.split('\n').map((rawLine) => {
+    const line = stripLeadingBom(rawLine)
+    if (line.trim() === '') return rawLine
+    try {
+      const value: unknown = JSON.parse(line)
+      if (!isTeamMessage(value)) return rawLine
+      return JSON.stringify({
+        ...value,
+        ...value.from === from ? { from: to } : {},
+        ...value.to === from ? { to } : {},
+      })
+    } catch {
+      return rawLine
+    }
+  })
+  await atomicWriteText(toFile, lines.join('\n'))
+  await rm(fromFile, { force: true })
+}
+
 /** Remove the optional UTF-8 BOM some editors prepend to JSON text. */
 function stripLeadingBom(value: string): string {
   return value.charCodeAt(0) === 0xFEFF ? value.slice(1) : value
@@ -924,6 +1003,36 @@ function isTaskProbe(value: unknown): value is TaskProbe {
     && (value['lastProbeAction'] === undefined || value['lastProbeAction'] === 'silent-kick' || value['lastProbeAction'] === 'ledger-only')
 }
 
+const TIMELINE_ACTIONS: readonly TimelineAction[] = [
+  'team.created', 'member.added', 'member.removed', 'member.renamed',
+  'task.created', 'task.claimed', 'task.started', 'task.completed',
+  'task.failed', 'task.cancelled', 'task.reassigned', 'task.amended',
+  'message.sent', 'message.delivered', 'message.read',
+]
+
+/** Validate one persisted timeline entry. */
+function isTimelineEntry(value: unknown): value is TimelineEntry {
+  if (!isRecord(value)) return false
+  return typeof value['id'] === 'string' && /^tl[1-9][0-9]*$/u.test(value['id'])
+    && isFiniteNumber(value['at'])
+    && typeof value['actor'] === 'string' && value['actor'].trim() !== ''
+    && typeof value['action'] === 'string' && TIMELINE_ACTIONS.includes(value['action'] as TimelineAction)
+    && (value['taskId'] === undefined || typeof value['taskId'] === 'string')
+    && (value['attemptId'] === undefined || typeof value['attemptId'] === 'string')
+    && (value['result'] === undefined || typeof value['result'] === 'string')
+    && (value['verdict'] === undefined || typeof value['verdict'] === 'string')
+    && (value['from'] === undefined || typeof value['from'] === 'string')
+    && (value['to'] === undefined || typeof value['to'] === 'string')
+}
+
+function isAvatarRef(value: unknown): value is AvatarRef {
+  if (!isRecord(value)) return false
+  if (value['kind'] === 'builtin') return typeof value['role'] === 'string' && value['role'].trim() !== ''
+  return value['kind'] === 'managed'
+    && typeof value['sha256'] === 'string' && /^[0-9a-f]{64}$/u.test(value['sha256'])
+    && (value['ext'] === 'png' || value['ext'] === 'jpg' || value['ext'] === 'webp')
+}
+
 /** Validate one member record at the durable JSON boundary. */
 function isTeamMember(value: unknown): value is TeamMember {
   if (!isRecord(value)) return false
@@ -955,6 +1064,9 @@ function isTeamMember(value: unknown): value is TeamMember {
       && value['skills'].every(item => typeof item === 'string' && item.trim() !== '')))
     && (value['skillPromptSha256'] === undefined
       || (typeof value['skillPromptSha256'] === 'string' && /^[0-9a-f]{64}$/u.test(value['skillPromptSha256'])))
+    && (value['presetId'] === undefined || (typeof value['presetId'] === 'string' && value['presetId'].trim() !== ''))
+    && (value['presetRevision'] === undefined || (Number.isSafeInteger(value['presetRevision']) && (value['presetRevision'] as number) >= 1))
+    && (value['worktreeLaneId'] === undefined || (typeof value['worktreeLaneId'] === 'string' && value['worktreeLaneId'] !== ''))
     && isFiniteNumber(value['joinedAt'])
     && (value['status'] === 'idle' || value['status'] === 'working' || value['status'] === 'removed')
 }
@@ -1220,6 +1332,17 @@ export function isTeamTask(value: unknown): value is TeamTask {
     && (value['reassigning'] === undefined || typeof value['reassigning'] === 'boolean')
     && (value['attemptRoute'] === undefined || isRouteCursor(value['attemptRoute']))
     && (value['probe'] === undefined || isTaskProbe(value['probe']))
+    && (value['worktreeLaneId'] === undefined || (typeof value['worktreeLaneId'] === 'string' && value['worktreeLaneId'] !== ''))
+    && (value['workspace'] === undefined || (isRecord(value['workspace'])
+      && value['workspace']['kind'] === 'member_lane'
+      && typeof value['workspace']['laneId'] === 'string'
+      && typeof value['workspace']['worktreePath'] === 'string'
+      && typeof value['workspace']['branch'] === 'string'
+      && typeof value['workspace']['baseRef'] === 'string'))
+    && (value['worktreeCommit'] === undefined || typeof value['worktreeCommit'] === 'string')
+    && (value['worktreeDirty'] === undefined || typeof value['worktreeDirty'] === 'boolean')
+    && (value['worktreeChangedPaths'] === undefined || (Array.isArray(value['worktreeChangedPaths'])
+      && value['worktreeChangedPaths'].every(path => typeof path === 'string')))
     && isFiniteNumber(value['createdAt'])
     && isFiniteNumber(value['updatedAt'])
     && hasValidQualityTaskFields(value)
@@ -1257,6 +1380,22 @@ function isJoinBarrier(value: unknown): value is import('./types.ts').JoinBarrie
     && (value['messageId'] === undefined || typeof value['messageId'] === 'string')
 }
 
+function isWorktreeLane(value: unknown): value is WorktreeLane {
+  return isRecord(value)
+    && typeof value['laneId'] === 'string' && value['laneId'] !== ''
+    && typeof value['teamId'] === 'string' && value['teamId'] !== ''
+    && typeof value['memberId'] === 'string'
+    && typeof value['repoRoot'] === 'string' && value['repoRoot'] !== ''
+    && typeof value['worktreePath'] === 'string' && value['worktreePath'] !== ''
+    && typeof value['branch'] === 'string' && value['branch'] !== ''
+    && typeof value['baseRef'] === 'string' && value['baseRef'] !== ''
+    && ['preparing', 'ready', 'integrating', 'cleaned', 'failed', 'preserved'].includes(value['state'] as string)
+    && isFiniteNumber(value['createdAt'])
+    && (value['commit'] === undefined || typeof value['commit'] === 'string')
+    && (value['dirty'] === undefined || typeof value['dirty'] === 'boolean')
+    && (value['error'] === undefined || typeof value['error'] === 'string')
+}
+
 /** Validate the full team record before it can participate in authorization. */
 function isTeamState(value: unknown, expectedId: string): value is TeamState {
   if (!isRecord(value)) return false
@@ -1286,6 +1425,18 @@ function isTeamState(value: unknown, expectedId: string): value is TeamState {
     && (value['joinBarriers'] === undefined || (Array.isArray(value['joinBarriers'])
       && value['joinBarriers'].length <= 32
       && value['joinBarriers'].every(isJoinBarrier)))
+    && (value['timeline'] === undefined || (Array.isArray(value['timeline'])
+      && value['timeline'].length <= TIMELINE_CAP
+      && value['timeline'].every(isTimelineEntry)))
+    && (value['timelineSeq'] === undefined
+      || (Number.isSafeInteger(value['timelineSeq']) && (value['timelineSeq'] as number) >= 0))
+    && (value['memberAvatars'] === undefined || (isRecord(value['memberAvatars'])
+      && Object.values(value['memberAvatars']).every(isAvatarRef)))
+    && (value['roleAvatars'] === undefined || (isRecord(value['roleAvatars'])
+      && Object.values(value['roleAvatars']).every(isAvatarRef)))
+    && (value['worktreeLanes'] === undefined || (Array.isArray(value['worktreeLanes'])
+      && value['worktreeLanes'].length <= 64
+      && value['worktreeLanes'].every(isWorktreeLane)))
   if (!validShape) return false
 
   const members = value['members'] as TeamMember[]
@@ -1331,6 +1482,26 @@ function isTeamMessage(value: unknown): value is TeamMessage {
     && (value['sourceMemberGeneration'] === undefined || isFiniteNumber(value['sourceMemberGeneration']))
     && (value['sourceActivationId'] === undefined || typeof value['sourceActivationId'] === 'string')
     && (value['sourceActivationEpoch'] === undefined || isFiniteNumber(value['sourceActivationEpoch']))
+    && (value['attachments'] === undefined || (Array.isArray(value['attachments']) && value['attachments'].every(isMessageAttachment)))
+}
+
+function isMessageAttachment(value: unknown): value is MessageAttachment {
+  if (!isRecord(value)) return false
+  return typeof value['id'] === 'string' && value['id'] !== ''
+    && typeof value['name'] === 'string' && value['name'] !== ''
+    && typeof value['mime'] === 'string' && value['mime'] !== ''
+    && Number.isSafeInteger(value['bytes']) && (value['bytes'] as number) >= 0
+    && typeof value['sha256'] === 'string' && /^[0-9a-f]{64}$/u.test(value['sha256'])
+    && typeof value['storageRef'] === 'string' && /^attachments\/[0-9a-f]{64}\.(?:png|jpg|jpeg|webp|txt|md|json|csv|pdf|zip)$/u.test(value['storageRef'])
+    && isRecord(value['source'])
+    && typeof value['source']['workspaceId'] === 'string'
+    && typeof value['source']['sourcePath'] === 'string'
+    && typeof value['source']['sourceRealpathHash'] === 'string'
+    && typeof value['source']['device'] === 'string'
+    && typeof value['source']['inode'] === 'string'
+    && isFiniteNumber(value['source']['size'])
+    && isFiniteNumber(value['source']['mtimeMs'])
+    && typeof value['source']['sha256'] === 'string'
 }
 
 /**

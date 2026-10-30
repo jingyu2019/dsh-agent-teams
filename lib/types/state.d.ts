@@ -12,12 +12,14 @@
  * `fs` service offers no directory deletion.
  * @module dsh-agent-teams/state
  */
-import { type TaskStatus, type TeamMessage, type TeamState, type TeamTask } from './types.ts';
+import { type TaskStatus, type TeamMessage, type TeamState, type TeamTask, type TimelineEntry } from './types.ts';
 import { type LeadIdentity } from './lineage.ts';
 export { amendTaskContract, buildCoverageMatrix, canDeclareDelivery, classifyChangedPath, collectChangedPaths, defaultQualityDeliveryGraph, describeQualityLoop, evaluateQualityCompletion, hasValidQualityTaskFields, isQualityKind, isTaskRevision, isValidFindingLine, normalizeBlankOptionalTaskFields, normalizeSentinelNumericTaskFields, pathMatchesScope, planQualityFollowUp, qualityPlanningPrompt, resumeTeamState, sanitizeReviewAcceptance, sanitizeReviewObjective, taskKindOf, validateCreateTask, } from './quality-gates.ts';
 export type { ContractAmendmentInput } from './quality-gates.ts';
 /** Mailbox key of the captain. */
 export declare const CAPTAIN_KEY = "captain";
+/** Bounded durable timeline retained in team.json. */
+export declare const TIMELINE_CAP = 500;
 /**
  * Serialize mutations of one team across the whole process.
  * @param key - the team id (or any mutation scope).
@@ -25,6 +27,17 @@ export declare const CAPTAIN_KEY = "captain";
  * @returns the mutation's result.
  */
 export declare function withTeamLock<T>(key: string, fn: () => Promise<T>): Promise<T>;
+/** Caller-provided timeline fields; id and timestamp are allocated here. */
+export type TimelineEntryInput = Omit<TimelineEntry, 'id' | 'at'> & {
+    at?: number;
+};
+/**
+ * Append one durable activity entry and evict the oldest entries above the
+ * bound. Callers invoke this inside the team lock immediately before the same
+ * `writeTeam` that persists the mutation, so a repeated read never creates
+ * duplicate history.
+ */
+export declare function appendTimeline(team: TeamState, input: TimelineEntryInput): TimelineEntry;
 /**
  * Keys with an in-process lock queue (held or waiting), snapshot for
  * diagnostics and leak checks. The queue promises themselves stay private.
@@ -198,6 +211,13 @@ export declare function acknowledgeMailbox(stateRoot: string, teamId: string, ag
 /** Acceptance by Harness is not evidence that a model step consumed input. */
 export declare function markMailboxDelivered(stateRoot: string, teamId: string, agentKey: string, ids: readonly string[]): Promise<void>;
 export declare function discardMailboxMessages(stateRoot: string, teamId: string, agentKey: string, ids: readonly string[]): Promise<void>;
+/**
+ * Move one staged member's mailbox to its new sanitized key and rewrite the
+ * address fields of every durable message. Callers hold the team lock; a
+ * staged plan has no child session, so this is the only history that follows
+ * the rename.
+ */
+export declare function renameMailboxOwner(stateRoot: string, teamId: string, from: string, to: string): Promise<void>;
 /** Filesystem primitives used by {@link replaceFileAtomicOrDirect}; injectable for tests. */
 export interface AtomicReplacePrimitives {
     rename: (from: string, to: string) => Promise<void>;

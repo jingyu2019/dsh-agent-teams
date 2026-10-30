@@ -22,6 +22,8 @@ export interface MemberStartSpec {
     request: {
         parent: Agent;
         prompt: ContentBlock[];
+        /** Absolute working directory for the child session. */
+        cwd?: string;
         agentOptions?: AgentOptions;
         persona?: string;
         toolFilter?: MemberToolFilter;
