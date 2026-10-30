@@ -38,7 +38,9 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { collectArchivedTeamsActivity, collectTeamsActivity } from './snapshot.ts'
-import { findTeamByCaptain } from './state.ts'
+import { findTeamByCaptain, readTeam, sanitizeKey, withTeamLock, writeTeam } from './state.ts'
+import { parseRasterAvatar, readManagedAvatar, storeManagedAvatar } from './avatars.ts'
+import { readAttachment } from './attachments.ts'
 import { leadIdentityOfAsync } from './lineage.ts'
 import { formatProfilesForPrompt, normalizeSkillCatalog, type SkillBindingConfig, type TeamProfileConfig } from './profiles.ts'
 import { parseToolPolicies, type MemberToolPolicy } from './tool-policies.ts'
@@ -121,6 +123,12 @@ export interface Config {
    * members select ids only; raw prompt bundles never come from the captain.
    */
   skills?: Record<string, SkillBindingConfig>
+  /** Owner-configured local roots for captain attachments (#70). */
+  artifactRoots?: import('./types.ts').ArtifactRootConfig[]
+  /** Opt-in immutable global agent preset library (#315). */
+  agentLibrary?: { enabled?: boolean }
+  /** Opt-in member-lane worktree isolation (#287). */
+  worktrees?: { enabled?: boolean; root?: string; baseRef?: string }
   /** Prompt-section order for the usage policy (default `117`, after delegation policy). */
   promptSectionOrder?: number
   /**
@@ -200,6 +208,14 @@ export const Config: z<Config> = z.object({
     prompt: z.string().required(),
     toolPolicy: z.string(),
   })).default({}),
+  artifactRoots: z.array(z.object({
+    id: z.string().required(),
+    path: z.string().required(),
+    allowRead: z.boolean().default(true),
+    allowTeamIds: z.array(z.string()),
+  })).default([]),
+  agentLibrary: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
+  worktrees: z.object({ enabled: z.boolean().default(false), root: z.string(), baseRef: z.string() }).default({ enabled: false }),
   memberMaxDepth: z.natural().default(0),
   maxMembers: z.natural().min(1).default(8),
   maxConcurrentWorkers: z.natural().min(1),
@@ -248,6 +264,9 @@ export function resolveToolsConfig(config: Config): ToolsConfig {
     // policy must never reach a member creation path.
     toolPolicies: parseToolPolicies(config.toolPolicies),
     skills: normalizeSkillCatalog(config.skills),
+    artifactRoots: config.artifactRoots ?? [],
+    agentLibrary: { enabled: config.agentLibrary?.enabled === true },
+    worktrees: { enabled: config.worktrees?.enabled === true, ...config.worktrees?.root === undefined ? {} : { root: config.worktrees.root }, ...config.worktrees?.baseRef === undefined ? {} : { baseRef: config.worktrees.baseRef } },
   }
 }
 
@@ -521,6 +540,236 @@ export function apply(ctx: Context, config: Config): void {
         }
       },
     }), 'agent-teams: plan route')
+
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
+      path: '/plugins/dsh-agent-teams/plan/create',
+      handler: async (req, res) => {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { allow: 'POST', 'cache-control': 'no-store' })
+          res.end()
+          return
+        }
+        let payload: Record<string, unknown>
+        try {
+          payload = await readJsonRequest(req)
+        } catch (error: unknown) {
+          res.writeHead(error instanceof RequestBodyError ? error.status : 400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'invalid request body' }))
+          return
+        }
+        const sessionId = typeof payload['sessionId'] === 'string' ? payload['sessionId'].trim() : ''
+        const name = typeof payload['name'] === 'string' ? payload['name'].trim() : ''
+        if (sessionId === '' || name === '') {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'sessionId and name are required' }))
+          return
+        }
+        const members = Array.isArray(payload['members']) ? payload['members'].filter((member): member is Record<string, unknown> => typeof member === 'object' && member !== null && !Array.isArray(member)) : []
+        const tasks = Array.isArray(payload['tasks']) ? payload['tasks'].filter((task): task is Record<string, unknown> => typeof task === 'object' && task !== null && !Array.isArray(task)) : []
+        const captain = ctx.agents.get(sessionId as import('@deepseek-ai/dsh-session').SessionId)
+        if (captain === undefined) {
+          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'captain session is not attached' }))
+          return
+        }
+        try {
+          const created = await agentTeamsRuntime.createStagedTeam(captain, {
+            name,
+            ...typeof payload['description'] === 'string' ? { description: payload['description'] } : {},
+            members: members.map(member => ({
+              name: typeof member['name'] === 'string' ? member['name'] : '',
+              ...typeof member['role'] === 'string' ? { role: member['role'] } : {},
+              ...typeof member['provider'] === 'string' ? { provider: member['provider'] } : {},
+              ...typeof member['model'] === 'string' ? { model: member['model'] } : {},
+              ...typeof member['reasoning_effort'] === 'string' ? { reasoning_effort: member['reasoning_effort'] } : {},
+              ...typeof member['executionPrompt'] === 'string' ? { executionPrompt: member['executionPrompt'] } : {},
+              ...typeof member['tool_policy'] === 'string' ? { tool_policy: member['tool_policy'] } : {},
+              ...Array.isArray(member['skills']) ? { skills: member['skills'].filter((skill): skill is string => typeof skill === 'string') } : {},
+              ...typeof member['preset_id'] === 'string' ? { preset_id: member['preset_id'] } : {},
+            })),
+            tasks: tasks.map(task => ({
+              subject: typeof task['subject'] === 'string' ? task['subject'] : '',
+              ...typeof task['description'] === 'string' ? { description: task['description'] } : {},
+              ...typeof task['assignee'] === 'string' ? { assignee: task['assignee'] } : {},
+              ...Array.isArray(task['dependencies']) ? { dependencies: task['dependencies'].filter((dependency): dependency is string => typeof dependency === 'string') } : {},
+            })),
+          })
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ ok: true, teamId: created.id, phase: created.phase }))
+        } catch (error: unknown) {
+          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'manual plan creation failed' }))
+        }
+      },
+    }), 'agent-teams: manual plan create route')
+
+  // Local-only avatar overrides. The authenticated workspace-single-user gate
+  // is the trust boundary; body sessionId/teamId are lookup keys, never
+  // authorization claims. No remote URL or user filename reaches a path.
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/plugins/dsh-agent-teams/avatar',
+    handler: async (req, res) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { allow: 'POST', 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
+      let payload: Record<string, unknown>
+      try {
+        payload = await readJsonRequest(req, 4_000_000)
+      } catch (error: unknown) {
+        res.writeHead(error instanceof RequestBodyError ? error.status : 400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'invalid request body' }))
+        return
+      }
+      const sessionId = typeof payload['sessionId'] === 'string' ? payload['sessionId'].trim() : ''
+      const teamId = typeof payload['teamId'] === 'string' ? payload['teamId'].trim() : ''
+      const memberName = typeof payload['memberName'] === 'string' ? payload['memberName'].trim() : ''
+      if (sessionId === '' || teamId === '' || memberName === '') {
+        res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ error: 'sessionId, teamId and memberName are required' }))
+        return
+      }
+      const captain = ctx.agents.get(sessionId as import('@deepseek-ai/dsh-session').SessionId)
+      if (captain === undefined) {
+        res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ error: 'captain session is not attached' }))
+        return
+      }
+      const workspace = captain.session.header.cwd ?? process.cwd()
+      const stateRoot = join(workspace, resolved.stateDir)
+      const team = await findTeamByCaptain(stateRoot, captain.id, await leadIdentityOfAsync(ctx, captain.session))
+      if (team === undefined || team.id !== teamId) {
+        res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ error: 'team not found for this captain' }))
+        return
+      }
+      if (!team.members.some(member => member.name === memberName && member.status !== 'removed')) {
+        res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ error: 'member not found' }))
+        return
+      }
+      const restore = payload['restore'] === true
+      let nextRef: import('./types.ts').AvatarRef | undefined
+      if (!restore) {
+        const data = typeof payload['data'] === 'string' ? payload['data'] : ''
+        if (data === '' || !/^[A-Za-z0-9+/]+={0,2}$/u.test(data)) {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'data must be base64-encoded raster image bytes' }))
+          return
+        }
+        const avatar = parseRasterAvatar(Buffer.from(data, 'base64'))
+        if (avatar === undefined) {
+          res.writeHead(415, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'avatar must be a PNG, JPEG or WebP image up to 2 MiB' }))
+          return
+        }
+        nextRef = await storeManagedAvatar(stateRoot, team.id, avatar)
+      }
+      await withTeamLock(`team:${stateRoot}:${team.id}`, async () => {
+        const fresh = await readTeam(stateRoot, team.id)
+        if (fresh === undefined) throw new Error('team is no longer active')
+        const avatars = { ...(fresh.memberAvatars ?? {}) }
+        if (nextRef === undefined) delete avatars[memberName]
+        else avatars[memberName] = nextRef
+        if (Object.keys(avatars).length === 0) delete fresh.memberAvatars
+        else fresh.memberAvatars = avatars
+        await writeTeam(stateRoot, fresh)
+      })
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(JSON.stringify({ ok: true, avatarUrl: nextRef?.kind === 'managed' ? `/plugins/dsh-agent-teams/avatar/${encodeURIComponent(team.id)}/${nextRef.sha256}.${nextRef.ext}` : null }))
+    },
+  }), 'agent-teams: avatar upload route')
+
+  ctx.effect(() => webServer.register({
+    kind: 'prefix',
+    path: '/plugins/dsh-agent-teams/avatar/',
+    handler: async (req, res) => {
+      if (req.method !== 'GET') {
+        res.writeHead(405, { allow: 'GET', 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
+      const parts = new URL(req.url ?? '/', 'http://x').pathname.split('/').filter(Boolean)
+      const teamId = decodeURIComponent(parts.at(-2) ?? '')
+      const file = decodeURIComponent(parts.at(-1) ?? '')
+      const match = /^([0-9a-f]{64})\.(png|jpg|webp)$/u.exec(file)
+      if (teamId === '' || sanitizeKey(teamId) !== teamId || match === null) {
+        res.writeHead(404, { 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
+      const ref = { kind: 'managed' as const, sha256: match[1]!, ext: match[2]! as 'png' | 'jpg' | 'webp' }
+      for (const workspace of workspaceRegistry.list()) {
+        const stateRoot = join(workspace.path, resolved.stateDir)
+        const team = await readTeam(stateRoot, teamId)
+        if (team === undefined) continue
+        const known = [...Object.values(team.memberAvatars ?? {}), ...Object.values(team.roleAvatars ?? {})]
+          .some(candidate => candidate.kind === 'managed' && candidate.sha256 === ref.sha256 && candidate.ext === ref.ext)
+        if (!known) continue
+        const avatar = await readManagedAvatar(stateRoot, team.id, ref)
+        if (avatar === undefined) break
+        res.writeHead(200, {
+          'content-type': avatar.mime,
+          'cache-control': 'private, max-age=31536000, immutable',
+          'x-content-type-options': 'nosniff',
+          'content-disposition': 'inline',
+        })
+        res.end(avatar.bytes)
+        return
+      }
+      res.writeHead(404, { 'cache-control': 'no-store' })
+      res.end()
+    },
+  }), 'agent-teams: avatar read route')
+
+  ctx.effect(() => webServer.register({
+    kind: 'prefix',
+    path: '/plugins/dsh-agent-teams/attachment/',
+    handler: async (req, res) => {
+      if (req.method !== 'GET') {
+        res.writeHead(405, { allow: 'GET', 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
+      const parts = new URL(req.url ?? '/', 'http://x').pathname.split('/').filter(Boolean)
+      const teamId = decodeURIComponent(parts.at(-2) ?? '')
+      const file = decodeURIComponent(parts.at(-1) ?? '')
+      if (teamId === '' || sanitizeKey(teamId) !== teamId || !/^[0-9a-f]{64}\.(?:png|jpg|jpeg|webp|txt|md|json|csv|pdf|zip)$/u.test(file)) {
+        res.writeHead(404, { 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
+      for (const workspace of workspaceRegistry.list()) {
+        const stateRoot = join(workspace.path, resolved.stateDir)
+        const team = await readTeam(stateRoot, teamId)
+        if (team === undefined) continue
+        const bytes = await readAttachment(stateRoot, team.id, file)
+        if (bytes === undefined) continue
+        const ext = file.split('.').pop() ?? ''
+        const mime = ext === 'png' ? 'image/png'
+          : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+            : ext === 'webp' ? 'image/webp'
+              : ext === 'pdf' ? 'application/pdf'
+                : ext === 'zip' ? 'application/zip'
+                  : ext === 'json' ? 'application/json; charset=utf-8'
+                    : ext === 'csv' ? 'text/csv; charset=utf-8'
+                      : ext === 'md' ? 'text/markdown; charset=utf-8' : 'text/plain; charset=utf-8'
+        res.writeHead(200, {
+          'content-type': mime,
+          'cache-control': 'private, max-age=31536000, immutable',
+          'x-content-type-options': 'nosniff',
+          'content-disposition': `${mime.startsWith('image/') ? 'inline' : 'attachment'}; filename="${file}"`,
+        })
+        res.end(bytes)
+        return
+      }
+      res.writeHead(404, { 'cache-control': 'no-store' })
+      res.end()
+    },
+  }), 'agent-teams: attachment read route')
 
   // Whale mascot artwork: serve the packaged V2 role/action images to the
   // activity panel. An explicit allowlist guards the route (no path

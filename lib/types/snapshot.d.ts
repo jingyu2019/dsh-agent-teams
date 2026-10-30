@@ -8,7 +8,7 @@
  * @module dsh-agent-teams/snapshot
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { MemberStatus, TeamState } from './types.ts';
+import type { MemberStatus, TeamState, TimelineEntry } from './types.ts';
 /** Visual task state for the activity panel. */
 export type VisualTaskState = 'blocked' | 'open' | 'claimed' | 'running' | 'completed' | 'failed' | 'cancelled';
 /** One member row of the activity snapshot. */
@@ -20,6 +20,8 @@ export interface TeamActivityMember {
     readonly model: string;
     readonly reasoningEffort: string;
     readonly executionPrompt: string;
+    /** Authenticated local avatar URL, when the member has an override. */
+    readonly avatarUrl?: string;
     readonly status: MemberStatus;
     readonly activity: 'working' | 'idle' | 'unknown';
     readonly progress: number;
@@ -54,6 +56,12 @@ export interface TeamActivityTask {
 export interface TeamActivityMessage {
     readonly from: string;
     readonly content: string;
+    readonly attachments?: readonly {
+        readonly name: string;
+        readonly mime: string;
+        readonly bytes: number;
+        readonly url: string;
+    }[];
 }
 /** The full panel payload for one team. */
 export interface TeamActivitySnapshot {
@@ -69,6 +77,8 @@ export interface TeamActivitySnapshot {
     readonly tasks: readonly TeamActivityTask[];
     readonly messageCount: number;
     readonly captainInbox: readonly TeamActivityMessage[];
+    /** Latest 200 durable activity entries, oldest first. */
+    readonly timeline: readonly TimelineEntry[];
     /** Present when the snapshot could audit the workspace bytes. */
     readonly loopState?: string;
     readonly deliverable?: boolean;

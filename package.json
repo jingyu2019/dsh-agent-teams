@@ -91,7 +91,7 @@
     "update:skills": "node scripts/update-skills.mjs",
     "test:skills-updater": "node --test scripts/update-skills.test.mjs",
     "verify:skill": "node scripts/sync-skill.mjs --check",
-    "verify": "node scripts/verify.mjs && node scripts/fallback-tdd.mjs && pnpm verify:availability && node scripts/member-failure-tdd.mjs && pnpm verify:issue-regressions && pnpm verify:lifecycle-issues && pnpm verify:quality-gates && node scripts/lifecycle-verify.mjs && node scripts/stress-verify.mjs && node --test scripts/issue-159.test.mjs && pnpm verify:issue-203 && pnpm verify:corrupt-state && pnpm verify:web-routes && pnpm verify:release && pnpm verify:manifest && pnpm verify:ui-status && pnpm verify:evaluation && pnpm verify:readme && pnpm verify:skill && pnpm verify:harness-contract && pnpm verify:http-body && pnpm verify:compatibility && pnpm verify:capabilities && pnpm verify:tool-policies && pnpm verify:member-spawn-recovery && pnpm test:git-install && pnpm verify:source-runner && pnpm verify:lineage-identity && pnpm verify:legacy-session-repair && pnpm verify:git-artifact",
+    "verify": "node scripts/verify.mjs && node scripts/fallback-tdd.mjs && pnpm verify:availability && node scripts/member-failure-tdd.mjs && pnpm verify:issue-regressions && pnpm verify:lifecycle-issues && pnpm verify:quality-gates && node scripts/lifecycle-verify.mjs && node scripts/stress-verify.mjs && node --test scripts/issue-159.test.mjs && pnpm verify:issue-203 && pnpm verify:corrupt-state && pnpm verify:web-routes && pnpm verify:release && pnpm verify:manifest && pnpm verify:ui-status && pnpm verify:evaluation && pnpm verify:readme && pnpm verify:skill && pnpm verify:harness-contract && pnpm verify:http-body && pnpm verify:compatibility && pnpm verify:capabilities && pnpm verify:tool-policies && pnpm verify:member-spawn-recovery && pnpm test:git-install && pnpm verify:source-runner && pnpm verify:lineage-identity && pnpm verify:legacy-session-repair && pnpm verify:issue-w5w7 && pnpm verify:git-artifact",
     "prepublishOnly": "pnpm build && pnpm verify",
     "verify:quality-gates": "node scripts/quality-gates-tdd.mjs && node --test scripts/quality-gates-repair-scope.test.mjs scripts/quality-gates-amend.test.mjs scripts/quality-gates-content-bound.test.mjs scripts/quality-gates-work-order.test.mjs scripts/quality-gates-repair-wiring.test.mjs scripts/quality-gates-excluded-scope.test.mjs scripts/quality-gates-cross-binding.test.mjs",
     "verify:availability": "node --test scripts/issue-97.test.mjs scripts/issue-76.test.mjs scripts/issue-62.test.mjs scripts/issue-62-probe.test.mjs",
@@ -118,7 +118,8 @@
     "verify:ui-status": "node --test scripts/issue-58.test.mjs",
     "verify:evaluation": "node scripts/evaluation/validate.mjs --self-test && node --test scripts/issue-211.test.mjs",
     "verify:legacy-session-repair": "node --test scripts/legacy-session-source-repair.test.mjs",
-    "verify:lineage-identity": "node --test scripts/lineage-identity.test.mjs"
+    "verify:lineage-identity": "node --test scripts/lineage-identity.test.mjs",
+    "verify:issue-w5w7": "node --test scripts/issue-263.test.mjs scripts/issue-279-rename.test.mjs scripts/issue-279-scale.test.mjs scripts/issue-279-manual.test.mjs scripts/issue-70.test.mjs scripts/issue-121.test.mjs scripts/issue-315.test.mjs scripts/issue-287.test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

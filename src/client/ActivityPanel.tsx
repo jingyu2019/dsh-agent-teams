@@ -19,7 +19,7 @@
 
 import {
   useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore,
-  type CSSProperties, type PointerEvent as ReactPointerEvent,
+  type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent,
 } from 'react'
 import {
   IconBranchOutline16, IconChevronDownOutline14, IconPanelLeftOutline16,
@@ -57,6 +57,7 @@ import {
   type ActivityMember,
   type ActivityTask,
   type ActivityTeam,
+  type ActivityTimelineEntry,
 } from './activity-monitor.ts'
 import {
   defaultStatusRenderer,
@@ -67,6 +68,13 @@ import {
   type StatusRenderer,
 } from './status-presentation.ts'
 import { LEAD_ART, memberArtUrl } from './artwork.ts'
+import {
+  AGENT_TEAMS_UI_SCALE_STORAGE_KEY,
+  AGENT_TEAMS_UI_SCALE_VALUES,
+  agentTeamsUiScaleFactor,
+  parseAgentTeamsUiScale,
+  type AgentTeamsUiScale,
+} from './ui-scale.ts'
 import { OPEN_PANEL_EVENT } from './AgentTeamsCard.tsx'
 import { StagingPlanEditor } from './StagingPlanEditor.tsx'
 import type { AgentTeamsCardData } from './agent-teams-card-definition.ts'
@@ -366,6 +374,185 @@ function ProgressOverview({ team, t, discarded = false }: { readonly team: Activ
   )
 }
 
+function formatTimelineTime(at: number): string {
+  const date = new Date(at)
+  if (Number.isNaN(date.getTime())) return '--:--:--'
+  try {
+    return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(date)
+  } catch {
+    return date.toISOString().slice(11, 19)
+  }
+}
+
+function timelineActionLabel(entry: ActivityTimelineEntry, t: AgentTeamsTranslate): string {
+  return t(`timeline.action.${entry.action}` as AgentTeamsLocaleKey)
+}
+
+/** Durable newest-first activity, bounded for a compact panel. */
+function TimelineSection({ team, t }: { readonly team: ActivityTeam; readonly t: AgentTeamsTranslate }) {
+  const entries = [...(team.timeline ?? [])].reverse().slice(0, 50)
+  return (
+    <section className={css.timelineSection} aria-label={t('timeline.aria')} data-activity-timeline>
+      <h3>{t('timeline.title')}</h3>
+      {entries.length === 0
+        ? <p className={css.summaryEmpty}>{t('timeline.empty')}</p>
+        : (
+          <ol className={css.timelineList}>
+            {entries.map((entry) => (
+              <li key={entry.id} data-action={entry.action}>
+                <time dateTime={new Date(entry.at).toISOString()} title={new Date(entry.at).toISOString()}>{formatTimelineTime(entry.at)}</time>
+                <span className={css.timelineActor} title={entry.actor}>{entry.actor}</span>
+                <span className={css.timelineAction}>{timelineActionLabel(entry, t)}</span>
+                {entry.taskId !== undefined && <span className={css.timelineTask}>{entry.taskId}</span>}
+                {entry.result !== undefined && entry.result.trim() !== '' && (
+                  <span className={css.timelineResult} title={entry.result}>{entry.result}</span>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+    </section>
+  )
+}
+
+async function fileBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : ''
+      resolve(result.includes(',') ? result.slice(result.indexOf(',') + 1) : '')
+    }
+    reader.onerror = () => reject(reader.error ?? new Error('could not read avatar file'))
+    reader.readAsDataURL(file)
+  })
+}
+
+/** Upload/restore a member avatar through the authenticated local route. */
+function MemberAvatarControl({ team, member, t }: {
+  readonly team: ActivityTeam
+  readonly member: ActivityMember
+  readonly t: AgentTeamsTranslate
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const update = async (body: Record<string, unknown>): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    setError('')
+    try {
+      const response = await fetch('/plugins/dsh-agent-teams/avatar', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: team.captainSessionId, teamId: team.teamId, memberName: member.name, ...body }),
+      })
+      if (!response.ok) {
+        let message = 'request failed'
+        try {
+          const payload = await response.json() as { error?: unknown }
+          if (typeof payload.error === 'string' && payload.error.trim() !== '') message = payload.error
+        } catch {}
+        throw new Error(message)
+      }
+    } catch (cause: unknown) {
+      setError(t('avatar.failed', { message: cause instanceof Error ? cause.message : String(cause) }))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <span className={css.avatarControls}>
+      <label className={css.avatarAction} data-busy={busy || undefined}>
+        {busy ? t('avatar.uploading') : t('avatar.replace')}
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          disabled={busy}
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0]
+            event.currentTarget.value = ''
+            if (file === undefined) return
+            void fileBase64(file).then(data => update({ data }))
+          }}
+        />
+      </label>
+      {member.avatarUrl !== undefined && (
+        <button type="button" className={css.avatarAction} disabled={busy} onClick={() => { void update({ restore: true }) }}>
+          {t('avatar.restore')}
+        </button>
+      )}
+      {error !== '' && <span className={css.avatarError} role="alert">{error}</span>}
+    </span>
+  )
+}
+
+/** Manual staged-plan creation through the authenticated local route. */
+function ManualTeamDialog({ open, onClose, onCreated, sessionId, t }: {
+  readonly open: boolean
+  readonly onClose: () => void
+  readonly onCreated: () => void
+  readonly sessionId?: SessionId
+  readonly t: AgentTeamsTranslate
+}) {
+  const [name, setName] = useState('')
+  const [member, setMember] = useState('worker')
+  const [task, setTask] = useState('Work on the team goal')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    if (sessionId === undefined || name.trim() === '' || member.trim() === '' || task.trim() === '') {
+      setError(t('manual.failed', { message: 'session, team name, member and task are required' }))
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      const response = await fetch('/plugins/dsh-agent-teams/plan/create', {
+        method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId, name, members: [{ name: member }], tasks: [{ subject: task }] }),
+      })
+      if (!response.ok) {
+        let message = 'request failed'
+        try {
+          const payload = await response.json() as { error?: unknown }
+          if (typeof payload.error === 'string' && payload.error.trim() !== '') message = payload.error
+        } catch {}
+        throw new Error(message)
+      }
+      setName(''); setMember('worker'); setTask('Work on the team goal')
+      onCreated()
+      onClose()
+    } catch (cause: unknown) {
+      setError(t('manual.failed', { message: cause instanceof Error ? cause.message : String(cause) }))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Modal
+      open={open}
+      onClose={() => { if (!busy) onClose() }}
+      title={t('manual.title')}
+      closeLabel={t('manual.cancel')}
+      description={t('manual.description')}
+      footer={(
+        <span className={css.stopModalActions}>
+          <button type="button" disabled={busy} onClick={onClose}>{t('manual.cancel')}</button>
+          <button type="submit" form="agent-teams-manual-create" disabled={busy}>{busy ? t('manual.creating') : t('manual.submit')}</button>
+        </span>
+      )}
+    >
+      <form id="agent-teams-manual-create" className={css.manualForm} onSubmit={(event) => { void submit(event) }}>
+        <label>{t('manual.name')}<input value={name} required onChange={event => { setName(event.currentTarget.value); setError('') }} /></label>
+        <label>{t('manual.member')}<input value={member} required onChange={event => { setMember(event.currentTarget.value); setError('') }} /></label>
+        <label>{t('manual.task')}<input value={task} required onChange={event => { setTask(event.currentTarget.value); setError('') }} /></label>
+        {error !== '' && <p className={css.stopModalError} role="alert">{error}</p>}
+      </form>
+    </Modal>
+  )
+}
+
 /** Workspace-only summary of durable completion and the current unread inbox.
  * The snapshot is not a chat transcript: it provides at most five unread
  * captain messages, with no timestamps, so do not imply a complete history.
@@ -403,7 +590,15 @@ function WorkspaceSummary({ team, t, discarded }: { readonly team: ActivityTeam;
             const art = message.from === CAPTAIN_ASSIGNEE ? LEAD_ART : memberArtUrl(message.from, member?.role ?? '')
             return <li key={`${index}:${message.from}`}>
               {art === null ? <span className={css.inboxInitial} aria-hidden>{memberInitial(message.from)}</span> : <img src={art} alt="" aria-hidden />}
-              <div><strong>{message.from}</strong><p>{message.content}</p></div>
+              <div>
+                <strong>{message.from}</strong><p>{message.content}</p>
+                {message.attachments?.map(attachment => (
+                  <a key={attachment.url} className={css.attachmentLink} href={attachment.url} download={attachment.name} target="_blank" rel="noreferrer">
+                    {attachment.mime.startsWith('image/') && <img className={css.attachmentPreview} src={attachment.url} alt="" aria-hidden />}
+                    <span>{attachment.name}</span>
+                  </a>
+                ))}
+              </div>
             </li>
           })}
         </ul>}
@@ -760,8 +955,8 @@ export function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscar
                   }}
                 >
                   <span className={css.memberAvatar} data-unread={member.unread > 0}>
-                    {memberArtUrl(member.name, member.role) !== null ? (
-                      <img className={css.memberArt} src={memberArtUrl(member.name, member.role) ?? ''} alt="" aria-hidden />
+                    {member.avatarUrl !== undefined || memberArtUrl(member.name, member.role) !== null ? (
+                      <img className={css.memberArt} src={member.avatarUrl ?? memberArtUrl(member.name, member.role) ?? ''} alt="" aria-hidden />
                     ) : (
                       <span className={css.memberInitial} style={{ background: accentOf(member.id) }}>{memberInitial(member.name)}</span>
                     )}
@@ -804,6 +999,7 @@ export function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscar
                   </span>
                   <span className={css.memberCount}>{member.done}/{member.total}</span>
                 </button>
+                {!historic && <MemberAvatarControl team={team} member={member} t={t} />}
                 <div className={css.assignmentLine}>
                   <span className={css.assignmentLabel}>{t(discarded
                     ? 'assignment.discarded'
@@ -841,6 +1037,7 @@ export function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscar
       </section>
 
       <DependencyMap tasks={team.tasks} members={team.members} t={t} discarded={discarded} workspace={workspace} onSelectTask={setSelectedTaskId} />
+      <TimelineSection team={team} t={t} />
       {workspace && <WorkspaceSummary team={team} t={t} discarded={discarded} />}
       </section>
       <Modal
@@ -910,6 +1107,11 @@ export function ActivityPanel({ sessionsList, modelDirectories, openMember, t, c
     openMember(parentId, childId)
   }
   const [open, setOpen] = useState(false)
+  const [manualOpen, setManualOpen] = useState(false)
+  const [uiScale, setUiScale] = useState<AgentTeamsUiScale>(() => {
+    if (typeof window === 'undefined') return 'host'
+    try { return parseAgentTeamsUiScale(window.localStorage.getItem(AGENT_TEAMS_UI_SCALE_STORAGE_KEY)) } catch { return 'host' }
+  })
   const [openOwner, setOpenOwner] = useState<SessionId | undefined>()
   const [autoOpened, setAutoOpened] = useState(false)
   const [wasActive, setWasActive] = useState(false)
@@ -1298,7 +1500,12 @@ export function ActivityPanel({ sessionsList, modelDirectories, openMember, t, c
     height: autoHeight ? 'auto' : geometry.height,
     maxHeight: panelMaximumHeight(geometry, bounds),
     transform: `translate3d(${geometry.x}px, ${geometry.y}px, 0)`,
+    ['--agent-teams-font-scale' as string]: agentTeamsUiScaleFactor(uiScale),
   }
+
+  useEffect(() => {
+    try { window.localStorage.setItem(AGENT_TEAMS_UI_SCALE_STORAGE_KEY, uiScale) } catch {}
+  }, [uiScale])
 
   if (!conversationVisible || (!hasTeams && !expanded)) return null
 
@@ -1338,6 +1545,21 @@ export function ActivityPanel({ sessionsList, modelDirectories, openMember, t, c
             </span>
             <span className={css.panelControls}>
               {!compact && (
+                <label className={css.scaleControl} title={t('activity.uiScale')}>
+                  <span className={css.srOnly}>{t('activity.uiScale')}</span>
+                  <select
+                    value={uiScale}
+                    data-control="ui-scale"
+                    aria-label={t('activity.uiScale')}
+                    onChange={(event) => { setUiScale(parseAgentTeamsUiScale(event.currentTarget.value)) }}
+                  >
+                    {AGENT_TEAMS_UI_SCALE_VALUES.map(scale => (
+                      <option key={scale} value={scale}>{scale === 'host' ? t('activity.uiScale.host') : `${scale}%`}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {!compact && (
                 <button
                   type="button"
                   className={css.iconButton}
@@ -1367,7 +1589,12 @@ export function ActivityPanel({ sessionsList, modelDirectories, openMember, t, c
           </header>
           <div className={css.teams}>
             {visibleCount === 0
-              ? <span className={css.emptyHint}>{t('activity.empty')}</span>
+              ? (
+                <div className={css.emptyState}>
+                  <span className={css.emptyHint}>{t('activity.empty')}</span>
+                  <button type="button" className={css.manualCreate} onClick={() => setManualOpen(true)}>{t('manual.create')}</button>
+                </div>
+              )
               : (
                 <>
                   {visibleTeams.map((team) => (
@@ -1434,6 +1661,7 @@ export function ActivityPanel({ sessionsList, modelDirectories, openMember, t, c
           )}
         </aside>
       )}
+      <ManualTeamDialog open={manualOpen} onClose={() => setManualOpen(false)} onCreated={() => { setOpen(true) }} sessionId={current} t={t} />
     </>
   )
 }

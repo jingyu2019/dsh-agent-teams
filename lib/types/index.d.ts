@@ -89,6 +89,18 @@ export interface Config {
      * members select ids only; raw prompt bundles never come from the captain.
      */
     skills?: Record<string, SkillBindingConfig>;
+    /** Owner-configured local roots for captain attachments (#70). */
+    artifactRoots?: import('./types.ts').ArtifactRootConfig[];
+    /** Opt-in immutable global agent preset library (#315). */
+    agentLibrary?: {
+        enabled?: boolean;
+    };
+    /** Opt-in member-lane worktree isolation (#287). */
+    worktrees?: {
+        enabled?: boolean;
+        root?: string;
+        baseRef?: string;
+    };
     /** Prompt-section order for the usage policy (default `117`, after delegation policy). */
     promptSectionOrder?: number;
     /**

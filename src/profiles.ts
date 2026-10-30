@@ -25,7 +25,7 @@ export const MAX_OWNER_SKILLS = 128
 
 const PROFILE_KEYS = ['description', 'protocol', 'executionPrompt', 'fallback', 'fallbacks', 'members', 'tasks', 'taskPlanning', 'reviewPolicy'] as const
 const REVIEW_POLICY_KEYS = ['requirementsMinRounds', 'requirementsMaxRounds', 'codeMaxRounds', 'maxRepairAttempts', 'requiredReviewers'] as const
-const MEMBER_KEYS = ['name', 'role', 'provider', 'model', 'reasoning_effort', 'executionPrompt', 'fallback', 'fallbacks', 'tool_policy', 'skills'] as const
+const MEMBER_KEYS = ['name', 'role', 'provider', 'model', 'reasoning_effort', 'executionPrompt', 'fallback', 'fallbacks', 'tool_policy', 'skills', 'preset_id', 'presetId'] as const
 const FALLBACK_KEYS = ['provider', 'model'] as const
 const TASK_KEYS = ['id', 'subject', 'description', 'assignee', 'dependencies'] as const
 
@@ -52,6 +52,8 @@ export interface TeamProfileMemberConfig {
   tool_policy?: string
   /** Owner-declared skill ids selected by reference; never raw prompt bundles (#244). */
   skills?: string[]
+  /** Immutable global agent preset selected for this member (#315). */
+  presetId?: string
 }
 
 /** One owner-declared reusable skill snippet. */
@@ -109,6 +111,7 @@ export interface NormalizedProfileMember {
   fallbacks?: TeamModelFallbackConfig[]
   toolPolicy?: string
   skills?: string[]
+  presetId?: string
 }
 
 /** A profile seed task after assignee canonicalization; `sourceIndex` is the YAML order. */
@@ -591,10 +594,11 @@ function normalizeMember(
   const fallbacks = normalizeFallbacks(raw['fallbacks'], `${path}.fallbacks`)
   const toolPolicy = optionalNonEmptyString(raw['tool_policy'], `${path}.tool_policy`)
   const skills = normalizeMemberSkillIds(raw['skills'], `${path}.skills`)
+  const presetId = optionalNonEmptyString(raw['preset_id'] ?? raw['presetId'], `${path}.preset_id`)
   if (provider !== undefined && model === undefined) {
     throw new Error(`profile member "${name}" sets provider without model`)
   }
-  return omitUndefined({ name, role, provider, model, reasoningEffort, executionPrompt, fallback, fallbacks, toolPolicy, skills })
+  return omitUndefined({ name, role, provider, model, reasoningEffort, executionPrompt, fallback, fallbacks, toolPolicy, skills, presetId })
 }
 
 function normalizeMemberSkillIds(value: unknown, path: string): string[] | undefined {

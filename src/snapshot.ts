@@ -14,11 +14,13 @@ import { join } from 'node:path'
 import { memberActivity } from './members.ts'
 import { canDeclareDelivery, describeQualityLoop, verdictAuditNotes } from './quality-gates.ts'
 import { auditTeamWorkspace } from './workspace-audit.ts'
+import { avatarUrl, memberAvatarRef } from './avatars.ts'
+import { attachmentUrl } from './attachments.ts'
 import {
   CAPTAIN_KEY, listArchivedTeamIds, readArchivedTeam, readUnreadMailbox, readTeam,
   taskDepthsById, taskVisualState,
 } from './state.ts'
-import type { MemberStatus, TeamState, TeamTask } from './types.ts'
+import type { MemberStatus, TeamState, TeamTask, TimelineEntry } from './types.ts'
 
 /** Visual task state for the activity panel. */
 export type VisualTaskState = 'blocked' | 'open' | 'claimed' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -32,6 +34,8 @@ export interface TeamActivityMember {
   readonly model: string
   readonly reasoningEffort: string
   readonly executionPrompt: string
+  /** Authenticated local avatar URL, when the member has an override. */
+  readonly avatarUrl?: string
   readonly status: MemberStatus
   readonly activity: 'working' | 'idle' | 'unknown'
   readonly progress: number
@@ -68,6 +72,12 @@ export interface TeamActivityTask {
 export interface TeamActivityMessage {
   readonly from: string
   readonly content: string
+  readonly attachments?: readonly {
+    readonly name: string
+    readonly mime: string
+    readonly bytes: number
+    readonly url: string
+  }[]
 }
 
 /** The full panel payload for one team. */
@@ -84,6 +94,8 @@ export interface TeamActivitySnapshot {
   readonly tasks: readonly TeamActivityTask[]
   readonly messageCount: number
   readonly captainInbox: readonly TeamActivityMessage[]
+  /** Latest 200 durable activity entries, oldest first. */
+  readonly timeline: readonly TimelineEntry[]
   /** Present when the snapshot could audit the workspace bytes. */
   readonly loopState?: string
   readonly deliverable?: boolean
@@ -164,6 +176,7 @@ export async function assembleTeamSnapshot(
       model: member.model?.trim() ?? '',
       reasoningEffort: member.reasoningEffort?.trim() ?? '',
       executionPrompt: member.executionPrompt ?? '',
+      ...avatarUrl(state.id, memberAvatarRef(state, member)) === undefined ? {} : { avatarUrl: avatarUrl(state.id, memberAvatarRef(state, member)) as string },
       status: member.status,
       activity: options.historic === true
         ? 'idle'
@@ -231,7 +244,16 @@ export async function assembleTeamSnapshot(
     captainInbox: captainInbox.slice(-5).map((message) => ({
       from: message.from,
       content: message.content,
+      ...message.attachments === undefined || message.attachments.length === 0 ? {} : {
+        attachments: message.attachments.map(attachment => ({
+          name: attachment.name,
+          mime: attachment.mime,
+          bytes: attachment.bytes,
+          url: attachmentUrl(state.id, attachment),
+        })),
+      },
     })),
+    timeline: (state.timeline ?? []).slice(-200),
   }
 }
 

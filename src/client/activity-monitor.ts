@@ -9,6 +9,7 @@ export interface ActivityMember {
   readonly model?: string
   readonly reasoningEffort?: string
   readonly executionPrompt?: string
+  readonly avatarUrl?: string
   readonly status?: 'idle' | 'working' | 'removed'
   readonly activity: 'working' | 'idle' | 'unknown'
   readonly progress: number
@@ -46,6 +47,26 @@ export interface ActivityTask {
 export interface ActivityMessage {
   readonly from: string
   readonly content: string
+  readonly attachments?: readonly {
+    readonly name: string
+    readonly mime: string
+    readonly bytes: number
+    readonly url: string
+  }[]
+}
+
+/** One durable activity entry exposed by the host snapshot. */
+export interface ActivityTimelineEntry {
+  readonly id: string
+  readonly at: number
+  readonly actor: string
+  readonly action: string
+  readonly taskId?: string
+  readonly attemptId?: string
+  readonly result?: string
+  readonly verdict?: string
+  readonly from?: string
+  readonly to?: string
 }
 
 /** One team snapshot (mirrors the host TeamActivitySnapshot). */
@@ -62,6 +83,7 @@ export interface ActivityTeam {
   readonly tasks: readonly ActivityTask[]
   readonly messageCount: number
   readonly captainInbox: readonly ActivityMessage[]
+  readonly timeline?: readonly ActivityTimelineEntry[]
 }
 
 /** A successfully-created conversation card that currently needs updates. */

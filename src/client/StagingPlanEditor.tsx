@@ -357,12 +357,14 @@ function StagedMemberEditor({ team, member, modelDirectory, onPendingChange, t }
 }) {
   const bodyId = useId()
   const [open, setOpen] = useState(false)
+  const [name, setName] = useState(member.name)
   const [role, setRole] = useState(member.role)
   const [provider, setProvider] = useState(member.provider ?? '')
   const [model, setModel] = useState(member.model ?? '')
   const [reasoningEffort, setReasoningEffort] = useState(member.reasoningEffort ?? '')
   const [executionPrompt, setExecutionPrompt] = useState(member.executionPrompt ?? '')
   const remoteSignature = JSON.stringify([
+    member.name,
     member.role,
     member.provider ?? '',
     member.model ?? '',
@@ -373,7 +375,7 @@ function StagedMemberEditor({ team, member, modelDirectory, onPendingChange, t }
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<PlanFeedback>()
   useDismissSuccess(feedback, setFeedback)
-  const signature = JSON.stringify([role, provider, model, reasoningEffort, executionPrompt])
+  const signature = JSON.stringify([name, role, provider, model, reasoningEffort, executionPrompt])
   const dirty = signature !== savedSignature
 
   useEffect(() => {
@@ -382,17 +384,19 @@ function StagedMemberEditor({ team, member, modelDirectory, onPendingChange, t }
   }, [busy, dirty, member.name, onPendingChange])
 
   useEffect(() => {
+    setName(member.name)
     setRole(member.role)
     setProvider(member.provider ?? '')
     setModel(member.model ?? '')
     setReasoningEffort(member.reasoningEffort ?? '')
     setExecutionPrompt(member.executionPrompt ?? '')
     setSavedSignature(remoteSignature)
-  }, [member.role, member.provider, member.model, member.reasoningEffort, member.executionPrompt, remoteSignature])
+  }, [member.name, member.role, member.provider, member.model, member.reasoningEffort, member.executionPrompt, remoteSignature])
 
   const markEdited = (): void => { setFeedback(undefined) }
   const persist = async (selection: PlanModelSelection = { provider, model, reasoningEffort }): Promise<void> => {
     const nextSignature = JSON.stringify([
+      name,
       role,
       selection.provider,
       selection.model,
@@ -410,6 +414,7 @@ function StagedMemberEditor({ team, member, modelDirectory, onPendingChange, t }
         teamId: team.teamId,
         action: 'update_member',
         memberName: member.name,
+        newName: name.trim(),
         role,
         provider: selection.provider,
         model: selection.model,
@@ -450,6 +455,7 @@ function StagedMemberEditor({ team, member, modelDirectory, onPendingChange, t }
       {open && (
         <form id={bodyId} className={css.planCardBody} onSubmit={(event) => { void save(event) }}>
           <fieldset disabled={busy}>
+            <label>{t('plan.member.name')}<input name="memberName" value={name} onChange={(event) => { setName(event.currentTarget.value); markEdited() }} /></label>
             <label>{t('plan.member.role')}<input name="role" value={role} onChange={(event) => { setRole(event.currentTarget.value); markEdited() }} /></label>
             <StagedModelPicker
               directory={modelDirectory}

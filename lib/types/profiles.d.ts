@@ -40,6 +40,8 @@ export interface TeamProfileMemberConfig {
     tool_policy?: string;
     /** Owner-declared skill ids selected by reference; never raw prompt bundles (#244). */
     skills?: string[];
+    /** Immutable global agent preset selected for this member (#315). */
+    presetId?: string;
 }
 /** One owner-declared reusable skill snippet. */
 export interface SkillBindingConfig {
@@ -93,6 +95,7 @@ export interface NormalizedProfileMember {
     fallbacks?: TeamModelFallbackConfig[];
     toolPolicy?: string;
     skills?: string[];
+    presetId?: string;
 }
 /** A profile seed task after assignee canonicalization; `sourceIndex` is the YAML order. */
 export interface NormalizedProfileTask {
