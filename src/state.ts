@@ -781,6 +781,7 @@ export async function renameMailboxOwner(
   teamId: string,
   from: string,
   to: string,
+  ops: { remove?: (path: string) => Promise<void> } = {},
 ): Promise<void> {
   const fromKey = sanitizeKey(from)
   const toKey = sanitizeKey(to)
@@ -810,11 +811,12 @@ export async function renameMailboxOwner(
     }
   })
   await atomicWriteText(toFile, lines.join('\n'))
+  const remove = ops.remove ?? ((path: string) => rm(path, { force: true }))
   try {
-    await rm(fromFile, { force: true })
+    await remove(fromFile)
   } catch (error: unknown) {
     // Do not leave a duplicate destination if the source could not be removed.
-    await rm(toFile, { force: true }).catch(() => undefined)
+    await remove(toFile).catch(() => undefined)
     throw error
   }
 }
