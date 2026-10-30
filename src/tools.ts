@@ -2372,7 +2372,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           // Legacy status events are asynchronous, but an idle recipient is a
           // quiescence boundary for its last observed turn. Reclaim only that
           // exact delivery; a newer activation is never touched here.
-          await releaseLegacyPermitForIdle(stateRoot, prepared.fresh.id, prepared.recipient.id, Date.now())
+          await releaseLegacyPermitForIdle(
+            stateRoot, prepared.fresh.id, prepared.recipient.id, Date.now(),
+            () => ctx.agents.get(prepared.recipient.id as SessionId)?.status,
+          )
         }
         // The scheduler owns the exact delivery lease and allocates a new
         // durable activation only when this is an idle/cold resume.
