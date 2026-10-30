@@ -2499,7 +2499,7 @@
 }
 .manualForm { display: grid; gap: 10px; }
 .manualForm label { display: grid; gap: 4px; color: var(--dsw-alias-label-secondary); font-size: calc(10px * var(--agent-teams-font-scale, 1)); }
-.manualForm input {
+.manualForm input, .manualForm select {
   min-width: 0;
   padding: 6px 8px;
   border: 1px solid var(--dsw-alias-border-l2);

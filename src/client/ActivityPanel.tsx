@@ -496,9 +496,26 @@ function ManualTeamDialog({ open, onClose, onCreated, sessionId, t }: {
 }) {
   const [name, setName] = useState('')
   const [member, setMember] = useState('worker')
+  const [presetId, setPresetId] = useState('')
+  const [presets, setPresets] = useState<readonly { id: string; revision: number; name: string; role: string }[]>([])
   const [task, setTask] = useState('Work on the team goal')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  useEffect(() => {
+    if (!open || sessionId === undefined) return
+    let cancelled = false
+    void fetch(`/plugins/dsh-agent-teams/agent-library?sessionId=${encodeURIComponent(sessionId)}`, { cache: 'no-store' })
+      .then(async response => response.ok ? await response.json() as { presets?: unknown } : { presets: [] })
+      .then(body => {
+        if (cancelled) return
+        const list = Array.isArray(body.presets)
+          ? body.presets.filter((item): item is { id: string; revision: number; name: string; role: string } => typeof item === 'object' && item !== null && typeof (item as { id?: unknown }).id === 'string' && typeof (item as { name?: unknown }).name === 'string')
+          : []
+        setPresets(list)
+      })
+      .catch(() => { if (!cancelled) setPresets([]) })
+    return () => { cancelled = true }
+  }, [open, sessionId])
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault()
     if (sessionId === undefined || name.trim() === '' || member.trim() === '' || task.trim() === '') {
@@ -514,7 +531,7 @@ function ManualTeamDialog({ open, onClose, onCreated, sessionId, t }: {
       if (typeof capabilityBody.nonce !== 'string' || capabilityBody.nonce === '') throw new Error('manual-plan capability is missing')
       const response = await fetch('/plugins/dsh-agent-teams/plan/create', {
         method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ nonce: capabilityBody.nonce, name, members: [{ name: member }], tasks: [{ subject: task }] }),
+        body: JSON.stringify({ nonce: capabilityBody.nonce, name, members: [{ name: member, ...presetId === '' ? {} : { preset_id: presetId } }], tasks: [{ subject: task }] }),
       })
       if (!response.ok) {
         let message = 'request failed'
@@ -524,7 +541,7 @@ function ManualTeamDialog({ open, onClose, onCreated, sessionId, t }: {
         } catch {}
         throw new Error(message)
       }
-      setName(''); setMember('worker'); setTask('Work on the team goal')
+      setName(''); setMember('worker'); setPresetId(''); setTask('Work on the team goal')
       onCreated()
       onClose()
     } catch (cause: unknown) {
@@ -550,6 +567,10 @@ function ManualTeamDialog({ open, onClose, onCreated, sessionId, t }: {
       <form id="agent-teams-manual-create" className={css.manualForm} onSubmit={(event) => { void submit(event) }}>
         <label>{t('manual.name')}<input value={name} required onChange={event => { setName(event.currentTarget.value); setError('') }} /></label>
         <label>{t('manual.member')}<input value={member} required onChange={event => { setMember(event.currentTarget.value); setError('') }} /></label>
+        <label>{t('manual.preset')}<select value={presetId} onChange={event => { setPresetId(event.currentTarget.value); setError('') }}>
+          <option value="">{t('manual.presetNone')}</option>
+          {presets.map(preset => <option key={preset.id} value={preset.id}>{preset.name} · r{preset.revision}</option>)}
+        </select></label>
         <label>{t('manual.task')}<input value={task} required onChange={event => { setTask(event.currentTarget.value); setError('') }} /></label>
         {error !== '' && <p className={css.stopModalError} role="alert">{error}</p>}
       </form>

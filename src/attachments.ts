@@ -100,6 +100,8 @@ export async function copyAttachment(input: {
   if (before.size > ATTACHMENT_MAX_BYTES) fail('attachment exceeds the 10 MiB per-file limit')
   const canonical = await realpath(candidate)
   if (!within(root, canonical)) fail('attachment real path escapes its allowed root')
+  const stateRootReal = await realpath(input.stateRoot).catch(() => undefined)
+  if (stateRootReal !== undefined && within(stateRootReal, canonical)) fail('attachment path is excluded from delivery')
   const noFollow = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0
   const handle = await open(candidate, fsConstants.O_RDONLY | noFollow)
   try {

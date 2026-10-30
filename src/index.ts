@@ -42,6 +42,7 @@ import { collectArchivedTeamsActivity, collectTeamsActivity } from './snapshot.t
 import { findTeamByCaptain, readTeam, sanitizeKey, withTeamLock, writeTeam } from './state.ts'
 import { parseRasterAvatar, readManagedAvatar, storeManagedAvatar } from './avatars.ts'
 import { readAttachment } from './attachments.ts'
+import { loadAgentLibrary } from './agent-library.ts'
 import { leadIdentityOfAsync } from './lineage.ts'
 import { formatProfilesForPrompt, normalizeSkillCatalog, type SkillBindingConfig, type TeamProfileConfig } from './profiles.ts'
 import { parseToolPolicies, type MemberToolPolicy } from './tool-policies.ts'
@@ -273,7 +274,7 @@ export function resolveToolsConfig(config: Config): ToolsConfig {
 
 export function apply(ctx: Context, config: Config): void {
   const resolved = resolveToolsConfig(config)
-  const planCreateNonces = new Map<string, { sessionId: string; expiresAt: number; used: boolean }>()
+  const planCreateNonces = new Map<string, { sessionId: string; workspaceId: string; operation: 'create-staged-team'; expiresAt: number; used: boolean }>()
 
   // Provider registration is a sibling plugin's effect (`subagent-spawn` /
   // `subagent-fork` rows), which can land after this mount under the Loader's
@@ -572,7 +573,13 @@ export function apply(ctx: Context, config: Config): void {
         const nonce = randomUUID()
         const expiresAt = Date.now() + 60_000
         for (const [key, value] of planCreateNonces) if (value.expiresAt <= Date.now() || value.used) planCreateNonces.delete(key)
-        planCreateNonces.set(nonce, { sessionId: captain.id, expiresAt, used: false })
+        planCreateNonces.set(nonce, {
+          sessionId: captain.id,
+          workspaceId: captain.session.header.cwd ?? process.cwd(),
+          operation: 'create-staged-team',
+          expiresAt,
+          used: false,
+        })
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
         res.end(JSON.stringify({ nonce, expiresAt }))
       },
@@ -603,7 +610,7 @@ export function apply(ctx: Context, config: Config): void {
           return
         }
         const capability = planCreateNonces.get(nonce)
-        if (capability === undefined || capability.used || capability.expiresAt <= Date.now()) {
+        if (capability === undefined || capability.operation !== 'create-staged-team' || capability.used || capability.expiresAt <= Date.now()) {
           res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
           res.end(JSON.stringify({ error: 'manual plan capability is invalid or expired' }))
           return
@@ -612,7 +619,7 @@ export function apply(ctx: Context, config: Config): void {
         const members = Array.isArray(payload['members']) ? payload['members'].filter((member): member is Record<string, unknown> => typeof member === 'object' && member !== null && !Array.isArray(member)) : []
         const tasks = Array.isArray(payload['tasks']) ? payload['tasks'].filter((task): task is Record<string, unknown> => typeof task === 'object' && task !== null && !Array.isArray(task)) : []
         const captain = ctx.agents.get(capability.sessionId as import('@deepseek-ai/dsh-session').SessionId)
-        if (captain === undefined) {
+        if (captain === undefined || (captain.session.header.cwd ?? process.cwd()) !== capability.workspaceId) {
           res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
           res.end(JSON.stringify({ error: 'captain session is not attached' }))
           return
@@ -647,6 +654,29 @@ export function apply(ctx: Context, config: Config): void {
         }
       },
     }), 'agent-teams: manual plan create route')
+
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
+      path: '/plugins/dsh-agent-teams/agent-library',
+      handler: async (req, res) => {
+        if (req.method !== 'GET') {
+          res.writeHead(405, { allow: 'GET', 'cache-control': 'no-store' })
+          res.end()
+          return
+        }
+        const sessionId = new URL(req.url ?? '/', 'http://x').searchParams.get('sessionId')?.trim() ?? ''
+        const captain = sessionId === '' ? undefined : ctx.agents.get(sessionId as import('@deepseek-ai/dsh-session').SessionId)
+        if (captain === undefined) {
+          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'eligible live session is required' }))
+          return
+        }
+        const enabled = resolved.agentLibrary?.enabled === true
+        const library = enabled ? await loadAgentLibrary(join(captain.session.header.cwd ?? process.cwd(), resolved.stateDir)) : { presets: [] }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ enabled, presets: library.presets.map(preset => ({ id: preset.id, revision: preset.revision, name: preset.name, role: preset.role })) }))
+      },
+    }), 'agent-teams: agent library route')
 
   // Local-only avatar overrides. The authenticated workspace-single-user gate
   // is the trust boundary; body sessionId/teamId are lookup keys, never

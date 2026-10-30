@@ -114,3 +114,19 @@ test('#279 a failed validation leaves the staged name and mailbox untouched', as
   assert.equal((await readMailbox(f.stateRoot, 'rename-team', 'old')).length, 1)
   assert.equal((await readMailbox(f.stateRoot, 'rename-team', 'new')).length, 0)
 })
+
+test('#279 a later batch failure rolls back before any mailbox move', async t => {
+  const f = await fixture(t)
+  await appendMailbox(f.stateRoot, 'rename-team', 'old', createMessage('old', 'captain', 'keep me'))
+  await assert.rejects(
+    () => f.call({ operations: [
+      { action: 'update_member', member_name: 'old', new_name: 'new' },
+      { action: 'add_task', subject: 'Broken dependency', dependencies: ['missing-task'] },
+    ] }),
+    /unknown|missing|dependency/i,
+  )
+  const team = await readTeam(f.stateRoot, 'rename-team')
+  assert.equal(team.members[0].name, 'old')
+  assert.equal((await readMailbox(f.stateRoot, 'rename-team', 'old')).length, 1)
+  assert.equal((await readMailbox(f.stateRoot, 'rename-team', 'new')).length, 0)
+})

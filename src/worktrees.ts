@@ -89,6 +89,28 @@ export async function captureLaneState(lane: WorktreeLane): Promise<{ commit: st
   return { commit, dirty: changedPaths.length > 0, changedPaths }
 }
 
+/** Merge one clean lane branch into the repository's current branch. */
+export async function integrateLane(lane: WorktreeLane): Promise<string> {
+  const captured = await captureLaneState(lane)
+  if (captured.dirty) throw new Error(`worktree lane ${lane.laneId} is dirty; commit or preserve it before integration`)
+  const repoStatus = await git(lane.repoRoot, ['status', '--porcelain'])
+  if (repoStatus !== '') throw new Error('main workspace is dirty; commit or stash your own changes before integrating a lane')
+  await git(lane.repoRoot, ['merge', '--no-ff', '--no-edit', lane.branch])
+  return git(lane.repoRoot, ['rev-parse', 'HEAD'])
+}
+
+/** Remove one clean, already-integrated lane without force or pruning. */
+export async function cleanupLane(lane: WorktreeLane): Promise<void> {
+  const captured = await captureLaneState(lane)
+  if (captured.dirty) throw new Error(`worktree lane ${lane.laneId} is dirty; cleanup is refused`)
+  try {
+    await git(lane.repoRoot, ['merge-base', '--is-ancestor', lane.branch, 'HEAD'])
+  } catch {
+    throw new Error(`worktree lane ${lane.laneId} is not integrated into the current HEAD`)
+  }
+  await git(lane.repoRoot, ['worktree', 'remove', lane.worktreePath])
+}
+
 /** Archive/cancel defaults to preservation; cleanup/integration are separate gates. */
 export function preserveLane(lane: WorktreeLane): void {
   if (lane.state !== 'cleaned') lane.state = 'preserved'

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+import { access, mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
 import { spawnMember } from '../lib/members.js'
-import { captureLaneState, createWorktreeLane } from '../lib/worktrees.js'
+import { captureLaneState, cleanupLane, createWorktreeLane, integrateLane } from '../lib/worktrees.js'
 
 const exec = promisify(execFile)
 async function git(cwd, ...args) { return (await exec('git', args, { cwd })).stdout.trim() }
@@ -99,4 +100,26 @@ test('#287 invalid base and root inside repository fail before a lane is registe
     () => createWorktreeLane({ teamId: 'x', memberId: 'm', workspace: f.repo, root: f.worktreeRoot, baseRef: 'does-not-exist' }),
     /Needed a single revision|unknown revision|ambiguous argument/iu,
   )
+})
+
+
+test('#287 clean integrated lanes can be explicitly merged and cleaned up', async t => {
+  const f = await fixture(t)
+  const lane = await createWorktreeLane({ teamId: 'wt-team', memberId: 'worker', workspace: f.repo, root: f.worktreeRoot, baseRef: 'HEAD' })
+  await writeFile(join(lane.worktreePath, 'lane.txt'), 'lane work\n')
+  await git(lane.worktreePath, 'add', 'lane.txt')
+  await git(lane.worktreePath, 'commit', '-qm', 'lane work')
+  await integrateLane(lane)
+  assert.equal((await git(f.repo, 'show', 'HEAD:lane.txt')).trim(), 'lane work')
+  await cleanupLane(lane)
+  await assert.rejects(() => access(lane.worktreePath), error => error?.code === 'ENOENT')
+})
+
+
+test('#287 worktree integration and cleanup stay confirmation-gated and force-free', () => {
+  const source = readFileSync(new URL('../src/tools.ts', import.meta.url), 'utf8')
+  const worktrees = readFileSync(new URL('../src/worktrees.ts', import.meta.url), 'utf8')
+  assert.match(source, /name: 'agent_teams_worktree'/u)
+  assert.match(source, /confirmed_by_user !== true/u)
+  assert.match(worktrees, /worktree', 'remove', lane\.worktreePath/u)
 })

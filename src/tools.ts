@@ -82,7 +82,7 @@ import type { ContractAmendmentInput } from './state.ts'
 import type { AcceptanceResult, ArtifactDigest, ArtifactRootConfig, ArtifactSnapshot, CommandResult, ReviewFinding, ReviewVerdict, TaskKind } from './types.ts'
 import { AttachmentError, copyAttachments } from './attachments.ts'
 import { deleteAgentPreset, loadAgentLibrary, saveAgentPreset } from './agent-library.ts'
-import { captureLaneState, preserveLane } from './worktrees.ts'
+import { captureLaneState, cleanupLane, integrateLane, preserveLane } from './worktrees.ts'
 import {
   deliverToMember,
   installRetiredMemberGuard,
@@ -866,6 +866,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     const stateRoot = stateRootOf(workspace, config)
     return withTeamLock(teamLockKey(stateRoot, teamId), async () => {
       const fresh = await requireFreshCaptainTeam(ctx, stateRoot, teamId, captain.id)
+      const before = JSON.parse(JSON.stringify(fresh)) as TeamState
+      const pendingMailboxRenames: Array<{ from: string; to: string }> = []
       const staged = fresh.phase === 'staged'
       if (!staged && !allowPendingEdits) requireStagedTeam(fresh)
       if (fresh.halted === true) throw new Error('team is halted; resume before editing tasks')
@@ -912,7 +914,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             renameReviewer(fresh.reviewPolicy)
             renameReviewer(fresh.profile?.reviewPolicy)
             appendTimeline(fresh, { action: 'member.renamed', actor: CAPTAIN_KEY, from: previousName, to: renameTo })
-            await renameMailboxOwner(stateRoot, fresh.id, previousName, renameTo)
+            pendingMailboxRenames.push({ from: previousName, to: renameTo })
           }
           member.role = trimmedOptional(mutation.role)
           member.provider = selection.provider
@@ -944,7 +946,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           if (subject === '') throw new Error('task subject must not be empty')
           fresh.taskSeq += 1
           const now = Date.now()
-          fresh.tasks.push({
+          const createdTask: TeamTask = {
             id: `t${fresh.taskSeq}`,
             subject,
             description: trimmedOptional(mutation.description),
@@ -955,7 +957,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             kind: 'work',
             createdAt: now,
             updatedAt: now,
-          })
+          }
+          fresh.tasks.push(createdTask)
+          appendTimeline(fresh, { action: 'task.created', actor: CAPTAIN_KEY, taskId: createdTask.id, ...createdTask.assignee === undefined ? {} : { to: createdTask.assignee } })
         } else if (mutation.action === 'remove_task') {
           const task = requireTask(fresh, mutation.taskId)
           const dependent = fresh.tasks.find((candidate) => candidate.dependencies.includes(task.id))
@@ -984,6 +988,21 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       } else fresh.planReviewState = 'awaiting_review'
       signal?.throwIfAborted()
       await writeTeam(stateRoot, fresh)
+      const completedRenames: Array<{ from: string; to: string }> = []
+      try {
+        for (const rename of pendingMailboxRenames) {
+          await renameMailboxOwner(stateRoot, fresh.id, rename.from, rename.to)
+          completedRenames.push(rename)
+        }
+      } catch (error: unknown) {
+        // Mailbox movement is the last side effect. If it fails, restore the
+        // durable plan and reverse any mailbox files already moved.
+        await writeTeam(stateRoot, before)
+        for (const rename of completedRenames.reverse()) {
+          try { await renameMailboxOwner(stateRoot, fresh.id, rename.to, rename.from) } catch {}
+        }
+        throw error
+      }
       return fresh
     })
   }
@@ -1004,11 +1023,12 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     if (teamName === '') throw new Error('team name must not be empty')
     if (input.members.length === 0) throw new Error('a manual team needs at least one member')
     const teamId = sanitizeKey(teamName)
-    const current = await findTeamByParticipant(stateRoot, captain.id, await leadIdentityOfAsync(ctx, captain.session))
-    if (current !== undefined) throw new Error(`you already belong to team "${current.name}"; archive it before creating another`)
-    return withTeamLock(captainLockKey(stateRoot, captain.id), async () => withTeamLock(teamLockKey(stateRoot, teamId), async () => {
-      if (await readTeam(stateRoot, teamId) !== undefined) throw new Error(`team id "${teamId}" is taken`)
-      const created = await initializeProfileTeam({
+    return withTeamLock(captainLockKey(stateRoot, captain.id), async () => {
+      const current = await findTeamByParticipant(stateRoot, captain.id, await leadIdentityOfAsync(ctx, captain.session))
+      if (current !== undefined) throw new Error(`you already belong to team "${current.name}"; archive it before creating another`)
+      return withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+        if (await readTeam(stateRoot, teamId) !== undefined) throw new Error(`team id "${teamId}" is taken`)
+        const created = await initializeProfileTeam({
         ctx,
         config,
         memberSelections,
@@ -1032,8 +1052,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         description: input.description,
         staged: true,
       })
-      return created.state
-    }))
+        return created.state
+      })
+    })
   }
 
   const approveStagedTeam: AgentTeamsRuntime['approveStagedTeam'] = async (captain, teamId, signal) => {
@@ -1627,6 +1648,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         fallback: config.fallback,
         fallbacks: config.fallbacks,
       }, exec.signal)
+      await validateMemberLlmSelections(ctx, [selection], exec.signal)
       const executionPrompt = args.execution_prompt?.trim() || role || name
       const preset = await saveAgentPreset(stateRoot, {
         ...args.id === undefined || args.id.trim() === '' ? {} : { id: args.id.trim() },
@@ -1650,6 +1672,65 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const id = args.id.trim()
       if (id === '') throw new Error('preset id must not be empty')
       return { deleted: await deleteAgentPreset(stateRootOf(workspaceOf(captain), config), id), id }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_teams_worktree',
+    description: 'Explicitly integrate or clean up one member-lane worktree. Requires user confirmation. Integration refuses a dirty lane or dirty main workspace; cleanup refuses dirty or unmerged lanes and never uses force or prune.',
+    parameters: {
+      action: { type: 'string', required: true, enum: ['integrate', 'cleanup'] },
+      lane_id: { type: 'string', required: true, description: 'Durable worktree lane id.' },
+      confirmed_by_user: { type: 'boolean', required: true, description: 'Set true only after the user explicitly approved this destructive/integration action.' },
+      reason: { type: 'string', required: true, description: 'Why the user approved integration or cleanup.' },
+    },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {
+      lane_id: { type: 'string', required: true }, state: { type: 'string', required: true },
+      commit: { type: 'string' }, dirty: { type: 'boolean' },
+    } }, render: (_args, value) => [{ type: 'text', text: `Worktree lane ${value.lane_id} is ${value.state}${value.commit === undefined ? '' : ` at ${value.commit}`}${value.dirty === true ? ' (dirty preserved)' : ''}.` }] },
+    async execute(args, exec) {
+      if (args.confirmed_by_user !== true) throw new Error('worktree integration/cleanup requires explicit user confirmation')
+      if (config.worktrees?.enabled !== true) throw new Error('worktree isolation is disabled')
+      const captain = requireCaptain(exec)
+      const workspace = workspaceOf(captain)
+      const stateRoot = stateRootOf(workspace, config)
+      const team = await requireCaptainTeam(ctx, workspace, config, captain)
+      return withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+        const fresh = await requireFreshCaptainTeam(ctx, stateRoot, team.id, captain.id)
+        const lane = fresh.worktreeLanes?.find(candidate => candidate.laneId === args.lane_id.trim())
+        if (lane === undefined) throw new Error(`worktree lane "${args.lane_id}" was not found`)
+        const open = fresh.tasks.filter(task => task.worktreeLaneId === lane.laneId && !TERMINAL_TASK_STATUSES.includes(task.status))
+        if (open.length > 0) throw new Error(`worktree lane ${lane.laneId} still has non-terminal tasks: ${open.map(task => task.id).join(', ')}`)
+        if (args.action === 'integrate') {
+          if (lane.state === 'cleaned') throw new Error(`worktree lane ${lane.laneId} is already cleaned`)
+          lane.state = 'integrating'
+          await writeTeam(stateRoot, fresh)
+          try {
+            lane.commit = await integrateLane(lane)
+            lane.state = 'preserved'
+            delete lane.error
+          } catch (error: unknown) {
+            lane.state = 'failed'
+            lane.error = error instanceof Error ? error.message : String(error)
+            await writeTeam(stateRoot, fresh)
+            throw error
+          }
+          await writeTeam(stateRoot, fresh)
+        } else {
+          try {
+            await cleanupLane(lane)
+            lane.state = 'cleaned'
+            lane.dirty = false
+            delete lane.error
+          } catch (error: unknown) {
+            lane.error = error instanceof Error ? error.message : String(error)
+            await writeTeam(stateRoot, fresh)
+            throw error
+          }
+          await writeTeam(stateRoot, fresh)
+        }
+        return { lane_id: lane.laneId, state: lane.state, ...lane.commit === undefined ? {} : { commit: lane.commit }, ...lane.dirty === undefined ? {} : { dirty: lane.dirty } }
+      })
     },
   }))
 
@@ -2342,6 +2423,13 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ? undefined
           : fresh.members.find(member => member.name === task.assignee && member.status !== 'removed')
         invalidateTaskAttempt(task, target, true)
+        if (target !== previousAssignee) {
+          delete task.worktreeLaneId
+          delete task.workspace
+          delete task.worktreeCommit
+          delete task.worktreeDirty
+          delete task.worktreeChangedPaths
+        }
         appendTimeline(fresh, { action: 'task.reassigned', actor: CAPTAIN_KEY, taskId: task.id, from: previousAssignee, to: target })
         if (previousMember !== undefined) {
           previousMember.stopping = true

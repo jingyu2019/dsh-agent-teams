@@ -18,5 +18,9 @@ export declare function captureLaneState(lane: WorktreeLane): Promise<{
     dirty: boolean;
     changedPaths: string[];
 }>;
+/** Merge one clean lane branch into the repository's current branch. */
+export declare function integrateLane(lane: WorktreeLane): Promise<string>;
+/** Remove one clean, already-integrated lane without force or pruning. */
+export declare function cleanupLane(lane: WorktreeLane): Promise<void>;
 /** Archive/cancel defaults to preservation; cleanup/integration are separate gates. */
 export declare function preserveLane(lane: WorktreeLane): void;
