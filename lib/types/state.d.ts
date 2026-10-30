@@ -88,8 +88,21 @@ export declare function invalidateTaskAttempt(task: TeamTask, nextAssignee?: str
  * must leave the permits held for restart recovery.
  */
 export declare function releaseActivationPermitsForDrainedMembers(stateRoot: string, teamId: string, memberIds: readonly string[]): Promise<number>;
-/** Release one exact activation permit without touching unrelated leases. */
-export declare function releaseActivationPermit(stateRoot: string, teamId: string, activationId: string): Promise<void>;
+/**
+ * Release the exact legacy delivery one idle edge can prove quiesced.
+ *
+ * Legacy hosts expose status as a level (`idle`) rather than a run-scoped
+ * lifecycle event, so the only activation an idle edge can speak for is the
+ * member's current delivery that already existed when the edge was observed.
+ * A lease created after that observation belongs to a newer turn: releasing it
+ * would mark a running delivery settled and hand its permit to somebody else.
+ * The live Agent must also be genuinely not running, because a late or
+ * duplicate idle from a previous turn arrives while the newer turn runs.
+ * @param observedAt - epoch ms when the idle edge was seen (before any await).
+ * @param liveStatus - reads the live Agent status for this member.
+ * @returns true when this call released one permit.
+ */
+export declare function releaseLegacyPermitForIdle(stateRoot: string, teamId: string, memberId: string, observedAt: number, liveStatus?: () => string | undefined): Promise<boolean>;
 /**
  * Create the team directory structure and the initial team record.
  * @param stateRoot - resolved absolute state root directory.

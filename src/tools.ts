@@ -39,6 +39,7 @@ import {
   recordRetiredMemberIds,
   releaseMailboxDelivery,
   releaseActivationPermitsForDrainedMembers,
+  releaseLegacyPermitForIdle,
   readTeam,
   sanitizeKey,
   transitionError,
@@ -2368,10 +2369,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         const managedHost = typeof (ctx.subagents as unknown as { startActivation?: unknown }).startActivation === 'function'
         const liveRecipient = ctx.agents.get(prepared.recipient.id as SessionId)
         if (!managedHost && (prepared.recipient.status === 'idle' || liveRecipient?.status === 'idle')) {
-          // Legacy status events are asynchronous, but a fresh message is an
-          // explicit quiescence boundary for an idle recipient. Reclaim any
-          // stale delivery permit before this wake competes for a slot.
-          await releaseActivationPermitsForDrainedMembers(stateRoot, prepared.fresh.id, [prepared.recipient.id])
+          // Legacy status events are asynchronous, but an idle recipient is a
+          // quiescence boundary for its last observed turn. Reclaim only that
+          // exact delivery; a newer activation is never touched here.
+          await releaseLegacyPermitForIdle(stateRoot, prepared.fresh.id, prepared.recipient.id, Date.now())
         }
         // The scheduler owns the exact delivery lease and allocates a new
         // durable activation only when this is an idle/cold resume.

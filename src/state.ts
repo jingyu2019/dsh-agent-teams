@@ -271,22 +271,45 @@ export async function releaseActivationPermitsForDrainedMembers(
   })
 }
 
-/** Release one exact activation permit without touching unrelated leases. */
-export async function releaseActivationPermit(
+/**
+ * Release the exact legacy delivery one idle edge can prove quiesced.
+ *
+ * Legacy hosts expose status as a level (`idle`) rather than a run-scoped
+ * lifecycle event, so the only activation an idle edge can speak for is the
+ * member's current delivery that already existed when the edge was observed.
+ * A lease created after that observation belongs to a newer turn: releasing it
+ * would mark a running delivery settled and hand its permit to somebody else.
+ * The live Agent must also be genuinely not running, because a late or
+ * duplicate idle from a previous turn arrives while the newer turn runs.
+ * @param observedAt - epoch ms when the idle edge was seen (before any await).
+ * @param liveStatus - reads the live Agent status for this member.
+ * @returns true when this call released one permit.
+ */
+export async function releaseLegacyPermitForIdle(
   stateRoot: string,
   teamId: string,
-  activationId: string,
-): Promise<void> {
-  await withTeamLock(`team:${stateRoot}:${teamId}`, async () => {
+  memberId: string,
+  observedAt: number,
+  liveStatus?: () => string | undefined,
+): Promise<boolean> {
+  if (memberId === '') return false
+  return withTeamLock(`team:${stateRoot}:${teamId}`, async () => {
     const team = await readTeam(stateRoot, teamId)
-    const lease = team?.activations?.find(candidate => candidate.activationId === activationId)
-    if (team === undefined || lease === undefined || lease.permitHeld !== true) return
+    if (team === undefined) return false
+    const member = team.members.find(candidate => candidate.id === memberId && candidate.status !== 'removed')
+    const activationId = member?.currentActivationId
+    if (member === undefined || activationId === undefined) return false
+    const lease = team.activations?.find(candidate => candidate.activationId === activationId)
+    if (lease === undefined || lease.permitHeld !== true || lease.memberId !== memberId) return false
+    if (lease.createdAt > observedAt) return false
+    if (liveStatus?.() === 'running') return false
     lease.permitHeld = false
     lease.state = 'released'
     lease.endObserved = true
     lease.settlementApplied = true
     lease.releasedAt ??= Date.now()
     await writeTeam(stateRoot, team)
+    return true
   })
 }
 

@@ -36,7 +36,7 @@ import {
   readPendingMailbox,
   releaseMailboxDelivery,
   releaseActivationPermitsForDrainedMembers,
-  releaseActivationPermit,
+  releaseLegacyPermitForIdle,
   unsatisfiedDependencies,
   withTeamLock,
   writeTeam,
@@ -1038,11 +1038,9 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             await withTeamLock(teamLockKey(stateRoot, team.id), () => (
               markMailboxDelivered(stateRoot, team!.id, member!.name, unread.map(message => message.id))
             ))
-            if (!usesManagedActivations(ctx.subagents) && mailboxDelivery.allocated && mailboxDelivery.activation !== undefined) {
-              // Legacy delivery has no exact subagent lifecycle. Once the
-              // host accepts the mailbox turn, its delivery permit is settled.
-              await releaseActivationPermit(stateRoot, team.id, mailboxDelivery.activation.activationId)
-            }
+            // A legacy host accepting the prompt does not prove the turn ran.
+            // Its permit is released only by the idle edge that observes this
+            // exact delivery quiesce.
           } else {
             if (mailboxDelivery.activation !== undefined) {
               await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
@@ -1291,6 +1289,9 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
   }
 
   const syncMemberStatus = async (agent: Agent, status: AgentStatus): Promise<void> => {
+    // Capture the observation instant before any await: a lease created after
+    // this point belongs to a newer delivery this edge cannot speak for.
+    const observedAt = Date.now()
     const workspace = agent.session.header.cwd ?? process.cwd()
     const stateRoot = stateRootOf(workspace, config)
     const located = await findTeamByParticipant(stateRoot, agent.id)
@@ -1374,9 +1375,11 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     })
     if (status === 'idle') {
       // Unmanaged hosts have no subagent/end lifecycle. The idle edge is the
-      // exact delivery quiescence available there; release only after the
-      // member has settled, then allow the next admitted delivery.
-      await releaseActivationPermitsForDrainedMembers(stateRoot, located.id, [agent.id])
+      // exact delivery quiescence available there. Release only the delivery
+      // this edge observed (never a newer activation allocated meanwhile), or
+      // reclaim a stale permit for a delivery this process already watched
+      // settle. Generic member-wide release is reserved for host drains.
+      await releaseLegacyPermitForIdle(stateRoot, located.id, agent.id, observedAt, () => liveMember(ctx, member)?.status)
       const pending = await readPendingMailbox(stateRoot, located.id, member.name)
       if (pending.length > 0 || hasReadyWork) await runtime.kickMember(workspace, located.id, member.name)
     }

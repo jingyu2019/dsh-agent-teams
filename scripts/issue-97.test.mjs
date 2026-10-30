@@ -41,6 +41,8 @@ function teamWith(memberCount, taskCount, maxConcurrentWorkers) {
   }
 }
 
+const tick = (ms = 40) => new Promise(resolve => setTimeout(resolve, ms))
+
 async function fixture(team, maxConcurrentWorkers = 2, liveStatuses = {}, managed = true) {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-teams-w2-97-'))
   const stateRoot = join(workspace, '.agent-teams')
@@ -69,6 +71,10 @@ async function fixture(team, maxConcurrentWorkers = 2, liveStatuses = {}, manage
     maxConcurrentWorkers,
     async dispatch(_captain, _teamId, memberName, _text, _signal, _mode, request) {
       dispatched.push({ memberName, request })
+      // Harness starts a turn as soon as delivery is accepted: the live child is
+      // running until its own idle edge arrives.
+      const target = liveMembers.get(request?.reservedChildId)
+      if (!managed && target !== undefined) target.status = 'running'
       if (request?.newChild) ctx.emit('subagent/start', { id: request.reservedChildId, runId: `run-${request.activationId}`, provider: 'fake', local: true })
       return { accepted: true }
     },
@@ -162,7 +168,7 @@ test('legacy mailbox wake cannot bypass held activation permits', async () => {
   } finally { await f.cleanup() }
 })
 
-test('legacy accepted mailbox delivery releases its exact permit', async () => {
+test('legacy accepted mailbox delivery keeps its permit until the turn quiesces', async () => {
   const team = teamWith(1, 0)
   team.members[0].id = 'c1'
   const f = await fixture(team, 1, {}, false)
@@ -170,9 +176,129 @@ test('legacy accepted mailbox delivery releases its exact permit', async () => {
     await appendMailbox(f.stateRoot, 'cap', 'w1', createMessage('captain', 'w1', 'wake'))
     await f.scheduler.kickMember(f.workspace, 'cap', 'w1', f.captain)
     await new Promise(resolve => setTimeout(resolve, 25))
-    const current = await readTeam(f.stateRoot, 'cap')
     assert.equal(f.dispatched.length, 1)
-    assert.equal(current.activations.filter(item => item.permitHeld).length, 0)
+    const accepted = await readTeam(f.stateRoot, 'cap')
+    assert.equal(accepted.activations.filter(item => item.permitHeld).length, 1, 'host acceptance is not quiescence')
+
+    const agent = f.ctx.agents.get('c1')
+    agent.status = 'running'
+    f.ctx.emit('agent/status', { agent, status: 'running' })
+    await tick()
+    assert.equal((await readTeam(f.stateRoot, 'cap')).activations.filter(item => item.permitHeld).length, 1)
+    agent.status = 'idle'
+    f.ctx.emit('agent/status', { agent, status: 'idle' })
+    await tick()
+    assert.equal((await readTeam(f.stateRoot, 'cap')).activations.filter(item => item.permitHeld).length, 0)
+  } finally { await f.cleanup() }
+})
+
+test('legacy duplicate idle cannot release a newer activation', async () => {
+  const team = teamWith(1, 1)
+  team.members[0].id = 'c1'
+  const f = await fixture(team, 2, {}, false)
+  try {
+    await f.scheduler.kickMember(f.workspace, 'cap', 'w1', f.captain)
+    const agent = f.ctx.agents.get('c1')
+    agent.status = 'running'
+    f.ctx.emit('agent/status', { agent, status: 'running' })
+    await tick()
+    agent.status = 'idle'
+    f.ctx.emit('agent/status', { agent, status: 'idle' })
+    await tick()
+    const afterTask = await readTeam(f.stateRoot, 'cap')
+    const taskActivation = afterTask.activations.find(item => item.permitHeld === false && item.taskId === 't1')
+    assert.ok(taskActivation, 'the finished task delivery must be released')
+
+    await appendMailbox(f.stateRoot, 'cap', 'w1', createMessage('captain', 'w1', 'next turn'))
+    await f.scheduler.kickMember(f.workspace, 'cap', 'w1', f.captain)
+    const afterMailbox = await readTeam(f.stateRoot, 'cap')
+    const heldMailbox = afterMailbox.activations.filter(item => item.permitHeld === true)
+    assert.equal(heldMailbox.length, 1, 'mailbox delivery must hold the permit')
+    assert.notEqual(heldMailbox[0].activationId, taskActivation.activationId)
+
+    // A late/duplicate idle edge from the finished task turn must not touch the
+    // newer mailbox activation.
+    f.ctx.emit('agent/status', { agent, status: 'idle' })
+    await tick()
+    const afterDuplicate = await readTeam(f.stateRoot, 'cap')
+    const stillHeld = afterDuplicate.activations.find(item => item.activationId === heldMailbox[0].activationId)
+    assert.equal(stillHeld.permitHeld, true)
+    assert.equal(stillHeld.state, 'pending')
+    assert.equal(stillHeld.settlementApplied, false)
+  } finally { await f.cleanup() }
+})
+
+test('legacy idle before a delivery ever ran keeps its permit', async () => {
+  const team = teamWith(2, 2)
+  team.members[0].id = 'c1'
+  team.members[1].id = 'c2'
+  const f = await fixture(team, 1, {}, false)
+  try {
+    await f.scheduler.kickMember(f.workspace, 'cap', 'w1', f.captain)
+    assert.equal(f.dispatched.length, 1)
+    const agent = f.ctx.agents.get('c1')
+    // Duplicate/late idle edge before the dispatched turn is observed running.
+    f.ctx.emit('agent/status', { agent, status: 'idle' })
+    await tick()
+    const current = await readTeam(f.stateRoot, 'cap')
+    assert.equal(current.activations.filter(item => item.permitHeld).length, 1)
+
+    // Cap 1 must stay closed: no second member may start.
+    await f.scheduler.kickTeam(f.workspace, 'cap', f.captain)
+    assert.equal(f.dispatched.length, 1)
+  } finally { await f.cleanup() }
+})
+
+test('legacy mailbox permit is held while its turn runs (cap 1 keeps one worker)', async () => {
+  const team = teamWith(2, 2)
+  team.members[0].id = 'c1'
+  team.members[1].id = 'c2'
+  const f = await fixture(team, 1, {}, false)
+  try {
+    await appendMailbox(f.stateRoot, 'cap', 'w1', createMessage('captain', 'w1', 'mailbox turn'))
+    await f.scheduler.kickMember(f.workspace, 'cap', 'w1', f.captain)
+    assert.equal(f.dispatched.length, 1)
+    const agent = f.ctx.agents.get('c1')
+    agent.status = 'running'
+    f.ctx.emit('agent/status', { agent, status: 'running' })
+    await tick()
+    const running = await readTeam(f.stateRoot, 'cap')
+    assert.equal(running.activations.filter(item => item.permitHeld).length, 1, 'mailbox turn must hold its permit while running')
+
+    await f.scheduler.kickTeam(f.workspace, 'cap', f.captain)
+    assert.equal(f.dispatched.length, 1, 'cap 1 must not start a second member while the mailbox turn runs')
+  } finally { await f.cleanup() }
+})
+
+test('legacy mailbox permit is released exactly once at turn quiescence', async () => {
+  const team = teamWith(1, 0)
+  team.members[0].id = 'c1'
+  const f = await fixture(team, 1, {}, false)
+  try {
+    await appendMailbox(f.stateRoot, 'cap', 'w1', createMessage('captain', 'w1', 'quiet turn'))
+    await f.scheduler.kickMember(f.workspace, 'cap', 'w1', f.captain)
+    const agent = f.ctx.agents.get('c1')
+    agent.status = 'running'
+    f.ctx.emit('agent/status', { agent, status: 'running' })
+    await tick()
+    assert.equal((await readTeam(f.stateRoot, 'cap')).activations.filter(item => item.permitHeld).length, 1)
+
+    agent.status = 'idle'
+    f.ctx.emit('agent/status', { agent, status: 'idle' })
+    await tick()
+    const released = await readTeam(f.stateRoot, 'cap')
+    const heldAfter = released.activations.filter(item => item.permitHeld)
+    assert.equal(heldAfter.length, 0)
+    const mailboxLease = released.activations.find(item => item.purpose === 'mailbox')
+    assert.equal(mailboxLease.releasedAt !== undefined, true)
+    const releasedAt = mailboxLease.releasedAt
+
+    // A duplicate idle must not release anything twice or move timestamps.
+    f.ctx.emit('agent/status', { agent, status: 'idle' })
+    await tick()
+    const afterDuplicate = await readTeam(f.stateRoot, 'cap')
+    assert.equal(afterDuplicate.activations.find(item => item.activationId === mailboxLease.activationId).releasedAt, releasedAt)
+    assert.equal(afterDuplicate.activations.filter(item => item.permitHeld).length, 0)
   } finally { await f.cleanup() }
 })
 
