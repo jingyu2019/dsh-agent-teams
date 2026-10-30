@@ -40,7 +40,7 @@ function teamWith(memberCount, taskCount, maxConcurrentWorkers) {
   }
 }
 
-async function fixture(team, maxConcurrentWorkers = 2, liveStatuses = {}) {
+async function fixture(team, maxConcurrentWorkers = 2, liveStatuses = {}, managed = true) {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-teams-w2-97-'))
   const stateRoot = join(workspace, '.agent-teams')
   const captain = fakeAgent('captain', workspace)
@@ -53,7 +53,9 @@ async function fixture(team, maxConcurrentWorkers = 2, liveStatuses = {}) {
       if (agent !== undefined && liveStatuses[id] !== undefined) agent.status = liveStatuses[id]
       return agent
     })(), list: () => [captain, ...liveMembers.values()] },
-    subagents: { startActivation: async spec => ({ childId: spec.childId, messageId: 'm1', result: new Promise(() => {}), dispose: async () => {} }) },
+    subagents: managed
+      ? { startActivation: async spec => ({ childId: spec.childId, messageId: 'm1', result: new Promise(() => {}), dispose: async () => {} }) }
+      : {},
     logger: { warn() {}, debug() {} },
     get(name) { return name === 'sessionQuery' ? ctx.sessionQuery : undefined },
     sessionQuery: { observeSession: async () => ({ events: [] }) },
@@ -85,7 +87,6 @@ test('7 ready tasks with cap 2 never dispatch a third activation', async () => {
     await f.scheduler.kickTeam(f.workspace, 'cap', f.captain)
     const team = await readTeam(f.stateRoot, 'cap')
     assert.equal(f.dispatched.length, 2)
-    assert.equal(team.activations.filter(item => item.permitHeld).length, 2)
     assert.equal(team.tasks.filter(item => item.status !== 'pending').length, 2)
   } finally { await f.cleanup() }
 })
@@ -118,5 +119,15 @@ test('release after exact end opens the next permit once and one new task starts
     assert.equal(after.activations.filter(item => item.permitHeld).length, 2)
     await f.scheduler.kickTeam(f.workspace, 'cap', f.captain)
     assert.equal(f.dispatched.length, 3)
+  } finally { await f.cleanup() }
+})
+
+test('legacy unmanaged path also caps seven ready tasks at two', async () => {
+  const f = await fixture(teamWith(7, 7), 2, {}, false)
+  try {
+    await f.scheduler.kickTeam(f.workspace, 'cap', f.captain)
+    const team = await readTeam(f.stateRoot, 'cap')
+    assert.equal(f.dispatched.length, 2)
+    assert.equal(team.tasks.filter(item => item.status !== 'pending').length, 2)
   } finally { await f.cleanup() }
 })

@@ -46,6 +46,9 @@ export interface SchedulerConfig {
 export declare function activePermitCount(leases: readonly Pick<ActivationLease, 'permitHeld'>[]): number;
 /** Whether one more activation may acquire a global permit. */
 export declare function canAcquireActivationPermit(leases: readonly Pick<ActivationLease, 'permitHeld'>[], maxConcurrentWorkers: number | undefined): boolean;
+/** Legacy hosts have no lifecycle lease ledger; open task rows are their permits. */
+export declare function activeUnmanagedTaskCount(tasks: readonly Pick<TeamTask, 'status'>[]): number;
+export declare function canAcquireUnmanagedPermit(tasks: readonly Pick<TeamTask, 'status'>[], maxConcurrentWorkers: number | undefined): boolean;
 export interface TeamScheduler {
     /** Try to give every genuinely idle/ready member one unit of ready work. */
     kickTeam(workspace: string, teamId: string, captain?: Agent): Promise<void>;

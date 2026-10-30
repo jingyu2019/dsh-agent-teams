@@ -107,6 +107,18 @@ export function canAcquireActivationPermit(
   return activePermitCount(leases) < Math.max(1, Math.floor(maxConcurrentWorkers))
 }
 
+/** Legacy hosts have no lifecycle lease ledger; open task rows are their permits. */
+export function activeUnmanagedTaskCount(tasks: readonly Pick<TeamTask, 'status'>[]): number {
+  return tasks.filter(task => task.status === 'claimed' || task.status === 'in_progress').length
+}
+
+export function canAcquireUnmanagedPermit(
+  tasks: readonly Pick<TeamTask, 'status'>[],
+  maxConcurrentWorkers: number | undefined,
+): boolean {
+  return maxConcurrentWorkers === undefined || activeUnmanagedTaskCount(tasks) < Math.max(1, Math.floor(maxConcurrentWorkers))
+}
+
 export interface TeamScheduler {
   /** Try to give every genuinely idle/ready member one unit of ready work. */
   kickTeam(workspace: string, teamId: string, captain?: Agent): Promise<void>
@@ -517,9 +529,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       createdAt: Date.now(),
     }
     if (newChild && managed) member.id = reservedChildId
-    if (!managed) {
-      return { lease, newChild, reservedChildId }
-    }
+    if (!managed) return { lease, newChild, reservedChildId }
     member.generation = member.generation ?? 1
     member.currentActivationId = activationId
     member.lastActivationEpoch = activationEpoch
@@ -715,6 +725,15 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       const team = await readTeam(input.stateRoot, input.teamId)
       const lease = team === undefined ? undefined : resolveLease(team, input.activationId)
       if (team === undefined || lease === undefined) return
+      if (input.receipt.childId !== undefined) {
+        const childId = String(input.receipt.childId)
+        if (lease.memberId === '' || lease.memberId !== childId) {
+          const previous = lease.memberId
+          lease.memberId = childId
+          if (previous !== '') pendingByChild.delete(previous)
+          pendingByChild.set(childId, { teamId: input.teamId, activationId: lease.activationId })
+        }
+      }
       if (input.receipt.messageId !== undefined) lease.hostMessageId = String(input.receipt.messageId)
       await writeTeam(input.stateRoot, team)
     }).catch(error => {
@@ -977,7 +996,11 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             await releaseMailboxDelivery(stateRoot, fresh.id, currentMember.name, current.map(message => message.id))
             return { messages: [], memberId: currentMember.id, newChild: false, blocked: true }
           }
-          if (!reuse && !canAcquireActivationPermit(fresh.activations ?? [], config.maxConcurrentWorkers)) {
+          const managedHost = usesManagedActivations(ctx.subagents)
+          const capacity = managedHost
+            ? canAcquireActivationPermit(fresh.activations ?? [], config.maxConcurrentWorkers)
+            : canAcquireUnmanagedPermit(fresh.tasks, config.maxConcurrentWorkers)
+          if (!reuse && !capacity) {
             // Mailbox work is real work, but it may not bypass the global
             // activation budget. Keep the durable mail queued and retry from
             // the next scheduler edge after an exact permit release.
@@ -1047,7 +1070,11 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           if (fresh === undefined || fresh.halted === true || fresh.phase === 'staged') return undefined
           const currentMember = fresh.members.find(candidate => candidate.name === memberName && candidate.status !== 'removed')
           if (currentMember === undefined || !isMemberAvailable(ctx, currentMember)) return undefined
-          if (!canAcquireActivationPermit(fresh.activations ?? [], config.maxConcurrentWorkers)) return undefined
+          const managedHost = usesManagedActivations(ctx.subagents)
+          const capacity = managedHost
+            ? canAcquireActivationPermit(fresh.activations ?? [], config.maxConcurrentWorkers)
+            : canAcquireUnmanagedPermit(fresh.tasks, config.maxConcurrentWorkers)
+          if (!capacity) return undefined
           const owned = ownedOpenTask(fresh.tasks, currentMember.name)
           const durableParking = owned?.parking
           const parkingBlocks = durableParking !== undefined
