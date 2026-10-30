@@ -161,7 +161,7 @@ test('a due probe never rotates a permit with no positive running boundary', asy
 test('a parked exact attempt is never rotated or woken by a due probe', async () => {
   const f = await fixture({
     probeIntervalMs: 5000,
-    released: true,
+    released: false,
     parked: true,
     probe: { activationId: 'act-1', memberGeneration: 1, activationEpoch: 1, attemptId: 'attempt-1', nextProbeAt: 1_000_001, probeCount: 0, armedAt: 1_000_000 },
   })
@@ -173,6 +173,7 @@ test('a parked exact attempt is never rotated or woken by a due probe', async ()
     assert.equal(task.attemptId, 'attempt-1')
     assert.equal(task.parking.attemptId, 'attempt-1')
     assert.equal(task.probe.probeCount, 1)
+    assert.equal(task.probe.lastProbeAction, 'ledger-only')
     assert.equal(task.probe.nextProbeAt, 1_005_001)
   } finally { await f.cleanup() }
 })

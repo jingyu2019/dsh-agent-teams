@@ -302,6 +302,8 @@ export interface TaskProbe {
   probeCount: number
   armedAt: number
   lastProbeAt?: number
+  /** What the last due probe did; ledger-only is mandatory for a parked attempt. */
+  lastProbeAction?: 'silent-kick' | 'ledger-only'
 }
 
 /** Why one managed subagent activation exists. */

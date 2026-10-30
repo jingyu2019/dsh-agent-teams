@@ -711,8 +711,10 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
         probe.probeCount += 1
         probe.lastProbeAt = now
         probe.nextProbeAt = now + probeIntervalMs
+        const kick = permitActive && positivelyRunning && !exactParking
+        probe.lastProbeAction = kick ? 'silent-kick' : 'ledger-only'
         changed = true
-        if (memberName !== '') actions.push({ memberName, kick: permitActive && positivelyRunning && !exactParking })
+        if (memberName !== '') actions.push({ memberName, kick })
       }
       if (changed) await writeTeam(stateRoot, team)
       return actions

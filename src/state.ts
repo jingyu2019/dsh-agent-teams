@@ -921,6 +921,7 @@ function isTaskProbe(value: unknown): value is TaskProbe {
     && Number.isSafeInteger(value['probeCount']) && (value['probeCount'] as number) >= 0
     && isFiniteNumber(value['armedAt'])
     && (value['lastProbeAt'] === undefined || isFiniteNumber(value['lastProbeAt']))
+    && (value['lastProbeAction'] === undefined || value['lastProbeAction'] === 'silent-kick' || value['lastProbeAction'] === 'ledger-only')
 }
 
 /** Validate one member record at the durable JSON boundary. */
