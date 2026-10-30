@@ -36,8 +36,14 @@ export declare function mailboxActivationDecision(leases: readonly ActivationLea
 export interface SchedulerConfig {
     readonly stateDir: string;
     readonly executionPrompt?: string;
+    /** Global cap on active activation permits; undefined preserves legacy unbounded scheduling. */
+    readonly maxConcurrentWorkers?: number;
     readonly dispatch?: (captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', request?: DispatchRequest) => Promise<boolean | DispatchResult>;
 }
+/** Count permits that still pin a managed activation. */
+export declare function activePermitCount(leases: readonly Pick<ActivationLease, 'permitHeld'>[]): number;
+/** Whether one more activation may acquire a global permit. */
+export declare function canAcquireActivationPermit(leases: readonly Pick<ActivationLease, 'permitHeld'>[], maxConcurrentWorkers: number | undefined): boolean;
 export interface TeamScheduler {
     /** Try to give every genuinely idle/ready member one unit of ready work. */
     kickTeam(workspace: string, teamId: string, captain?: Agent): Promise<void>;

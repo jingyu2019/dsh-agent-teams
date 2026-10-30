@@ -38,6 +38,7 @@ import {
   readMailbox,
   recordRetiredMemberIds,
   releaseMailboxDelivery,
+  releaseActivationPermitsForDrainedMembers,
   readTeam,
   sanitizeKey,
   transitionError,
@@ -111,6 +112,8 @@ export interface ToolsConfig {
   memberMaxDepth?: number
   /** Team size cap (members). */
   maxMembers: number
+  /** Global cap on simultaneous activation permits (defaults to maxMembers). */
+  maxConcurrentWorkers?: number
   /** Named team profiles from the active DSH profile. */
   profiles: Record<string, import('./profiles.ts').TeamProfileConfig>
   /** Owner-declared reusable member tool policies, keyed by policy id (#59). */
@@ -572,6 +575,8 @@ async function stopTeamMemberActivations(
   captain: Agent,
   members: readonly TeamMember[],
   signal?: AbortSignal,
+  stateRoot?: string,
+  teamId?: string,
 ): Promise<void> {
   const memberIds = members.filter(member => member.id !== '').map(member => member.id as SessionId)
   if (memberIds.length === 0) return
@@ -579,6 +584,9 @@ async function stopTeamMemberActivations(
   // it closes admission and clears queued work before awaiting descendants.
   signal?.throwIfAborted()
   await drainMemberChildren(ctx.subagents, captain, memberIds)
+  if (stateRoot !== undefined && teamId !== undefined) {
+    await releaseActivationPermitsForDrainedMembers(stateRoot, teamId, memberIds.map(String))
+  }
 }
 
 export async function haltTeamWork(input: {
@@ -637,7 +645,7 @@ export async function haltTeamWork(input: {
   if (haltAnchor === undefined) {
     input.ctx.logger.warn(`agent-teams: captain session ${halted.captainSessionId} is not live; member activations of "${halted.teamName}" were not drained from this session`)
   } else {
-    await stopTeamMemberActivations(input.ctx, haltAnchor, halted.members, input.signal)
+    await stopTeamMemberActivations(input.ctx, haltAnchor, halted.members, input.signal, input.stateRoot, input.teamId)
   }
   // Interrupting a child emits a trailing subagent-settled notification. That
   // notification can start a fresh Captain turn after the first cancellation,
@@ -692,7 +700,12 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   installRetiredMemberGuard(ctx, config.stateDir)
   installMemberDelegationGuard(ctx, config.stateDir, config.memberMaxDepth ?? 0)
   installMailboxAdmission(ctx, config.stateDir)
-  const scheduler = installTeamScheduler(ctx, { stateDir: config.stateDir, executionPrompt: config.executionPrompt, dispatch: dispatchMember })
+  const scheduler = installTeamScheduler(ctx, {
+    stateDir: config.stateDir,
+    executionPrompt: config.executionPrompt,
+    maxConcurrentWorkers: config.maxConcurrentWorkers ?? config.maxMembers,
+    dispatch: dispatchMember,
+  })
 
 
   async function dispatchMember(captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', request?: DispatchRequest): Promise<DispatchResult> {
@@ -1488,7 +1501,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       })
       if (revoked.member.id !== '') {
         await recordRetiredMemberIds(stateRoot, [revoked.member.id])
-        await stopTeamMemberActivations(ctx, await memberOperationParent(ctx, team, captain), [revoked.member], exec.signal)
+        await stopTeamMemberActivations(ctx, await memberOperationParent(ctx, team, captain), [revoked.member], exec.signal, stateRoot, team.id)
       }
       await scheduler.kickTeam(workspace, team.id, await liveLeadAnchorAgent(ctx, team, captain))
       return {
@@ -1738,7 +1751,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       let quiescenceError: unknown
       if (revoked.previousMember !== undefined) {
         try {
-          await stopTeamMemberActivations(ctx, await memberOperationParent(ctx, team, captain), [revoked.previousMember], exec.signal)
+          await stopTeamMemberActivations(ctx, await memberOperationParent(ctx, team, captain), [revoked.previousMember], exec.signal, stateRoot, team.id)
         } catch (error: unknown) {
           quiescenceError = error
         }
@@ -2598,7 +2611,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         return roster
       })
       await recordRetiredMemberIds(stateRoot, members.map(member => member.id))
-      await stopTeamMemberActivations(ctx, await memberOperationParent(ctx, team, captain), members, exec.signal)
+      await stopTeamMemberActivations(ctx, await memberOperationParent(ctx, team, captain), members, exec.signal, stateRoot, team.id)
       await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(ctx, stateRoot, team.id, captain.id)
         appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/team-deleted', {

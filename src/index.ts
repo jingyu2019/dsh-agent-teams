@@ -89,6 +89,8 @@ export interface Config {
   memberMaxDepth?: number
   /** Team size cap in members (default `8`). */
   maxMembers?: number
+  /** Global cap on simultaneous member activations (defaults to `maxMembers`). */
+  maxConcurrentWorkers?: number
   /** Named multi-role team profiles. */
   profiles?: Record<string, TeamProfileConfig>
   /**
@@ -171,6 +173,7 @@ export const Config: z<Config> = z.object({
   toolPolicies: z.dict(toolPolicyConfig).default({}),
   memberMaxDepth: z.natural().default(0),
   maxMembers: z.natural().min(1).default(8),
+  maxConcurrentWorkers: z.natural().min(1),
   promptSectionOrder: z.natural().default(117),
   slashCommand: z.boolean().default(true),
 })
@@ -201,6 +204,7 @@ export function apply(ctx: Context, config: Config): void {
     fallback: config.fallback,
     memberMaxDepth: config.memberMaxDepth ?? 0,
     maxMembers: config.maxMembers ?? 8,
+    maxConcurrentWorkers: config.maxConcurrentWorkers ?? config.maxMembers ?? 8,
     profiles: config.profiles ?? {},
     // Owner configuration is validated once, at mount: an empty or malformed
     // policy must never reach a member creation path.

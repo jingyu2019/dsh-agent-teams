@@ -83,6 +83,12 @@ export declare function beginTaskAttempt(task: TeamTask, assignee: string): stri
 export declare function cancelUnfinishedTask(task: TeamTask, output?: string): void;
 export declare function invalidateTaskAttempt(task: TeamTask, nextAssignee?: string, reassigning?: boolean): void;
 /**
+ * Release the durable permits belonging to members whose exact recursive
+ * drain has completed. Callers must await the host drain first; a failed drain
+ * must leave the permits held for restart recovery.
+ */
+export declare function releaseActivationPermitsForDrainedMembers(stateRoot: string, teamId: string, memberIds: readonly string[]): Promise<number>;
+/**
  * Create the team directory structure and the initial team record.
  * @param stateRoot - resolved absolute state root directory.
  * @param state - the initial team record.

@@ -32,6 +32,8 @@ export interface ToolsConfig {
     memberMaxDepth?: number;
     /** Team size cap (members). */
     maxMembers: number;
+    /** Global cap on simultaneous activation permits (defaults to maxMembers). */
+    maxConcurrentWorkers?: number;
     /** Named team profiles from the active DSH profile. */
     profiles: Record<string, import('./profiles.ts').TeamProfileConfig>;
     /** Owner-declared reusable member tool policies, keyed by policy id (#59). */

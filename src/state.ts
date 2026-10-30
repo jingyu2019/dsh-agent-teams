@@ -238,6 +238,39 @@ export function invalidateTaskAttempt(
 }
 
 /**
+ * Release the durable permits belonging to members whose exact recursive
+ * drain has completed. Callers must await the host drain first; a failed drain
+ * must leave the permits held for restart recovery.
+ */
+export async function releaseActivationPermitsForDrainedMembers(
+  stateRoot: string,
+  teamId: string,
+  memberIds: readonly string[],
+): Promise<number> {
+  const ids = new Set(memberIds.filter(id => id !== ''))
+  if (ids.size === 0) return 0
+  return withTeamLock(`team:${stateRoot}:${teamId}`, async () => {
+    const team = await readTeam(stateRoot, teamId)
+    if (team === undefined) return 0
+    let released = 0
+    const now = Date.now()
+    for (const lease of team.activations ?? []) {
+      if (!ids.has(lease.memberId) || lease.permitHeld !== true) continue
+      lease.permitHeld = false
+      lease.releasedAt ??= now
+      if (lease.state !== 'released') {
+        lease.state = 'released'
+        lease.endObserved = true
+        lease.settlementApplied = true
+      }
+      released += 1
+    }
+    if (released > 0) await writeTeam(stateRoot, team)
+    return released
+  })
+}
+
+/**
  * Create the team directory structure and the initial team record.
  * @param stateRoot - resolved absolute state root directory.
  * @param state - the initial team record.

@@ -57,6 +57,8 @@ export interface Config {
     memberMaxDepth?: number;
     /** Team size cap in members (default `8`). */
     maxMembers?: number;
+    /** Global cap on simultaneous member activations (defaults to `maxMembers`). */
+    maxConcurrentWorkers?: number;
     /** Named multi-role team profiles. */
     profiles?: Record<string, TeamProfileConfig>;
     /**

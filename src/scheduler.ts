@@ -78,6 +78,8 @@ export function mailboxActivationDecision(
 export interface SchedulerConfig {
   readonly stateDir: string
   readonly executionPrompt?: string
+  /** Global cap on active activation permits; undefined preserves legacy unbounded scheduling. */
+  readonly maxConcurrentWorkers?: number
   readonly dispatch?: (
     captain: Agent,
     teamId: string,
@@ -87,6 +89,20 @@ export interface SchedulerConfig {
     mode: 'queue' | 'steer',
     request?: DispatchRequest,
   ) => Promise<boolean | DispatchResult>
+}
+
+/** Count permits that still pin a managed activation. */
+export function activePermitCount(leases: readonly Pick<ActivationLease, 'permitHeld'>[]): number {
+  return leases.reduce((count, lease) => count + (lease.permitHeld === true ? 1 : 0), 0)
+}
+
+/** Whether one more activation may acquire a global permit. */
+export function canAcquireActivationPermit(
+  leases: readonly Pick<ActivationLease, 'permitHeld'>[],
+  maxConcurrentWorkers: number | undefined,
+): boolean {
+  if (maxConcurrentWorkers === undefined) return true
+  return activePermitCount(leases) < Math.max(1, Math.floor(maxConcurrentWorkers))
 }
 
 export interface TeamScheduler {
@@ -783,6 +799,10 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     activationWorkspaces.set(teamId, workspace)
     for (const lease of [...(team.activations ?? [])]) {
       if (lease.state === 'released' || lease.state === 'rejected') continue
+      // A start event is delivered through an async lifecycle lane. Do not
+      // mistake that in-process publication window for a crash and roll back
+      // the lease while it is still acquiring its exact run binding.
+      if ([...pendingByChild.values()].some(pointer => pointer.activationId === lease.activationId)) continue
       if (lease.endObserved && lease.settlementApplied !== true) {
         await settleActivation({
           teamId, activationId: lease.activationId, hostRunId: lease.hostRunId,
@@ -931,6 +951,13 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             await releaseMailboxDelivery(stateRoot, fresh.id, currentMember.name, current.map(message => message.id))
             return { messages: [], memberId: currentMember.id, newChild: false, blocked: true }
           }
+          if (!reuse && !canAcquireActivationPermit(fresh.activations ?? [], config.maxConcurrentWorkers)) {
+            // Mailbox work is real work, but it may not bypass the global
+            // activation budget. Keep the durable mail queued and retry from
+            // the next scheduler edge after an exact permit release.
+            await releaseMailboxDelivery(stateRoot, fresh.id, currentMember.name, current.map(message => message.id))
+            return { messages: [], memberId: currentMember.id, newChild: false, blocked: true }
+          }
           const activation = reuse ? undefined : await allocateActivation(stateRoot, workspace, fresh, currentMember, 'mailbox')
           await writeTeam(stateRoot, fresh)
           return {
@@ -994,6 +1021,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           if (fresh === undefined || fresh.halted === true || fresh.phase === 'staged') return undefined
           const currentMember = fresh.members.find(candidate => candidate.name === memberName && candidate.status !== 'removed')
           if (currentMember === undefined || !isMemberAvailable(ctx, currentMember)) return undefined
+          if (!canAcquireActivationPermit(fresh.activations ?? [], config.maxConcurrentWorkers)) return undefined
           const owned = ownedOpenTask(fresh.tasks, currentMember.name)
           const durableParking = owned?.parking
           const parkingBlocks = durableParking !== undefined
