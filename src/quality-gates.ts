@@ -50,7 +50,8 @@ const DEFAULT_REVIEW_POLICY: Required<Pick<
 export type PathClassification = 'in_scope' | 'out_of_scope' | 'undeclared' | 'illegal'
 
 export interface CreateTaskInput {
-  subject: string
+  /** Runtime input may be non-string despite the public tool schema. */
+  subject: unknown
   description?: string
   dependencies?: string[]
   assignee?: string
@@ -387,6 +388,10 @@ function dependencyClosureContains(
 }
 
 export function validateCreateTask(team: TeamState, input: CreateTaskInput): ValidateCreateTaskResult {
+  if (typeof input.subject !== 'string' || input.subject.trim() === '') {
+    return { ok: false, error: 'task subject must not be empty' }
+  }
+
   const kind = input.kind ?? 'work'
   if (!(TASK_KINDS as readonly string[]).includes(kind)) {
     return { ok: false, error: `unknown task kind "${String(kind)}"` }
