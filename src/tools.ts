@@ -2986,7 +2986,7 @@ export function renderStatus(value: JsonValue): string {
     description?: string
     profile?: { name: string; protocol?: string; task_planning?: string }
     viewer: string
-    context_lifecycle: { state: string; counts: { observed: number; unavailable: number; unproven: number } }
+    context_lifecycle?: { state: string; counts: { observed: number; unavailable: number; unproven: number } }
     members: {
       name: string
       role: string
@@ -2996,7 +2996,7 @@ export function renderStatus(value: JsonValue): string {
       tool_policy: string
       status: string
       activity: string
-      context_lifecycle: { state: string; composition?: string; notes?: string }
+      context_lifecycle?: { state: string; composition?: string; notes?: string }
       spawn_error?: string
     }[]
     tasks: { id: string; subject: string; status: string; assignee: string; dependencies: string[]; attempt: number; attempt_id: string; reassigning: boolean; seed_id?: string; output?: string; kind?: string; round?: number; verdict?: string; findings_open?: number; supplemental_evidence?: string; fixes?: string; next_probe_at?: number; probe_count?: number }[]
@@ -3014,6 +3014,7 @@ export function renderStatus(value: JsonValue): string {
     delivery?: { ok: boolean; blockers: string[]; warnings?: string[] }
     warnings?: string[]
   }
+  const lifecycle = team.context_lifecycle ?? { state: 'unproven', counts: { observed: 0, unavailable: 0, unproven: 0 } }
   const flags = orderedUniqueStrings([
     team.halted ? 'halted' : undefined,
     team.escalated ? 'escalated' : undefined,
@@ -3027,14 +3028,14 @@ export function renderStatus(value: JsonValue): string {
     ...team.profile === undefined ? [] : [`Profile: ${team.profile.name}${team.profile.task_planning ? ` [${team.profile.task_planning}]` : ''}${team.profile.protocol ? ` — ${team.profile.protocol}` : ''}`],
     ...team.loop_summary ? [`Loop: ${team.loop_state ?? ''} — ${team.loop_summary}`.replace(/^Loop:  — /u, 'Loop: ')] : [],
     `Viewing as: ${team.viewer}`,
-    `Context lifecycle: ${team.context_lifecycle.state} (observed ${team.context_lifecycle.counts.observed}, unavailable ${team.context_lifecycle.counts.unavailable}, unproven ${team.context_lifecycle.counts.unproven})`,
+    `Context lifecycle: ${lifecycle.state} (observed ${lifecycle.counts.observed}, unavailable ${lifecycle.counts.unavailable}, unproven ${lifecycle.counts.unproven})`,
     `Members (${team.members.length}):`,
     ...team.members.map((member) => {
       const route = member.provider && member.model ? ` · ${member.provider}/${member.model}` : ''
       const effort = member.reasoning_effort ? ` · reasoning ${member.reasoning_effort}` : ''
       const failure = member.spawn_error === undefined ? '' : `\n      start failed: ${member.spawn_error.slice(0, 400)}`
       const policy = member.tool_policy ? ` · policy ${member.tool_policy}` : ''
-      const context = ` · context ${member.context_lifecycle.state}`
+      const context = ` · context ${member.context_lifecycle?.state ?? 'unproven'}`
       return `  - ${member.name} [${member.role}] ${member.status}/${member.activity}${route}${effort}${policy}${context}${failure}`
     }),
     `Tasks (${team.tasks.length}):`,
