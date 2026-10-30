@@ -6,6 +6,7 @@ import test from 'node:test'
 import { cancelUnfinishedTask, createTeamDir, readTeam, writeTeam } from '../lib/state.js'
 import { installTeamScheduler } from '../lib/scheduler.js'
 import { schedulerRuntimeConfig } from '../lib/tools.js'
+import { Config, resolveToolsConfig } from '../lib/index.js'
 
 const tick = (ms = 30) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -96,6 +97,15 @@ test('probe interval is disabled by default and scheduler config propagates an e
   const base = { stateDir: '.agent-teams', memberProvider: 'spawn', memberMaxDepth: 0, maxMembers: 8, profiles: {}, toolPolicies: {} }
   assert.equal(schedulerRuntimeConfig(base, undefined).probeIntervalMs, 0)
   assert.equal(schedulerRuntimeConfig({ ...base, probeIntervalMs: 900000 }, undefined).probeIntervalMs, 900000)
+})
+
+test('owner Config schema reaches scheduler probeIntervalMs through the production resolver', () => {
+  const owner = Config({ probeIntervalMs: 12_000 })
+  assert.equal(owner.probeIntervalMs, 12_000)
+  const resolved = resolveToolsConfig(owner)
+  assert.equal(resolved.probeIntervalMs, 12_000)
+  assert.equal(schedulerRuntimeConfig(resolved, undefined).probeIntervalMs, 12_000)
+  assert.equal(resolveToolsConfig(Config({})).probeIntervalMs, 0)
 })
 
 test('disabled probe arms no nextProbeAt and schedules no timer', async () => {

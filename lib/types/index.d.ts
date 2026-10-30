@@ -20,6 +20,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
+import { type ToolsConfig } from './tools.ts';
 import { type TeamProfileConfig } from './profiles.ts';
 import { type MemberToolPolicy } from './tool-policies.ts';
 export declare const name = "agent-teams";
@@ -61,6 +62,13 @@ export interface Config {
     maxMembers?: number;
     /** Global cap on simultaneous member activations (defaults to `maxMembers`). */
     maxConcurrentWorkers?: number;
+    /**
+     * Sparse-probe cadence in milliseconds for open member work (default `0`,
+     * disabled). Positive values are clamped by the scheduler to 5s..10m; a
+     * probe only refreshes the durable ledger and, when the exact activation is
+     * positively running, silently kicks that member.
+     */
+    probeIntervalMs?: number;
     /** Prompt-only permission to emit multiple AgentTeams tool calls per response. */
     parallelToolCalls?: boolean;
     /** Named multi-role team profiles. */
@@ -87,4 +95,6 @@ export interface Config {
 export declare const Config: z<Config>;
 /** The model-facing usage policy: when and how to drive AgentTeams. */
 export declare function usageSectionText(toolNames: string, profilesText?: string, parallelToolCalls?: boolean): string;
+/** Resolve owner configuration into the tool/scheduler runtime shape. */
+export declare function resolveToolsConfig(config: Config): ToolsConfig;
 export declare function apply(ctx: Context, config: Config): void;

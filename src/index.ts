@@ -93,6 +93,13 @@ export interface Config {
   maxMembers?: number
   /** Global cap on simultaneous member activations (defaults to `maxMembers`). */
   maxConcurrentWorkers?: number
+  /**
+   * Sparse-probe cadence in milliseconds for open member work (default `0`,
+   * disabled). Positive values are clamped by the scheduler to 5s..10m; a
+   * probe only refreshes the durable ledger and, when the exact activation is
+   * positively running, silently kicks that member.
+   */
+  probeIntervalMs?: number
   /** Prompt-only permission to emit multiple AgentTeams tool calls per response. */
   parallelToolCalls?: boolean
   /** Named multi-role team profiles. */
@@ -182,6 +189,7 @@ export const Config: z<Config> = z.object({
   memberMaxDepth: z.natural().default(0),
   maxMembers: z.natural().min(1).default(8),
   maxConcurrentWorkers: z.natural().min(1),
+  probeIntervalMs: z.natural().default(0),
   parallelToolCalls: z.boolean().default(false),
   promptSectionOrder: z.natural().default(117),
   slashCommand: z.boolean().default(true),
@@ -203,8 +211,9 @@ export function usageSectionText(toolNames: string, profilesText = '', parallelT
 Tools: ${toolNames}${profilesText === '' ? '' : `\n\n${profilesText}`}${parallelToolCalls ? '\n\nParallel Emission is enabled: you may emit several AgentTeams tool calls in one assistant response. Calls still execute in their declared order; dependency ids must exist, and do not rely on a same-response forward reference succeeding. Never use parallel emission for exclusive lifecycle transitions.' : ''}`
 }
 
-export function apply(ctx: Context, config: Config): void {
-  const resolved: ToolsConfig = {
+/** Resolve owner configuration into the tool/scheduler runtime shape. */
+export function resolveToolsConfig(config: Config): ToolsConfig {
+  return {
     stateDir: config.stateDir ?? '.agent-teams',
     memberProvider: config.memberProvider ?? 'spawn',
     memberModel: config.memberModel,
@@ -215,12 +224,17 @@ export function apply(ctx: Context, config: Config): void {
     memberMaxDepth: config.memberMaxDepth ?? 0,
     maxMembers: config.maxMembers ?? 8,
     maxConcurrentWorkers: config.maxConcurrentWorkers ?? config.maxMembers ?? 8,
+    probeIntervalMs: config.probeIntervalMs ?? 0,
     parallelToolCalls: config.parallelToolCalls ?? false,
     profiles: config.profiles ?? {},
     // Owner configuration is validated once, at mount: an empty or malformed
     // policy must never reach a member creation path.
     toolPolicies: parseToolPolicies(config.toolPolicies),
   }
+}
+
+export function apply(ctx: Context, config: Config): void {
+  const resolved = resolveToolsConfig(config)
 
   // Provider registration is a sibling plugin's effect (`subagent-spawn` /
   // `subagent-fork` rows), which can land after this mount under the Loader's
