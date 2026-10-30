@@ -24,7 +24,11 @@ Additional items resolved after the original audit:
 - **#162 / #241** provide an explicit context reset for idle members; host-driven automatic compaction remains a separate host capability.
 - **#317** is a duplicate token-complaint root cause addressed by #96, per-member model routing, and the lighter invoke-profile path.
 
-Current open non-PR state (2026-10-31): **48 issues** — 29 accepted/fixed in this fork, 9 duplicate, 4 already fixed, 3 out of scope, and 3 still evidence-gated (`#117`, `#151`, `#190`). The evidence-gated three require host memory samples, package identity, or compact traces respectively.
+Current open non-PR state (2026-10-31): **48 issues** — 29 accepted/fixed in this fork, 9 duplicate, 4 already fixed, 4 out of scope, and 2 still evidence-gated (`#117`, `#190`).
+
+- **#151** is out of scope for this plugin: the attached screenshot shows the host task manager and a background Bash job (`sleep`, `job_output`) stuck at 771 minutes, not the AgentTeams activity panel. The original maintainer also suspected a different plugin/host surface.
+- **#117** still needs host-side RSS/heapUsed samples; the plugin lock-table regression is covered by 1,000 serialized and 100 concurrent lock tests.
+- **#190** still needs an actual compaction error/trace: the attached screenshot only shows a member titled `agent-teams:fgame-dev:lead` in “标准模式” and does not show a `/compact` failure or automatic-compaction event.
 
 `compatibility.json` now includes exact rc.4 and rc.5 targets. The real `plugin-manager-install` and `progressive-entry` checks pass on rc.5; evidence is in [`docs/harness-0.2.1-rc.5/`](./harness-0.2.1-rc.5/README.md).
 
