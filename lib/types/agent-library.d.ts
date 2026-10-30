@@ -1,5 +1,5 @@
 import type { AgentPresetV1 } from './types.ts';
-export declare const AGENT_LIBRARY_FILE = "agent-library.json";
+export declare const AGENT_LIBRARY_FILE = "agent-library/presets.json";
 export declare const AGENT_LIBRARY_MAX_PRESETS = 100;
 interface AgentLibraryV1 {
     schemaVersion: 1;

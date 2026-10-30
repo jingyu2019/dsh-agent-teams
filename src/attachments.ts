@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
 import { lstat, mkdir, open, readFile, realpath, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, posix } from 'node:path'
-import { pathMatchesScope } from './quality-gates.ts'
+import { isDefaultExcludedPath, pathMatchesScope } from './quality-gates.ts'
 import type { ArtifactRootConfig, MessageAttachment } from './types.ts'
 
 export const ATTACHMENT_MAX_FILES = 5
@@ -76,6 +76,7 @@ export async function copyAttachment(input: {
   artifactRoots?: readonly ArtifactRootConfig[]
 }): Promise<MessageAttachment> {
   const relative = normalizedRelative(input.sourcePath)
+  if (isDefaultExcludedPath(relative)) fail('attachment path is excluded from delivery')
   const workspaceRoot = await realpath(input.workspace)
   const memberAllowed = input.allowedScopes.some(scope => pathMatchesScope(relative, scope))
   let root = workspaceRoot
