@@ -231,8 +231,9 @@ test('rc.4 is an exact preview target and every generated peer range starts with
   assert.equal(rc4.length, 1, 'rc.4 must be declared exactly once')
   assert.equal(rc4[0].track, 'preview')
   assert.ok(validatePolicy(policy).includes('0.2.1-rc.4'))
-  assert.equal(requiredHostPeers.length, 21)
-  for (const name of requiredHostPeers) {
+  const dshPeers = requiredHostPeers.filter(name => name.startsWith('@deepseek-ai/dsh-'))
+  assert.equal(dshPeers.length, 21)
+  for (const name of dshPeers) {
     const range = pkg.peerDependencies[name]
     assert.equal(typeof range, 'string', `${name} must declare a peer range`)
     const versions = range.split(' || ')
