@@ -79,6 +79,10 @@ test('#70 attachment scope rejects traversal, secrets, symlinks, hardlinks and m
   await writeFile(join(stateRoot, 'other', 'team.json'), '{"name":"other"}')
   await mkdir(join(workspace, '.dsh'), { recursive: true })
   await writeFile(join(workspace, '.dsh', 'secret.txt'), 'private')
+  for (const [dir, file] of [['artifacts/.git', 'config.txt'], ['artifacts/node_modules', 'payload.json'], ['artifacts/secrets', 'token.txt']]) {
+    await mkdir(join(workspace, dir), { recursive: true })
+    await writeFile(join(workspace, dir, file), 'protected')
+  }
   await symlink(join(workspace, '.env'), join(workspace, 'out', 'link.txt'))
   await link(join(workspace, '.env'), join(workspace, 'out', 'hard.txt'))
   const base = { workspace, stateRoot, teamId: 't', allowedScopes: ['out/'] }
@@ -95,6 +99,12 @@ test('#70 attachment scope rejects traversal, secrets, symlinks, hardlinks and m
     () => copyAttachment({ ...base, sourcePath: 'secret.txt', artifactRoots: [{ id: 'dsh', path: join(workspace, '.dsh'), allowRead: true }] }),
     /excluded from delivery/,
   )
+  for (const [dir, file] of [['artifacts/.git', 'config.txt'], ['artifacts/node_modules', 'payload.json'], ['artifacts/secrets', 'token.txt']]) {
+    await assert.rejects(
+      () => copyAttachment({ ...base, sourcePath: file, artifactRoots: [{ id: dir, path: join(workspace, dir), allowRead: true }] }),
+      /excluded from delivery/,
+    )
+  }
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/link.txt' }), /symlink/)
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/hard.txt' }), /hard links/)
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/bad.png' }), /PNG signature/)
