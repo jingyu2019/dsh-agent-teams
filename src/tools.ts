@@ -326,6 +326,18 @@ export function optionalToolPolicyId(value: unknown): string | undefined {
   return trimmed === '' ? undefined : trimmed
 }
 
+/** Drop undefined values and duplicate strings while preserving first-seen order. */
+export function orderedUniqueStrings(values: readonly (string | undefined)[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    if (value === undefined || seen.has(value)) continue
+    seen.add(value)
+    result.push(value)
+  }
+  return result
+}
+
 /** Whether one materialized plan member carries no roster content at all. */
 function isEmptyPlanMember(member: unknown): boolean {
   if (member === undefined || member === null) return true
@@ -2886,14 +2898,14 @@ function renderStatus(value: JsonValue): string {
     delivery?: { ok: boolean; blockers: string[]; warnings?: string[] }
     warnings?: string[]
   }
-  const flags = [
+  const flags = orderedUniqueStrings([
     team.halted ? 'halted' : undefined,
     team.escalated ? 'escalated' : undefined,
     team.deliverable ? 'deliverable' : undefined,
     team.loop_state && team.loop_state !== 'running' && team.loop_state !== 'halted' && team.loop_state !== 'escalated'
       ? team.loop_state
       : undefined,
-  ].filter((item): item is string => item !== undefined)
+  ])
   const lines: string[] = [
     `Team "${team.team_name}"${team.description ? ` — ${team.description}` : ''}${flags.length > 0 ? ` [${flags.join(', ')}]` : ''}`,
     ...team.profile === undefined ? [] : [`Profile: ${team.profile.name}${team.profile.task_planning ? ` [${team.profile.task_planning}]` : ''}${team.profile.protocol ? ` — ${team.profile.protocol}` : ''}`],

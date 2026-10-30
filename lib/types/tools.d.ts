@@ -95,6 +95,8 @@ export declare const TOOL_POLICY_DESCRIPTION = "Optional owner-declared tool-pol
  * omitted because the public schema only accepts strings.
  */
 export declare function optionalToolPolicyId(value: unknown): string | undefined;
+/** Drop undefined values and duplicate strings while preserving first-seen order. */
+export declare function orderedUniqueStrings(values: readonly (string | undefined)[]): string[];
 export declare function haltTeamWork(input: {
     ctx: Context;
     stateRoot: string;
