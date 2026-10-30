@@ -708,6 +708,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     stateDir: config.stateDir,
     executionPrompt: config.executionPrompt,
     maxConcurrentWorkers: config.maxConcurrentWorkers ?? config.maxMembers,
+    parallelToolCalls: config.parallelToolCalls === true,
     dispatch: dispatchMember,
   })
 
@@ -2921,6 +2922,7 @@ function memberRuntime(config: ToolsConfig): MemberRuntimeConfig {
     executionPrompt: config.executionPrompt,
     fallback: config.fallback,
     fallbacks: config.fallbacks,
+    parallelToolCalls: config.parallelToolCalls === true,
   }
 }
 
