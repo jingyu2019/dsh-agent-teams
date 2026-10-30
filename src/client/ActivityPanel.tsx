@@ -498,6 +498,8 @@ function ManualTeamDialog({ open, onClose, onCreated, sessionId, t }: {
   const [member, setMember] = useState('worker')
   const [presetId, setPresetId] = useState('')
   const [presets, setPresets] = useState<readonly { id: string; revision: number; name: string; role: string }[]>([])
+  const [sessionChoices, setSessionChoices] = useState<readonly { id: string; label: string }[]>([])
+  const [sessionChoiceId, setSessionChoiceId] = useState('')
   const [task, setTask] = useState('Work on the team goal')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -516,6 +518,22 @@ function ManualTeamDialog({ open, onClose, onCreated, sessionId, t }: {
       .catch(() => { if (!cancelled) setPresets([]) })
     return () => { cancelled = true }
   }, [open, sessionId])
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    void fetch('/plugins/dsh-agent-teams/plan/create-capability', { cache: 'no-store' })
+      .then(async response => response.ok ? await response.json() as { choices?: unknown } : { choices: [] })
+      .then(body => {
+        if (cancelled) return
+        const choices = Array.isArray(body.choices)
+          ? body.choices.filter((item): item is { id: string; label: string } => typeof item === 'object' && item !== null && typeof (item as { id?: unknown }).id === 'string' && typeof (item as { label?: unknown }).label === 'string')
+          : []
+        setSessionChoices(choices)
+        setSessionChoiceId(choices[0]?.id ?? '')
+      })
+      .catch(() => { if (!cancelled) setSessionChoices([]) })
+    return () => { cancelled = true }
+  }, [open])
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault()
     if (sessionId === undefined || name.trim() === '' || member.trim() === '' || task.trim() === '') {
@@ -525,13 +543,29 @@ function ManualTeamDialog({ open, onClose, onCreated, sessionId, t }: {
     setBusy(true)
     setError('')
     try {
-      const capability = await fetch(`/plugins/dsh-agent-teams/plan/create-capability?sessionId=${encodeURIComponent(sessionId)}`, { method: 'GET', cache: 'no-store' })
+      const capability = await fetch('/plugins/dsh-agent-teams/plan/create-capability', { method: 'GET', cache: 'no-store' })
       if (!capability.ok) throw new Error('could not mint a manual-plan capability')
-      const capabilityBody = await capability.json() as { nonce?: unknown }
-      if (typeof capabilityBody.nonce !== 'string' || capabilityBody.nonce === '') throw new Error('manual-plan capability is missing')
+      let nonce = ''
+      const capabilityBody = await capability.json() as { nonce?: unknown; choices?: unknown }
+      if (typeof capabilityBody.nonce === 'string' && capabilityBody.nonce !== '') nonce = capabilityBody.nonce
+      else if (Array.isArray(capabilityBody.choices) && capabilityBody.choices.length > 0) {
+        const firstId = (capabilityBody.choices[0] as { id?: unknown }).id
+        const selected = sessionChoiceId !== '' && capabilityBody.choices.some(item => typeof item === 'object' && item !== null && (item as { id?: unknown }).id === sessionChoiceId)
+          ? sessionChoiceId
+          : typeof firstId === 'string' ? firstId : ''
+        if (selected === '') throw new Error('manual-plan session choice is missing')
+        const selectedCapability = await fetch('/plugins/dsh-agent-teams/plan/create-capability', {
+          method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ choiceId: selected }),
+        })
+        if (!selectedCapability.ok) throw new Error('could not bind the selected live session')
+        const selectedBody = await selectedCapability.json() as { nonce?: unknown }
+        if (typeof selectedBody.nonce !== 'string' || selectedBody.nonce === '') throw new Error('manual-plan capability is missing')
+        nonce = selectedBody.nonce
+      }
+      if (nonce === '') throw new Error('manual-plan capability is missing')
       const response = await fetch('/plugins/dsh-agent-teams/plan/create', {
         method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ nonce: capabilityBody.nonce, name, members: [{ name: member, ...presetId === '' ? {} : { preset_id: presetId } }], tasks: [{ subject: task }] }),
+        body: JSON.stringify({ nonce, name, members: [{ name: member, ...presetId === '' ? {} : { preset_id: presetId } }], tasks: [{ subject: task }] }),
       })
       if (!response.ok) {
         let message = 'request failed'
@@ -567,6 +601,11 @@ function ManualTeamDialog({ open, onClose, onCreated, sessionId, t }: {
       <form id="agent-teams-manual-create" className={css.manualForm} onSubmit={(event) => { void submit(event) }}>
         <label>{t('manual.name')}<input value={name} required onChange={event => { setName(event.currentTarget.value); setError('') }} /></label>
         <label>{t('manual.member')}<input value={member} required onChange={event => { setMember(event.currentTarget.value); setError('') }} /></label>
+        {sessionChoices.length > 0 && (
+          <label>{t('manual.session')}<select value={sessionChoiceId} onChange={event => { setSessionChoiceId(event.currentTarget.value); setError('') }}>
+            {sessionChoices.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}
+          </select></label>
+        )}
         <label>{t('manual.preset')}<select value={presetId} onChange={event => { setPresetId(event.currentTarget.value); setError('') }}>
           <option value="">{t('manual.presetNone')}</option>
           {presets.map(preset => <option key={preset.id} value={preset.id}>{preset.name} · r{preset.revision}</option>)}

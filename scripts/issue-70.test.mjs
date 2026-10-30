@@ -77,6 +77,8 @@ test('#70 attachment scope rejects traversal, secrets, symlinks, hardlinks and m
   await writeFile(join(workspace, 'out', 'bad.png'), 'not a png')
   await mkdir(join(stateRoot, 'other'), { recursive: true })
   await writeFile(join(stateRoot, 'other', 'team.json'), '{"name":"other"}')
+  await mkdir(join(workspace, '.dsh'), { recursive: true })
+  await writeFile(join(workspace, '.dsh', 'secret.txt'), 'private')
   await symlink(join(workspace, '.env'), join(workspace, 'out', 'link.txt'))
   await link(join(workspace, '.env'), join(workspace, 'out', 'hard.txt'))
   const base = { workspace, stateRoot, teamId: 't', allowedScopes: ['out/'] }
@@ -87,6 +89,10 @@ test('#70 attachment scope rejects traversal, secrets, symlinks, hardlinks and m
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: '.agent-teams/other/team.json' }), /outside the current task scope|excluded from delivery/)
   await assert.rejects(
     () => copyAttachment({ ...base, sourcePath: 'team.json', artifactRoots: [{ id: 'state', path: join(stateRoot, 'other'), allowRead: true }] }),
+    /excluded from delivery/,
+  )
+  await assert.rejects(
+    () => copyAttachment({ ...base, sourcePath: 'secret.txt', artifactRoots: [{ id: 'dsh', path: join(workspace, '.dsh'), allowRead: true }] }),
     /excluded from delivery/,
   )
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/link.txt' }), /symlink/)

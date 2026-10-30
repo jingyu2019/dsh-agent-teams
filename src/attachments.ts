@@ -102,6 +102,10 @@ export async function copyAttachment(input: {
   if (!within(root, canonical)) fail('attachment real path escapes its allowed root')
   const stateRootReal = await realpath(input.stateRoot).catch(() => undefined)
   if (stateRootReal !== undefined && within(stateRootReal, canonical)) fail('attachment path is excluded from delivery')
+  for (const protectedPath of ['.git', '.dsh', 'node_modules', 'secrets']) {
+    const protectedReal = await realpath(join(input.workspace, protectedPath)).catch(() => undefined)
+    if (protectedReal !== undefined && within(protectedReal, canonical)) fail('attachment path is excluded from delivery')
+  }
   const noFollow = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0
   const handle = await open(candidate, fsConstants.O_RDONLY | noFollow)
   try {

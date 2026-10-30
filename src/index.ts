@@ -275,6 +275,7 @@ export function resolveToolsConfig(config: Config): ToolsConfig {
 export function apply(ctx: Context, config: Config): void {
   const resolved = resolveToolsConfig(config)
   const planCreateNonces = new Map<string, { sessionId: string; workspaceId: string; operation: 'create-staged-team'; expiresAt: number; used: boolean }>()
+  const planCreateChoices = new Map<string, { sessionId: string; workspaceId: string; label: string; expiresAt: number }>()
 
   // Provider registration is a sibling plugin's effect (`subagent-spawn` /
   // `subagent-fork` rows), which can land after this mount under the Loader's
@@ -548,40 +549,73 @@ export function apply(ctx: Context, config: Config): void {
       kind: 'exact',
       path: '/plugins/dsh-agent-teams/plan/create-capability',
       handler: async (req, res) => {
-        if (req.method !== 'GET') {
-          res.writeHead(405, { allow: 'GET', 'cache-control': 'no-store' })
+        if (req.method !== 'GET' && req.method !== 'POST') {
+          res.writeHead(405, { allow: 'GET, POST', 'cache-control': 'no-store' })
           res.end()
           return
         }
-        const url = new URL(req.url ?? '/', 'http://x')
-        let sessionId = url.searchParams.get('sessionId')?.trim() ?? ''
-        if (sessionId === '') {
-          const roots = ctx.agents.list().filter(agent => agent.session.header.parentSession === undefined)
-          if (roots.length === 1) sessionId = roots[0]!.id
+        const mint = (captain: NonNullable<ReturnType<typeof ctx.agents.get>>): { nonce: string; expiresAt: number } => {
+          const nonce = randomUUID()
+          const expiresAt = Date.now() + 60_000
+          for (const [key, value] of planCreateNonces) if (value.expiresAt <= Date.now() || value.used) planCreateNonces.delete(key)
+          planCreateNonces.set(nonce, {
+            sessionId: captain.id,
+            workspaceId: captain.session.header.cwd ?? process.cwd(),
+            operation: 'create-staged-team',
+            expiresAt,
+            used: false,
+          })
+          return { nonce, expiresAt }
         }
-        if (sessionId === '') {
-          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-          res.end(JSON.stringify({ error: 'an eligible live session is required' }))
+        if (req.method === 'GET') {
+          const roots = ctx.agents.list().filter(agent => agent.session.header.parentSession === undefined)
+          if (roots.length === 0) {
+            res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+            res.end(JSON.stringify({ error: 'an eligible live session is required' }))
+            return
+          }
+          if (roots.length === 1) {
+            const minted = mint(roots[0]!)
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+            res.end(JSON.stringify(minted))
+            return
+          }
+          const expiresAt = Date.now() + 60_000
+          for (const [key, value] of planCreateChoices) if (value.expiresAt <= Date.now()) planCreateChoices.delete(key)
+          const choices = roots.map(agent => {
+            const id = randomUUID()
+            const workspaceId = agent.session.header.cwd ?? process.cwd()
+            planCreateChoices.set(id, { sessionId: agent.id, workspaceId, label: workspaceId, expiresAt })
+            return { id, label: workspaceId }
+          })
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ choices, expiresAt }))
           return
         }
-        const captain = ctx.agents.get(sessionId as import('@deepseek-ai/dsh-session').SessionId)
-        if (captain === undefined || captain.session.header.parentSession !== undefined) {
+        let payload: Record<string, unknown>
+        try {
+          payload = await readJsonRequest(req)
+        } catch (error: unknown) {
+          res.writeHead(error instanceof RequestBodyError ? error.status : 400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'invalid request body' }))
+          return
+        }
+        const choiceId = typeof payload['choiceId'] === 'string' ? payload['choiceId'].trim() : ''
+        const choice = choiceId === '' ? undefined : planCreateChoices.get(choiceId)
+        if (choice === undefined || choice.expiresAt <= Date.now()) {
+          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'manual-plan choice is invalid or expired' }))
+          return
+        }
+        planCreateChoices.delete(choiceId)
+        const captain = ctx.agents.get(choice.sessionId as import('@deepseek-ai/dsh-session').SessionId)
+        if (captain === undefined || (captain.session.header.cwd ?? process.cwd()) !== choice.workspaceId) {
           res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
           res.end(JSON.stringify({ error: 'eligible captain session is not attached' }))
           return
         }
-        const nonce = randomUUID()
-        const expiresAt = Date.now() + 60_000
-        for (const [key, value] of planCreateNonces) if (value.expiresAt <= Date.now() || value.used) planCreateNonces.delete(key)
-        planCreateNonces.set(nonce, {
-          sessionId: captain.id,
-          workspaceId: captain.session.header.cwd ?? process.cwd(),
-          operation: 'create-staged-team',
-          expiresAt,
-          used: false,
-        })
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-        res.end(JSON.stringify({ nonce, expiresAt }))
+        res.end(JSON.stringify(mint(captain)))
       },
     }), 'agent-teams: manual plan capability route')
 
