@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { cancelUnfinishedTask, createTeamDir, readTeam } from '../lib/state.js'
+import { cancelUnfinishedTask, createTeamDir, readTeam, writeTeam } from '../lib/state.js'
 import { installTeamScheduler } from '../lib/scheduler.js'
 import { schedulerRuntimeConfig } from '../lib/tools.js'
 
@@ -155,6 +155,28 @@ test('a due probe never rotates a permit with no positive running boundary', asy
     assert.equal(task.attemptId, 'attempt-1')
     assert.equal(task.attemptActivationId, 'act-1')
     assert.equal(task.probe.probeCount, 1)
+  } finally { await f.cleanup() }
+})
+
+test('a permit-held parked attempt executes only the ledger path', async () => {
+  const f = await fixture({ probeIntervalMs: 5000 })
+  try {
+    await f.scheduler.kickMember(f.workspace, 'probe', 'worker', f.captain)
+    const team = await readTeam(f.stateRoot, 'probe')
+    const task = team.tasks[0]
+    const probe = task.probe
+    task.parking = {
+      memberId: 'child', memberGeneration: 1, activationId: probe.activationId, activationEpoch: probe.activationEpoch,
+      attemptId: task.attemptId, noticeDueAt: f.clock.now(), noticeKey: `${probe.activationId}:parked`,
+    }
+    probe.nextProbeAt = f.clock.now() + 1
+    await writeTeam(f.stateRoot, team)
+    await f.scheduler.kickMember(f.workspace, 'probe', 'worker', f.captain)
+    await f.clock.advance(1)
+    const after = (await readTeam(f.stateRoot, 'probe')).tasks[0]
+    assert.equal(f.dispatched.length, 1)
+    assert.equal(after.attemptId, task.attemptId)
+    assert.equal(after.probe.lastProbeAction, 'ledger-only')
   } finally { await f.cleanup() }
 })
 
