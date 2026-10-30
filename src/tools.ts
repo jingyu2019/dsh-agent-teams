@@ -2375,6 +2375,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           await releaseLegacyPermitForIdle(
             stateRoot, prepared.fresh.id, prepared.recipient.id, Date.now(),
             () => ctx.agents.get(prepared.recipient.id as SessionId)?.status,
+            true,
           )
         }
         // The scheduler owns the exact delivery lease and allocates a new

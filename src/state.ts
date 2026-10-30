@@ -281,6 +281,8 @@ export async function releaseActivationPermitsForDrainedMembers(
  * would mark a running delivery settled and hand its permit to somebody else.
  * The live Agent must also be genuinely not running, because a late or
  * duplicate idle from a previous turn arrives while the newer turn runs.
+ * A legacy lease additionally needs its own positive running observation:
+ * an idle level can only close a turn that was previously observed running.
  * @param observedAt - epoch ms when the idle edge was seen (before any await).
  * @param liveStatus - reads the live Agent status for this member.
  * @returns true when this call released one permit.
@@ -291,6 +293,7 @@ export async function releaseLegacyPermitForIdle(
   memberId: string,
   observedAt: number,
   liveStatus?: () => string | undefined,
+  allowUnobservedTask = false,
 ): Promise<boolean> {
   if (memberId === '') return false
   return withTeamLock(`team:${stateRoot}:${teamId}`, async () => {
@@ -302,6 +305,24 @@ export async function releaseLegacyPermitForIdle(
     const lease = team.activations?.find(candidate => candidate.activationId === activationId)
     if (lease === undefined || lease.permitHeld !== true || lease.memberId !== memberId) return false
     if (lease.createdAt > observedAt) return false
+    // A pending mailbox delivery can only be closed by a running observation
+    // for that exact lease. Task/bootstrap deliveries have no independent
+    // mailbox payload and may be reclaimed on an idle edge, otherwise a
+    // cold-recovered owner would remain permanently fenced from a wake.
+    const terminalTask = lease.taskId === undefined
+      ? false
+      : (() => {
+        const task = team.tasks.find(candidate => candidate.id === lease.taskId)
+        return task !== undefined && (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled')
+      })()
+    const hasObservedRunning = lease.runningObservedAt !== undefined && lease.runningObservedAt <= observedAt
+    // Mailbox and pending task/bootstrap deliveries need a positive running
+    // boundary. Only an explicit wake may reclaim an unobserved task; a
+    // terminal task is stale regardless of its old running observation.
+    if (lease.purpose === 'mailbox'
+      && !hasObservedRunning) return false
+    if (lease.purpose !== 'mailbox' && !allowUnobservedTask && !terminalTask && !hasObservedRunning) return false
+    if (lease.runningObservedAt !== undefined && lease.runningObservedAt > observedAt) return false
     if (liveStatus?.() === 'running') return false
     lease.permitHeld = false
     lease.state = 'released'

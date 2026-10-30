@@ -7,6 +7,7 @@ import { appendMailbox, createMessage, createTeamDir, readTeam } from '../lib/st
 import { releaseLegacyPermitForIdle } from '../lib/state.js'
 import { installTeamScheduler, activePermitCount, canAcquireActivationPermit } from '../lib/scheduler.js'
 import { createRouteCursor } from '../lib/members.js'
+import { registerAgentTeamsTools } from '../lib/tools.js'
 
 function fakeAgent(id, cwd) {
   return {
@@ -229,6 +230,42 @@ test('legacy duplicate idle cannot release a newer activation', async () => {
   } finally { await f.cleanup() }
 })
 
+test('legacy stale idle cannot release a pending mailbox lease and cap 1 blocks c2', async () => {
+  const team = teamWith(2, 1)
+  team.members[0].id = 'c1'
+  team.members[1].id = 'c2'
+  team.tasks[0].assignee = 'w2'
+  const f = await fixture(team, 1, {}, false)
+  try {
+    await appendMailbox(f.stateRoot, 'cap', 'w1', createMessage('captain', 'w1', 'pending mailbox'))
+    await f.scheduler.kickMember(f.workspace, 'cap', 'w1', f.captain)
+    assert.equal(f.dispatched.length, 1)
+    const pending = await readTeam(f.stateRoot, 'cap')
+    const mailboxLease = pending.activations.find(item => item.purpose === 'mailbox')
+    assert.ok(mailboxLease)
+    assert.equal(mailboxLease.permitHeld, true)
+    assert.equal(mailboxLease.runningObservedAt, undefined)
+
+    // A late/duplicate idle from the previous turn arrives before this mailbox
+    // delivery has ever been observed running. It must not release the permit.
+    const agent = f.ctx.agents.get('c1')
+    agent.status = 'idle'
+    f.ctx.emit('agent/status', { agent, status: 'idle' })
+    await tick()
+
+    const afterIdle = await readTeam(f.stateRoot, 'cap')
+    const stillPending = afterIdle.activations.find(item => item.activationId === mailboxLease.activationId)
+    assert.equal(stillPending.permitHeld, true)
+    assert.equal(stillPending.state, 'pending')
+    assert.equal(stillPending.settlementApplied, false)
+
+    // With cap 1 held by the pending c1 mailbox delivery, c2's ready task must
+    // not dispatch.
+    await f.scheduler.kickTeam(f.workspace, 'cap', f.captain)
+    assert.equal(f.dispatched.length, 1)
+  } finally { await f.cleanup() }
+})
+
 test('legacy idle before a delivery ever ran keeps its permit', async () => {
   const team = teamWith(2, 2)
   team.members[0].id = 'c1'
@@ -239,6 +276,8 @@ test('legacy idle before a delivery ever ran keeps its permit', async () => {
     assert.equal(f.dispatched.length, 1)
     const agent = f.ctx.agents.get('c1')
     // Duplicate/late idle edge before the dispatched turn is observed running.
+    // Hold the live level at idle so this exercises the exact stale-idle case.
+    agent.status = 'idle'
     f.ctx.emit('agent/status', { agent, status: 'idle' })
     await tick()
     const current = await readTeam(f.stateRoot, 'cap')
@@ -265,6 +304,8 @@ test('legacy mailbox permit is held while its turn runs (cap 1 keeps one worker)
     await tick()
     const running = await readTeam(f.stateRoot, 'cap')
     assert.equal(running.activations.filter(item => item.permitHeld).length, 1, 'mailbox turn must hold its permit while running')
+    const runningMailbox = running.activations.find(item => item.purpose === 'mailbox')
+    assert.equal(typeof runningMailbox.runningObservedAt, 'number', 'the exact lease must persist its running boundary')
 
     await f.scheduler.kickTeam(f.workspace, 'cap', f.captain)
     assert.equal(f.dispatched.length, 1, 'cap 1 must not start a second member while the mailbox turn runs')
@@ -351,4 +392,83 @@ test('legacy idle does not release a delivery whose live turn is still running',
     const current = await readTeam(f.stateRoot, 'cap')
     assert.equal(current.activations[0].permitHeld, true)
   } finally { await f.cleanup() }
+})
+
+
+test('send_message stale idle keeps the current pending mailbox permit under cap 1', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'agent-teams-w2-97-tools-'))
+  const stateRoot = join(workspace, '.agent-teams')
+  const team = teamWith(2, 0, 1)
+  team.members[0].id = 'c1'
+  team.members[1].id = 'c2'
+  await createTeamDir(stateRoot, team)
+  const listeners = new Map()
+  const definitions = new Map()
+  const noop = () => {}
+  const agent = (id, parentSession) => ({
+    id,
+    status: 'idle',
+    steerCalls: 0,
+    session: {
+      id,
+      header: { cwd: workspace, ...(parentSession === undefined ? {} : { parentSession }) },
+      seq: 0,
+      snapshotEvents: () => [],
+      append: noop,
+    },
+    followup() {},
+    steer() { this.steerCalls += 1 },
+    cancel() {},
+    whenIdle() { return Promise.resolve() },
+  })
+  const captain = agent('captain')
+  const c1 = agent('c1', 'captain')
+  const c2 = agent('c2', 'captain')
+  const agents = [captain, c1, c2]
+  const ctx = {
+    effect(setup) { return setup() },
+    tools: { register(definition) { definitions.set(definition.name, definition) } },
+    on(name, listener) {
+      const list = listeners.get(name) ?? []
+      list.push(listener)
+      listeners.set(name, list)
+      return () => {}
+    },
+    logger: { warn: noop, debug: noop },
+    agents: { get: id => agents.find(item => item.id === id), list: () => agents },
+    subagents: { followup: async () => 'message-1', registerContinuableSetup: () => noop },
+    get: () => undefined,
+  }
+  try {
+    registerAgentTeamsTools(ctx, {
+      stateDir: '.agent-teams', memberProvider: 'spawn', memberMaxDepth: 0, maxMembers: 2,
+      maxConcurrentWorkers: 1, profiles: {}, toolPolicies: {},
+    })
+    const send = (to, content) => definitions.get('agent_teams_send_message').execute(
+      { to, content },
+      { agent: captain, callId: `send-${to}-${content}`, signal: new AbortController().signal },
+    )
+
+    await send('w1', 'first pending mailbox')
+    assert.equal(c1.steerCalls, 1)
+    const pending = await readTeam(stateRoot, 'cap')
+    const mailboxLease = pending.activations.find(item => item.purpose === 'mailbox')
+    assert.ok(mailboxLease)
+    assert.equal(mailboxLease.runningObservedAt, undefined)
+
+    // A second send observes c1 idle before this lease ever ran. Its legacy
+    // idle reclaim must not release the pending activation.
+    await send('w1', 'stale idle observation')
+    assert.equal(c1.steerCalls, 1, 'the pending c1 lease must not be reclaimed by idle')
+    const afterSecond = await readTeam(stateRoot, 'cap')
+    const stillPending = afterSecond.activations.find(item => item.activationId === mailboxLease.activationId)
+    assert.equal(stillPending.permitHeld, true)
+    assert.equal(stillPending.state, 'pending')
+
+    // c2 cannot consume the still-held cap-1 permit.
+    await send('w2', 'must remain queued')
+    assert.equal(c2.steerCalls, 0, 'cap 1 must keep c2 queued behind the pending c1 lease')
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
 })

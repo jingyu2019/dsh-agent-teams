@@ -98,11 +98,13 @@ export declare function releaseActivationPermitsForDrainedMembers(stateRoot: str
  * would mark a running delivery settled and hand its permit to somebody else.
  * The live Agent must also be genuinely not running, because a late or
  * duplicate idle from a previous turn arrives while the newer turn runs.
+ * A legacy lease additionally needs its own positive running observation:
+ * an idle level can only close a turn that was previously observed running.
  * @param observedAt - epoch ms when the idle edge was seen (before any await).
  * @param liveStatus - reads the live Agent status for this member.
  * @returns true when this call released one permit.
  */
-export declare function releaseLegacyPermitForIdle(stateRoot: string, teamId: string, memberId: string, observedAt: number, liveStatus?: () => string | undefined): Promise<boolean>;
+export declare function releaseLegacyPermitForIdle(stateRoot: string, teamId: string, memberId: string, observedAt: number, liveStatus?: () => string | undefined, allowUnobservedTask?: boolean): Promise<boolean>;
 /**
  * Create the team directory structure and the initial team record.
  * @param stateRoot - resolved absolute state root directory.

@@ -1369,9 +1369,23 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       } else {
         parkedAttempts.delete(agent.id)
       }
-      if (current.status === next) return
-      current.status = next
-      await writeTeam(stateRoot, fresh)
+      let changed = false
+      if (status === 'running') {
+        const lease = fresh.activations?.find(candidate => candidate.activationId === current.currentActivationId
+          && candidate.memberId === current.id
+          && candidate.memberGeneration === (current.generation ?? 1)
+          && candidate.permitHeld === true
+          && candidate.createdAt <= observedAt)
+        if (lease !== undefined && lease.runningObservedAt === undefined) {
+          lease.runningObservedAt = observedAt
+          changed = true
+        }
+      }
+      if (current.status !== next) {
+        current.status = next
+        changed = true
+      }
+      if (changed) await writeTeam(stateRoot, fresh)
     })
     if (status === 'idle') {
       // Unmanaged hosts have no subagent/end lifecycle. The idle edge is the

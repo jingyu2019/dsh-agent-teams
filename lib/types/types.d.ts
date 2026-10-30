@@ -248,6 +248,8 @@ export interface ActivationLease {
     /** Inclusive half-open session-log offset captured before host delivery. */
     preDispatchSessionSeq: number;
     startObserved: boolean;
+    /** Epoch ms when an unmanaged host's live Agent was first observed running for this lease. */
+    runningObservedAt?: number;
     endObserved: boolean;
     settlementApplied?: boolean;
     promptCommittedAt?: number;
