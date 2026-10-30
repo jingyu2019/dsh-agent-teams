@@ -60,6 +60,7 @@ export declare const zh: {
     'manual.member': string;
     'manual.preset': string;
     'manual.presetNone': string;
+    'manual.session': string;
     'manual.task': string;
     'manual.submit': string;
     'manual.creating': string;
@@ -333,6 +334,7 @@ export declare const en: {
     'manual.member': string;
     'manual.preset': string;
     'manual.presetNone': string;
+    'manual.session': string;
     'manual.task': string;
     'manual.submit': string;
     'manual.creating': string;

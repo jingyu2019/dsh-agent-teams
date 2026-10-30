@@ -810,7 +810,13 @@ export async function renameMailboxOwner(
     }
   })
   await atomicWriteText(toFile, lines.join('\n'))
-  await rm(fromFile, { force: true })
+  try {
+    await rm(fromFile, { force: true })
+  } catch (error: unknown) {
+    // Do not leave a duplicate destination if the source could not be removed.
+    await rm(toFile, { force: true }).catch(() => undefined)
+    throw error
+  }
 }
 
 /** Remove the optional UTF-8 BOM some editors prepend to JSON text. */
