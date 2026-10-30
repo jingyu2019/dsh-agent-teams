@@ -223,3 +223,21 @@ test('released target enters the download matrix and replaces the old source pre
   assert.ok(validatePolicy(policy).includes('0.2.0-rc.2'))
   assert.ok(!declaredHostVersions().includes('0.2.0'))
 })
+
+test('rc.4 is an exact preview target and every generated peer range starts with it', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  const rc4 = policy.supportedHosts.filter((host) => host.version === '0.2.1-rc.4')
+  assert.equal(policy.recommendedHost, '0.2.1-rc.2')
+  assert.equal(rc4.length, 1, 'rc.4 must be declared exactly once')
+  assert.equal(rc4[0].track, 'preview')
+  assert.ok(validatePolicy(policy).includes('0.2.1-rc.4'))
+  assert.equal(requiredHostPeers.length, 21)
+  for (const name of requiredHostPeers) {
+    const range = pkg.peerDependencies[name]
+    assert.equal(typeof range, 'string', `${name} must declare a peer range`)
+    const versions = range.split(' || ')
+    assert.equal(versions.filter((version) => version === '0.2.1-rc.4').length, 1, `${name} must include rc.4 exactly once`)
+    assert.equal(versions[0], '0.2.1-rc.4', `${name} must put the newest preview first`)
+    assert.ok(versions.includes('0.2.1-rc.3'), `${name} must retain rc.3`)
+  }
+})
