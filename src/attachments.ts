@@ -40,7 +40,7 @@ function within(root: string, candidate: string): boolean {
 }
 
 function hasProtectedSegment(path: string): boolean {
-  return path.split(/[\\/]+/u).some(segment => PROTECTED_SEGMENTS.has(segment))
+  return path.split(/[\\/]+/u).some(segment => PROTECTED_SEGMENTS.has(segment.toLowerCase()))
 }
 
 async function assertNoSymlinkComponents(root: string, relative: string): Promise<void> {
