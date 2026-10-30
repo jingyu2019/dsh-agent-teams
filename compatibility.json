@@ -4,6 +4,18 @@
   "previewTag": "next",
   "supportedHosts": [
     {
+      "version": "0.2.1-rc.5",
+      "track": "preview"
+    },
+    {
+      "version": "0.2.1-rc.4",
+      "track": "legacy",
+      "platforms": [
+        "ubuntu-latest"
+      ],
+      "legacyDirectInstallReason": "Historical direct-fixture coverage only; native plugin-manager installation has not been qualified for this target."
+    },
+    {
       "version": "0.2.1-rc.3",
       "track": "preview"
     },
