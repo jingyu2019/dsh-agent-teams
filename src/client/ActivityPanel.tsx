@@ -508,9 +508,13 @@ function ManualTeamDialog({ open, onClose, onCreated, sessionId, t }: {
     setBusy(true)
     setError('')
     try {
+      const capability = await fetch(`/plugins/dsh-agent-teams/plan/create-capability?sessionId=${encodeURIComponent(sessionId)}`, { method: 'GET', cache: 'no-store' })
+      if (!capability.ok) throw new Error('could not mint a manual-plan capability')
+      const capabilityBody = await capability.json() as { nonce?: unknown }
+      if (typeof capabilityBody.nonce !== 'string' || capabilityBody.nonce === '') throw new Error('manual-plan capability is missing')
       const response = await fetch('/plugins/dsh-agent-teams/plan/create', {
         method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId, name, members: [{ name: member }], tasks: [{ subject: task }] }),
+        body: JSON.stringify({ nonce: capabilityBody.nonce, name, members: [{ name: member }], tasks: [{ subject: task }] }),
       })
       if (!response.ok) {
         let message = 'request failed'

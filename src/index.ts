@@ -37,6 +37,7 @@ import { installAgentTeamsGestureBoundary, registerAgentTeamsCommand } from './c
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { randomUUID } from 'node:crypto'
 import { collectArchivedTeamsActivity, collectTeamsActivity } from './snapshot.ts'
 import { findTeamByCaptain, readTeam, sanitizeKey, withTeamLock, writeTeam } from './state.ts'
 import { parseRasterAvatar, readManagedAvatar, storeManagedAvatar } from './avatars.ts'
@@ -272,6 +273,7 @@ export function resolveToolsConfig(config: Config): ToolsConfig {
 
 export function apply(ctx: Context, config: Config): void {
   const resolved = resolveToolsConfig(config)
+  const planCreateNonces = new Map<string, { sessionId: string; expiresAt: number; used: boolean }>()
 
   // Provider registration is a sibling plugin's effect (`subagent-spawn` /
   // `subagent-fork` rows), which can land after this mount under the Loader's
@@ -543,6 +545,41 @@ export function apply(ctx: Context, config: Config): void {
 
     ctx.effect(() => webServer.register({
       kind: 'exact',
+      path: '/plugins/dsh-agent-teams/plan/create-capability',
+      handler: async (req, res) => {
+        if (req.method !== 'GET') {
+          res.writeHead(405, { allow: 'GET', 'cache-control': 'no-store' })
+          res.end()
+          return
+        }
+        const url = new URL(req.url ?? '/', 'http://x')
+        let sessionId = url.searchParams.get('sessionId')?.trim() ?? ''
+        if (sessionId === '') {
+          const roots = ctx.agents.list().filter(agent => agent.session.header.parentSession === undefined)
+          if (roots.length === 1) sessionId = roots[0]!.id
+        }
+        if (sessionId === '') {
+          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'an eligible live session is required' }))
+          return
+        }
+        const captain = ctx.agents.get(sessionId as import('@deepseek-ai/dsh-session').SessionId)
+        if (captain === undefined || captain.session.header.parentSession !== undefined) {
+          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'eligible captain session is not attached' }))
+          return
+        }
+        const nonce = randomUUID()
+        const expiresAt = Date.now() + 60_000
+        for (const [key, value] of planCreateNonces) if (value.expiresAt <= Date.now() || value.used) planCreateNonces.delete(key)
+        planCreateNonces.set(nonce, { sessionId: captain.id, expiresAt, used: false })
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ nonce, expiresAt }))
+      },
+    }), 'agent-teams: manual plan capability route')
+
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
       path: '/plugins/dsh-agent-teams/plan/create',
       handler: async (req, res) => {
         if (req.method !== 'POST') {
@@ -558,16 +595,23 @@ export function apply(ctx: Context, config: Config): void {
           res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'invalid request body' }))
           return
         }
-        const sessionId = typeof payload['sessionId'] === 'string' ? payload['sessionId'].trim() : ''
+        const nonce = typeof payload['nonce'] === 'string' ? payload['nonce'].trim() : ''
         const name = typeof payload['name'] === 'string' ? payload['name'].trim() : ''
-        if (sessionId === '' || name === '') {
+        if (nonce === '' || name === '') {
           res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-          res.end(JSON.stringify({ error: 'sessionId and name are required' }))
+          res.end(JSON.stringify({ error: 'nonce and name are required' }))
           return
         }
+        const capability = planCreateNonces.get(nonce)
+        if (capability === undefined || capability.used || capability.expiresAt <= Date.now()) {
+          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'manual plan capability is invalid or expired' }))
+          return
+        }
+        capability.used = true
         const members = Array.isArray(payload['members']) ? payload['members'].filter((member): member is Record<string, unknown> => typeof member === 'object' && member !== null && !Array.isArray(member)) : []
         const tasks = Array.isArray(payload['tasks']) ? payload['tasks'].filter((task): task is Record<string, unknown> => typeof task === 'object' && task !== null && !Array.isArray(task)) : []
-        const captain = ctx.agents.get(sessionId as import('@deepseek-ai/dsh-session').SessionId)
+        const captain = ctx.agents.get(capability.sessionId as import('@deepseek-ai/dsh-session').SessionId)
         if (captain === undefined) {
           res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
           res.end(JSON.stringify({ error: 'captain session is not attached' }))

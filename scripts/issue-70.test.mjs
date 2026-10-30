@@ -82,8 +82,9 @@ test('#70 attachment scope rejects traversal, secrets, symlinks, hardlinks and m
   const base = { workspace, stateRoot, teamId: 't', allowedScopes: ['out/'] }
   assert.equal((await copyAttachment({ ...base, sourcePath: 'out/ok.txt' })).name, 'ok.txt')
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: '../.env' }), /invalid segment/)
-  await assert.rejects(() => copyAttachment({ ...base, sourcePath: '.env' }), /outside the current task scope/)
-  await assert.rejects(() => copyAttachment({ ...base, sourcePath: '.agent-teams/other/team.json' }), /outside the current task scope/)
+  await assert.rejects(() => copyAttachment({ ...base, sourcePath: '.env' }), /outside the current task scope|excluded from delivery/)
+  await assert.rejects(() => copyAttachment({ ...base, allowedScopes: ['.'], sourcePath: '.env' }), /excluded from delivery/)
+  await assert.rejects(() => copyAttachment({ ...base, sourcePath: '.agent-teams/other/team.json' }), /outside the current task scope|excluded from delivery/)
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/link.txt' }), /symlink/)
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/hard.txt' }), /hard links/)
   await assert.rejects(() => copyAttachment({ ...base, sourcePath: 'out/bad.png' }), /PNG signature/)

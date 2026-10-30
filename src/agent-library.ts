@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { AgentPresetV1 } from './types.ts'
 
-export const AGENT_LIBRARY_FILE = 'agent-library.json'
+export const AGENT_LIBRARY_FILE = 'agent-library/presets.json'
 export const AGENT_LIBRARY_MAX_PRESETS = 100
 
 interface AgentLibraryV1 {
