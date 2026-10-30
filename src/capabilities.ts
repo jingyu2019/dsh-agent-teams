@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { readTeamSync, readRetiredMemberIdsSync } from './state.ts'
 import { leadIdentityOf, teamLeadMatch } from './lineage.ts'
 import type { TeamState } from './types.ts'
-import { MEMBER_TOOL_NAMES, TEAM_TOOL_NAMES } from './tool-names.ts'
+import { CORE_CAPTAIN_TOOL_NAMES, CORE_MEMBER_TOOL_NAMES, MEMBER_TOOL_NAMES, TEAM_TOOL_NAMES } from './tool-names.ts'
 
 export const TEAM_ACTIVATION_PROMPT = 'AgentTeams (Agent Teams) provides multi-agent team collaboration. Apply these rules when the user requests it (including /agent-teams) or when continuing an existing team. Mentioning, quoting, discussing, or declining AgentTeams alone is not a request to start work.'
 export const TEAM_MEMBER_PROMPT = 'You are an AgentTeams member. Follow your assigned member persona and task contract. Use agent_teams_claim_task, agent_teams_update_task, agent_teams_send_message and agent_teams_status for your own work. Include the current attempt_id in updates; report completion or failure to the captain. Do not create, approve, edit or resume a team. If your durable membership is unavailable, report that to the parent instead of creating a replacement.'
@@ -22,6 +22,8 @@ interface CapabilityConfig {
   isPendingMember: (agent: Agent) => boolean
   captainPrompt: () => string
   order?: number
+  /** `core` hides advanced captain tools while keeping a stable prefix. */
+  toolSurface?: 'full' | 'core'
 }
 
 function stateRoot(agent: Agent, config: CapabilityConfig): string {
@@ -90,9 +92,11 @@ export function installTeamCapabilities(ctx: Context, config: CapabilityConfig):
     states.set(agent, state)
     active.add(state)
     try {
-      if (member) revoke = agent.ctx.tools.restrict({
-        deny: TEAM_TOOL_NAMES.filter(name => !MEMBER_TOOL_NAMES.includes(name)),
-      })
+      const allowed = config.toolSurface === 'core'
+        ? member ? CORE_MEMBER_TOOL_NAMES : CORE_CAPTAIN_TOOL_NAMES
+        : member ? MEMBER_TOOL_NAMES : TEAM_TOOL_NAMES
+      const deny = TEAM_TOOL_NAMES.filter(name => !allowed.includes(name))
+      if (deny.length > 0) revoke = agent.ctx.tools.restrict({ deny })
       releaseLifetime = agent.ctx.effect(() => state.dispose, 'agent-teams: capability lifetime')
       return state
     } catch (error) { state.dispose(); throw error }

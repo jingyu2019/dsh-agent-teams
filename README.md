@@ -217,6 +217,7 @@ Optional W5/W7 capabilities are local-only and disabled by default:
         allowRead: true
     agentLibrary:
       enabled: true
+    toolSurface: full
     worktrees:
       enabled: true
       root: /absolute/path/outside/the/repository
@@ -224,6 +225,8 @@ Optional W5/W7 capabilities are local-only and disabled by default:
 ```
 
 Attachments accept only regular files in the sender's task scope or an owner-configured artifact root; protected state, dependency, secret and repository-metadata paths are rejected. Avatars are raster-only, local, content-addressed and authenticated. Reusable agent presets are immutable revisions copied into new members. Member-lane worktrees bind one resident child to one path/branch; integration and cleanup require the explicit confirmation-gated `agent_teams_worktree` action and never force or prune.
+
+`toolSurface: core` keeps a stable but smaller captain tool set for token-sensitive sessions: basic create/approve/roster/task/report/collect/delete operations remain, while advanced editing, preset, worktree and amendment tools are hidden. The default is `full`.
 
 ## Boundaries
 
