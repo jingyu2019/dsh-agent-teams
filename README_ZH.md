@@ -217,6 +217,8 @@ dsh plugin --profile web add github:NanmiCoder/dsh-agent-teams
 
 `toolSurface: core` 为对 token 敏感的会话保留稳定但更小的队长工具集：创建、审批、成员/任务、汇报、汇总和结束仍可用，高级编辑、预设、工作树和合同修订工具会被隐藏。默认值为 `full`。
 
+`agent_teams_reset_member_context` 可在用户明确确认后退役空闲成员的子会话；成员行、路由、技能和工作树保持不变，下一项任务使用全新的子上下文。
+
 ## 使用边界
 
 - 一个队长同一时间只能带一个活动团队。

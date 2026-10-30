@@ -7,6 +7,7 @@ export const TEAM_TOOL_NAMES = [
   'agent_teams_send_message', 'agent_teams_status', 'agent_teams_collect', 'agent_teams_resume', 'agent_teams_delete',
   'agent_teams_list_agent_presets', 'agent_teams_save_agent_preset', 'agent_teams_delete_agent_preset',
   'agent_teams_worktree',
+  'agent_teams_reset_member_context',
 ] as const
 
 export const MEMBER_TOOL_NAMES: readonly string[] = [

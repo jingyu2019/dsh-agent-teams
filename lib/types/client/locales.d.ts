@@ -34,6 +34,7 @@ export declare const zh: {
     'timeline.action.member.added': string;
     'timeline.action.member.removed': string;
     'timeline.action.member.renamed': string;
+    'timeline.action.member.context_reset': string;
     'timeline.action.task.created': string;
     'timeline.action.task.claimed': string;
     'timeline.action.task.started': string;
@@ -311,6 +312,7 @@ export declare const en: {
     'timeline.action.member.added': string;
     'timeline.action.member.removed': string;
     'timeline.action.member.renamed': string;
+    'timeline.action.member.context_reset': string;
     'timeline.action.task.created': string;
     'timeline.action.task.claimed': string;
     'timeline.action.task.started': string;

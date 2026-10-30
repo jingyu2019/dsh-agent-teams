@@ -1396,6 +1396,51 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   }))
 
   ctx.tools.register(defineTool({
+    name: 'agent_teams_reset_member_context',
+    description: 'Reset one idle member to a fresh child context without removing its roster row, route, skills or worktree lane. Requires explicit user confirmation; refuses members with an active turn or open attempt.',
+    parameters: {
+      member_name: { type: 'string', required: true, description: 'Existing idle member whose context should be replaced on its next task.' },
+      confirmed_by_user: { type: 'boolean', required: true, description: 'Set true only after the user explicitly approves discarding this member context.' },
+    },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {
+      member_name: { type: 'string', required: true }, reset: { type: 'boolean', required: true }, previous_member_id: { type: 'string' },
+    } }, render: (_args, value) => [{ type: 'text', text: value.reset ? `Member ${value.member_name} will start its next task in a fresh context.` : `Member ${value.member_name} already has no child context.` }] },
+    async execute(args, exec) {
+      if (args.confirmed_by_user !== true) throw new Error('resetting a member context requires explicit user confirmation')
+      const captain = requireCaptain(exec)
+      const workspace = workspaceOf(captain)
+      const stateRoot = stateRootOf(workspace, config)
+      const team = await requireCaptainTeam(ctx, workspace, config, captain)
+      return withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+        const fresh = await requireFreshCaptainTeam(ctx, stateRoot, team.id, captain.id)
+        const member = requireMember(fresh, args.member_name.trim())
+        if (member.status === 'working' || member.stopping === true) throw new Error(`member "${member.name}" is running; wait until it is idle`)
+        if (fresh.tasks.some(task => task.assignee === member.name && task.attemptId !== undefined && !TERMINAL_TASK_STATUSES.includes(task.status))) {
+          throw new Error(`member "${member.name}" still owns an open attempt`)
+        }
+        if (fresh.activations?.some(lease => lease.memberId === member.id && (lease.state === 'pending' || lease.state === 'started' || lease.state === 'recovering'))) {
+          throw new Error(`member "${member.name}" still has an active activation`)
+        }
+        const previous = member.id
+        if (previous === '') return { member_name: member.name, reset: false }
+        await recordRetiredMemberIds(stateRoot, [previous])
+        member.id = ''
+        member.status = 'idle'
+        member.generation = (member.generation ?? 1) + 1
+        delete member.runtimeSetup
+        delete member.currentActivationId
+        delete member.activeProvider
+        delete member.activeModel
+        delete member.fallbackActive
+        delete member.spawnError
+        appendTimeline(fresh, { action: 'member.context_reset', actor: CAPTAIN_KEY, from: member.name })
+        await writeTeam(stateRoot, fresh)
+        return { member_name: member.name, reset: true, previous_member_id: previous }
+      })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'agent_teams_invoke_profile',
     description: 'Invoke one or more explicitly named members from a configured profile without creating a Team, DAG, task records, or durable .agent-teams state. Member provider/model/reasoning/persona/tool-policy/skill configuration is reused exactly. Results are keyed by member and returned in request order.',
     parameters: {
