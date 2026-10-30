@@ -2,6 +2,17 @@
 
 Date: 2026-10-30 (Asia/Shanghai)
 
+## 2026-10-31 delta
+
+Two new installation reports arrived after the original audit:
+
+| # | Decision | Evidence | Slice |
+|---:|---|---|---|
+| 327 | accepted, fixed in this fork | DSH `0.2.1-rc.5` rejects `@latest`; exact host install reproduced and passed from the packed artifact | W0-COMPAT |
+| 328 | accepted, duplicate root cause of #327 | Same rc.5 compatibility rejection on Windows | W0-COMPAT |
+
+`compatibility.json` now includes exact rc.4 and rc.5 targets. The real `plugin-manager-install` and `progressive-entry` checks pass on rc.5; evidence is in [`docs/harness-0.2.1-rc.5/`](./harness-0.2.1-rc.5/README.md).
+
 ## Baseline
 
 - Fork: `jingyu2019/dsh-agent-teams`

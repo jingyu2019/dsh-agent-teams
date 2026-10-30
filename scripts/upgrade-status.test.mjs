@@ -14,16 +14,16 @@ test('a known supported and published combination has no declaration gap', () =>
 })
 
 test('a published exact allowlist that rejects the host channels is reported as blocking users', () => {
-  // The 0.1.27 shape: npm latest moved to 0.2.1-rc.5 and the plugin could not be installed.
+  // The 0.1.27 shape: npm latest moved to a host outside the exact allowlist and the plugin could not be installed.
   const input = fixture()
-  input.hostTags = { latest: '0.2.1-rc.5', next: '0.2.1-rc.5' }
+  input.hostTags = { latest: '0.2.1-rc.6', next: '0.2.1-rc.6' }
   delete input.pluginManifest.engines.dsh
   for (const name of Object.keys(input.pluginManifest.peerDependencies)) {
     if (name.startsWith('@deepseek-ai/dsh-')) input.pluginManifest.peerDependencies[name] = policy.supportedHosts.map(host => host.version).join(' || ')
   }
   const result = inspectUpgradeStatus(input)
   assert.equal(result.needsAttention, true)
-  assert.deepEqual(result.blockedChannels, [{ channel: 'latest', version: '0.2.1-rc.5' }, { channel: 'next', version: '0.2.1-rc.5' }])
+  assert.deepEqual(result.blockedChannels, [{ channel: 'latest', version: '0.2.1-rc.6' }, { channel: 'next', version: '0.2.1-rc.6' }])
   assert.deepEqual(result.unpublishedSupport, [])
   assert.deepEqual(result.unrecognizedDeclarations, [])
 })

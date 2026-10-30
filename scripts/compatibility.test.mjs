@@ -24,7 +24,7 @@ const withoutEngines = pkg => ({ ...pkg, engines: { node: pkg.engines.node } })
 
 test('hosts released after the plugin pass the official install check; older hosts do not', () => {
   const pkg = readPackage()
-  for (const version of [...validatePolicy(policy), '0.2.1-rc.4', '0.2.1-rc.5', '0.2.2-alpha.2', '0.3.0', '1.0.0-rc.1']) {
+  for (const version of [...validatePolicy(policy), '0.2.1-rc.6', '0.2.2-alpha.2', '0.3.0', '1.0.0-rc.1']) {
     assert.equal(evaluatePluginCompatibility(pkg, {}, version), undefined, `${version} must be installable`)
     assert.equal(evaluatePluginCompatibility(withoutEngines(pkg), {}, version), undefined, `${version} must pass a peer-reading installer`)
   }
@@ -51,7 +51,7 @@ test('DSH peers stay * because npm checks ranges without prereleases', () => {
 test('the 0.1.27 exact allowlist is rejected because it blocked every later host', () => {
   const allowlist = withoutEngines(readPackage())
   for (const name of dshPeers(allowlist)) allowlist.peerDependencies[name] = validatePolicy(policy).join(' || ')
-  assert.ok(evaluatePluginCompatibility(allowlist, {}, '0.2.1-rc.5'), 'the old declaration reproduces the reported failure')
+  assert.ok(evaluatePluginCompatibility(allowlist, {}, '0.2.1-rc.6'), 'the old declaration reproduces the reported failure')
   assert.throws(() => validatePackageCompatibility(allowlist), /engines\.dsh must be >=0\.1\.2-alpha\.2/)
   for (const dsh of ['*', '>=0.1.0', '>=0.1.2-alpha.2 <0.3.0', policy.recommendedHost, validatePolicy(policy).join(' || '), null]) {
     const pkg = readPackage()
@@ -171,7 +171,7 @@ test('doctor runs through an installed bin symlink and reports success or failur
   assert.equal(supported.status, 0, supported.stderr)
   assert.match(supported.stdout, /"checkedPackages"/, 'bin must execute instead of silently importing the script')
   assert.equal(JSON.parse(supported.stdout).ok, true)
-  writeFileSync(join(host, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.1-rc.5' }))
+  writeFileSync(join(host, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.1-rc.6' }))
   const untested = run()
   assert.equal(untested.status, 0, untested.stderr)
   assert.equal(JSON.parse(untested.stdout).validation.kind, 'untested')
