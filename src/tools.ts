@@ -3212,8 +3212,22 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           releaseMailboxDelivery(stateRoot, prepared.fresh.id, prepared.recipient.name, [prepared.message.id])
         ))
         await scheduler.kickMember(workspace, prepared.fresh.id, prepared.recipient.name, captain)
-        const current = await readMailbox(stateRoot, prepared.fresh.id, prepared.recipient.name)
-        const accepted = current.find(message => message.id === prepared.message.id)
+        let current = await readMailbox(stateRoot, prepared.fresh.id, prepared.recipient.name)
+        let accepted = current.find(message => message.id === prepared.message.id)
+        // A running member is not eligible for a new task dispatch, but it can
+        // still receive step-boundary guidance. The scheduler intentionally
+        // skips running members, so steer the exact durable message here.
+        const runningRecipient = ctx.agents.get(prepared.recipient.id as SessionId)
+        if (accepted !== undefined && accepted.deliveredAt === undefined && runningRecipient?.status === 'running') {
+          const steered = await deliverToMember(ctx, captain, prepared.recipient.id, mailboxPrompt(prepared.fresh.id, prepared.recipient.name, [accepted]), exec.signal, 'steer')
+          if (steered) {
+            await withTeamLock(teamLockKey(stateRoot, prepared.fresh.id), () => (
+              markMailboxDelivered(stateRoot, prepared.fresh.id, prepared.recipient.name, [prepared.message.id])
+            ))
+            current = await readMailbox(stateRoot, prepared.fresh.id, prepared.recipient.name)
+            accepted = current.find(message => message.id === prepared.message.id)
+          }
+        }
         delivered = accepted?.deliveredAt !== undefined ? 'wake' : 'mailbox'
       }
       return {
