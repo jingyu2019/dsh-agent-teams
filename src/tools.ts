@@ -311,6 +311,21 @@ function trimmedOptional(value: string | null | undefined): string | undefined {
   return trimmed === undefined || trimmed === '' ? undefined : trimmed
 }
 
+/** Public schema guidance shared by every tool-policy selection surface. */
+export const TOOL_POLICY_DESCRIPTION = 'Optional owner-declared tool-policy id. Omit when no policy is needed. Never invent an id; an unknown non-empty id is rejected atomically.'
+
+/**
+ * Normalize a tool-policy selection from runtime input. Tool gateways may
+ * materialize omitted optional strings as empty or whitespace-only values;
+ * those mean "no policy". A non-string runtime value is also treated as
+ * omitted because the public schema only accepts strings.
+ */
+export function optionalToolPolicyId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
 /** Whether one materialized plan member carries no roster content at all. */
 function isEmptyPlanMember(member: unknown): boolean {
   if (member === undefined || member === null) return true
@@ -750,7 +765,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           // only touched when the mutation names one, so a plan revision cannot
           // silently widen a member's tool set.
           if (mutation.toolPolicy !== undefined) {
-            const selected = memberToolSelection(config, captain, trimmedOptional(mutation.toolPolicy))
+            const selected = memberToolSelection(config, captain, optionalToolPolicyId(mutation.toolPolicy))
             member.toolPolicy = selected.toolPolicy
             member.toolFilter = selected.toolFilter
           }
@@ -952,7 +967,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           members: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
             name: { type: 'string', required: true }, role: { type: 'string' },
             provider: { type: 'string' }, model: { type: 'string' }, reasoning_effort: { type: 'string' },
-            tool_policy: { type: 'string', description: 'Optional owner-declared tool-policy id for this member.' },
+            tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
           } } },
           tasks: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
             id: { type: 'string', required: true, description: 'Local reference used by dependencies in this plan; the result maps it to a durable task id.' },
@@ -1178,7 +1193,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             model: { type: 'string', description: 'Optional member model; defaults to the current staged route.' },
             reasoning_effort: { type: 'string', description: 'Optional member reasoning effort.' },
             execution_prompt: { type: 'string', description: 'Optional member-specific execution prompt.' },
-            tool_policy: { type: 'string', description: 'Optional owner-declared tool-policy id for this member; an empty string clears it back to the unchanged default tool set.' },
+            tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
           },
         },
       },
@@ -1316,7 +1331,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       model: { type: 'string', description: 'Optional model override (used verbatim, including any "/" in the id). Omit for the configured memberModel default (paired with memberLlmProvider when set) or the captain\'s current model.' },
       reasoning_effort: { type: 'string', description: 'Optional reasoning effort override: one of the target model\'s supported effort ids, or "default" to force its default. When omitted, the captain\'s effort is inherited only for the same provider/model; a changed route uses the target default.' },
       executionPrompt: { type: 'string', description: 'Optional member-specific execution prompt. It remains editable while staged.' },
-      tool_policy: { type: 'string', description: 'Optional id of a tool policy declared by the deployment owner (config toolPolicies). It restricts which global tools this member sees and may invoke: a policy allow-list also keeps the four coordination tools, and captain-only tools can never be reopened. Omit for the unchanged default tool set.' },
+      tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
     },
     output: {
       schema: {
@@ -1368,7 +1383,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           reasoningEffort: trimmedOptional(args.reasoning_effort),
           fallback: config.fallback,
         }, exec.signal)
-        const toolSelection = memberToolSelection(config, captain, trimmedOptional(args.tool_policy))
+        const toolSelection = memberToolSelection(config, captain, optionalToolPolicyId(args.tool_policy))
         const member: TeamMember = {
           id: '',
           name: memberName,
@@ -2599,7 +2614,7 @@ async function initializeProfileTeam(input: {
       provider: trimmedOptional(member.provider),
       model: trimmedOptional(member.model),
       reasoning_effort: trimmedOptional(member.reasoning_effort),
-      tool_policy: trimmedOptional(member.tool_policy),
+      tool_policy: optionalToolPolicyId(member.tool_policy),
     })),
   }
   const profile = resolveTeamProfile(inlinePlan === undefined ? input.config.profiles : { [input.profileName]: inlinePlan }, input.profileName, input.config.maxMembers)
