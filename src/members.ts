@@ -960,14 +960,22 @@ export function installMemberSelectionRuntime(
       const binding = boundAgentRun(payload.agent)
       if (recordBoundAgentDiagnostic(payload.agent, `${payload.failure.code}: ${payload.failure.message}`)) {
         if (binding !== undefined) {
-          await recordPersistedRouteFailure({
+          const routeFailure = await recordPersistedRouteFailure({
             stateRoot, teamId, memberName,
             activationId: binding.activationId,
             hostRunId: binding.hostRunId,
             code: payload.failure.code,
           }).catch(error => {
             ctx.logger.warn(`agent-teams: failed to persist route failure for ${child.id}: ${String(error)}`)
+            return undefined
           })
+          if (routeFailure?.route !== undefined) {
+            // Keep the resident child's next request on the durable route.
+            // Cold resumes already derive this from member.activeProvider;
+            // this is the live-child counterpart for the *next* activation.
+            selectionRef.current = { provider: routeFailure.route.provider, model: routeFailure.route.model }
+            selectionRef.assembled = selectionRef.current
+          }
         }
         // A route-owned AgentTeams activation records the failure and returns
         // undefined, deliberately suppressing the host retry policy. The exact
