@@ -18,7 +18,7 @@ import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SubagentRunEndInfo, SubagentRunInfo } from '@deepseek-ai/dsh-subagent'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { deliverToMember, steerCaptainReport } from './members.ts'
+import { createRouteCursor, deliverToMember, memberRouteChain, routeCursorReady, steerCaptainReport } from './members.ts'
 import { bindAgentRun, boundAgentRun, unbindAgentRun, usesManagedActivations, type MemberStartResult } from './harness-compat.ts'
 import { isCurrentMail, mailboxPrompt } from './mailbox.ts'
 import {
@@ -133,6 +133,8 @@ export interface DispatchTicket {
   readonly previousAssignee?: string
   /** True when this ticket rotates an unobserved durable open attempt. */
   readonly recoveredOwned: boolean
+  /** True when this ticket resumes a persisted route cursor without rotating the attempt. */
+  readonly routeRetry: boolean
   /** Original task generation, used to restore a failed automatic recovery. */
   readonly previousStatus?: 'claimed' | 'in_progress'
   readonly previousAttempt?: number
@@ -144,6 +146,7 @@ export interface DispatchTicket {
   readonly profileProtocol?: string
   readonly profileSeedId?: string
   readonly dependencyOutputs: readonly DependencyOutput[]
+  readonly routeIndex?: number
   readonly executionPrompt?: string
   readonly kind?: string
   readonly round?: number
@@ -327,7 +330,6 @@ Dispatch token: ${ticket.dispatchToken}
 
 Call agent_teams_claim_task for ${ticket.taskId}; it will return this same attempt_id. Include attempt_id=${ticket.attemptId} in every agent_teams_update_task call. If it is rejected as stale, stop work because the task was reassigned. claimed cannot jump to completed. Mark in_progress first, then completed or failed. Include attempt_id on every update. Then send_message to captain with source_task_id and source_attempt_id and become idle.
 When finishing: use status=completed only when the task's success criteria are satisfied; use status=failed when blocking findings or validation failures mean downstream work must not proceed; include a concise output in either case. Quality kinds must submit structured fields: review/requirements need verdict=pass to complete (needs_revision/reject must fail with findings); implementation/repair/verification/integration need acceptanceResults and commandsRun, while implementation/repair also need in-scope changedPaths. Use status values "passed" or "failed" inside those arrays. After the work and verification finish, call agent_teams_update_task immediately; do not wait for captain confirmation and do not continue exploring. Do not approve your own implementation. Mail is not a formal next review. Completed work must not be repeated to attach late evidence: call update_task on the original task with its attempt_id and acceptanceResults/commandsRun/evidence_note; supplements are append-only and cannot change its verdict. Treat the dependency results above as source material. Do not ignore them. Work only this task and only its in-scope paths in this turn.
-
 State policy: ${stateDir}/${teamId}/ is read-only diagnostics; mutate team state only through agent_teams_* tools.`
 }
 
@@ -344,6 +346,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
   const memberQueueKey = (stateRoot: string, teamId: string, memberName: string): string => (
     `${stateRoot}\u0000${teamId}\u0000${memberName}`
   )
+  const routeRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   const pendingByChild = new Map<string, { teamId: string; activationId: string }>()
   const runToActivation = new Map<string, { teamId: string; activationId: string }>()
@@ -565,16 +568,28 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           && candidate.attemptActivationId === lease.activationId)
       if (task !== undefined && (task.status === 'claimed' || task.status === 'in_progress')) {
         const now = Date.now()
+        const route = task.attemptRoute
         if (stopReason !== 'completed') {
-          task.status = 'failed'
-          const base = stopReason === 'unknown'
-            ? 'settlement_unknown: missing or unknown stopReason (fail closed)'
-            : `activation ended with stopReason=${stopReason}`
-          task.output = lease.diagnostic === undefined ? base : `${base}: ${lease.diagnostic}`
-          task.updatedAt = now
-          noticeFor(team, lease, stopReason === 'unknown' ? 'settlement_unknown' : 'failed',
-            `Member ${lease.memberId} activation ${lease.activationId} failed task ${task.id}: ${task.output}`)
+          if (route?.lastFailure !== undefined && route.state !== 'exhausted') {
+            // The request-error listener already persisted a same-route wait or
+            // a route advance. That path deliberately leaves the task open and
+            // does not create a parking marker; releasing this permit is enough
+            // to wake the next route activation after nextActionAt.
+          } else {
+            task.status = 'failed'
+            const routeHint = route?.lastFailure === undefined
+              ? stopReason === 'max-tokens' ? ' (increase_budget_or_transfer)' : ''
+              : ` (route ${route.currentRouteIndex + 1} ${route.lastFailure.code}; ${route.lastFailure.class === 'budget' ? 'increase_budget_or_transfer' : 'no retry remains'})`
+            const base = stopReason === 'unknown'
+              ? 'settlement_unknown: missing or unknown stopReason (fail closed)'
+              : `activation ended with stopReason=${stopReason}${routeHint}`
+            task.output = lease.diagnostic === undefined ? base : `${base}: ${lease.diagnostic}`
+            task.updatedAt = now
+            noticeFor(team, lease, stopReason === 'unknown' ? 'settlement_unknown' : 'failed',
+              `Member ${lease.memberId} activation ${lease.activationId} failed task ${task.id}: ${task.output}`)
+          }
         } else {
+          task.attemptRoute = undefined
           const noticeKey = `${lease.activationId}:parked`
           const parking: TaskParking = {
             memberId: lease.memberId,
@@ -1049,10 +1064,29 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           // so registry absence is not evidence that the owner was lost. Keep
           // the marker sticky across later kicks; only a durable attempt that
           // this process has not observed is eligible for one cold recovery.
+          const route = owned?.attemptRoute
+          if (route?.state === 'waiting' && !routeCursorReady(route)) {
+            const retryKey = `${stateRoot}\u0000${team!.id}\u0000${currentMember.name}\u0000${owned?.attemptId ?? ''}`
+            if (!routeRetryTimers.has(retryKey)) {
+              const delay = Math.max(1, (route.nextActionAt ?? Date.now()) - Date.now())
+              const timer = setTimeout(() => {
+                routeRetryTimers.delete(retryKey)
+                void runtime.kickMember(workspace, team!.id, currentMember.name)
+              }, delay)
+              timer.unref?.()
+              routeRetryTimers.set(retryKey, timer)
+            }
+            return undefined
+          }
+          const routeRetry = owned !== undefined
+            && route !== undefined
+            && route.lastFailure !== undefined
+            && route.state !== 'exhausted'
+            && owned.attemptId !== undefined
           const parkedAttemptId = parkedAttempts.get(currentMember.id)
-          const recoverOwned = owned !== undefined
+          const recoverOwned = owned !== undefined && !routeRetry
             && (owned.attemptId === undefined || owned.attemptId !== parkedAttemptId)
-          const task = exactActive ? undefined : recoverOwned ? owned : owned === undefined
+          const task = exactActive ? undefined : routeRetry ? owned : recoverOwned ? owned : owned === undefined
             ? nextReadyTask(fresh.tasks, currentMember.name)
             : undefined
           if (task === undefined) {
@@ -1070,7 +1104,10 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             output: task.output, verdict: task.verdict, findings: task.findings,
             changedPaths: task.changedPaths, acceptanceResults: task.acceptanceResults, commandsRun: task.commandsRun,
           } : undefined
-          const attemptId = beginTaskAttempt(task, currentMember.name)
+          const attemptId = routeRetry && owned?.attemptId !== undefined
+            ? owned.attemptId
+            : beginTaskAttempt(task, currentMember.name)
+          if (!routeRetry) task.attemptRoute = createRouteCursor(Math.max(1, memberRouteChain(currentMember).length))
           const activation = await allocateActivation(stateRoot, workspace, fresh, currentMember, 'task', { task, attemptId })
           // A verdict must be able to say which revision was on disk when it
           // started, so a review that runs while someone else edits the tree
@@ -1101,6 +1138,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             preDispatchSessionSeq: activation.lease.preDispatchSessionSeq,
             previousAssignee,
             recoveredOwned: recoverOwned,
+            routeRetry,
             ...previousResult === undefined ? {} : { previousResult },
             ...previousStatus === undefined ? {} : { previousStatus },
             ...previousAttempt === undefined ? {} : { previousAttempt },
@@ -1122,6 +1160,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             ...task.verify === undefined ? {} : { verify: task.verify },
             ...task.reviewedTaskId === undefined ? {} : { reviewedTaskId: task.reviewedTaskId },
             ...task.findingSourceTaskIds === undefined ? {} : { findingSourceTaskIds: task.findingSourceTaskIds },
+            ...task.attemptRoute === undefined ? {} : { routeIndex: task.attemptRoute.currentRouteIndex },
             dependencyOutputs: collectCompletedDependencyOutputs(
               fresh.tasks,
               task.id,
@@ -1167,7 +1206,12 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           if (fresh === undefined) return
           const task = fresh.tasks.find(candidate => candidate.id === ticket.taskId)
           if (task?.attemptId !== ticket.attemptId) return
-          if (ticket.recoveredOwned && ticket.previousStatus !== undefined && ticket.previousAttemptId !== undefined) {
+          if (ticket.routeRetry) {
+            // A route retry keeps the same durable capability. A failed send
+            // must not rotate it or erase the cursor; the next scheduler edge
+            // can try the same route again after the host is available.
+            parkedAttempts.delete(ticket.memberId)
+          } else if (ticket.recoveredOwned && ticket.previousStatus !== undefined && ticket.previousAttemptId !== undefined) {
             // Recovery delivery failed. Restore the durable generation instead
             // of returning it to pending, then keep it parked so later status
             // kicks cannot spend an unbounded sequence of fresh attempts.

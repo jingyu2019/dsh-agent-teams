@@ -28,6 +28,8 @@ export interface ToolsConfig {
     executionPrompt?: string;
     /** Plugin fallback route. */
     fallback?: import('./profiles.ts').TeamModelFallbackConfig;
+    /** Ordered additional member routes. */
+    fallbacks?: import('./profiles.ts').TeamModelFallbackConfig[];
     /** Member delegation depth cap. */
     memberMaxDepth?: number;
     /** Team size cap (members). */

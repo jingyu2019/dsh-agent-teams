@@ -25,7 +25,7 @@ import { mailboxPrompt } from './mailbox.ts'
 import { nearestLiveLead } from './lineage.ts'
 import { appendTeamEvent, captainSessionOf } from './events.ts'
 import type { MemberToolFilter } from './tool-policies.ts'
-import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamState, type TeamTask } from './types.ts'
+import { TERMINAL_TASK_STATUSES, type RouteCursor, type RouteFailureClass, type TeamMember, type TeamModelFallback, type TeamState, type TeamTask } from './types.ts'
 
 /** Persona snapshot of a profile protocol; the full text lives on team.json. */
 export const PERSONA_PROTOCOL_MAX_CHARS = 400
@@ -50,6 +50,8 @@ export interface MemberRuntimeConfig {
   executionPrompt?: string
   /** Plugin-wide fallback route. */
   fallback?: { provider: string; model: string }
+  /** Ordered additional routes after the primary route. */
+  fallbacks?: { provider: string; model: string }[]
 }
 
 /** Durable provider/model/reasoning snapshot for one member. */
@@ -62,6 +64,8 @@ export interface MemberLlmSelection {
   reasoningEffort?: string
   /** Configured second-choice route. */
   fallback?: { provider: string; model: string }
+  /** Ordered additional routes after the primary route. */
+  fallbacks?: { provider: string; model: string }[]
 }
 
 /** Optional member-level route requested by the captain. */
@@ -78,6 +82,8 @@ export interface MemberLlmSelectionRequest {
   reasoningEffort?: string
   /** Configured fallback route. */
   fallback?: { provider: string; model: string }
+  /** Ordered additional routes after the primary route. */
+  fallbacks?: { provider: string; model: string }[]
 }
 
 /** A composed member route plus where each half came from. */
@@ -195,6 +201,129 @@ export function selectFallbackRoute(
     return { retry: false, switched: alreadySwitched, selection: current }
   }
   return { retry: true, switched: true, selection: fallback }
+}
+
+/** Per-route transient attempt cap and deterministic backoff schedule. */
+export const ROUTE_MAX_TRANSIENT_ATTEMPTS = 3
+export const ROUTE_COOLDOWNS_MS = [1_000, 2_000, 4_000] as const
+const ROUTE_TRANSIENT_CODES = new Set(['RATE_LIMIT', '429', 'TOO_MANY_REQUESTS'])
+const ROUTE_PERMANENT_CODES = new Set(['AUTH', 'MISSING_CREDENTIAL', 'NO_ADAPTER', 'QUOTA', 'INSUFFICIENT_QUOTA'])
+const ROUTE_BUDGET_CODES = new Set(['BUDGET', 'BUDGET_EXHAUSTED', 'INSUFFICIENT_BUDGET', 'MAX_TOKENS'])
+
+/** Normalize a legacy singular fallback and an ordered chain into one list. */
+export function normalizeRouteChain(
+  fallback: TeamModelFallback | undefined,
+  fallbacks: readonly TeamModelFallback[] | undefined,
+): TeamModelFallback[] {
+  const chain = [...(fallbacks ?? [])]
+  if (fallback !== undefined) {
+    const first = chain[0]
+    if (first === undefined || first.provider !== fallback.provider || first.model !== fallback.model) chain.unshift(fallback)
+  }
+  return chain.slice(0, 4).filter(route => route.provider.trim() !== '' && route.model.trim() !== '')
+}
+
+/** Initialize the durable cursor for one newly-started task attempt. */
+export function createRouteCursor(routeCount = 1): RouteCursor {
+  return {
+    routeGeneration: 1,
+    currentRouteIndex: 0,
+    routeAttempts: [0],
+    cooldowns: [],
+    state: 'ready',
+  }
+}
+
+/** Classify a provider failure without relying on host retry policy. */
+export function classifyRouteFailure(code: string): RouteFailureClass {
+  const normalized = code.trim().toUpperCase()
+  if (ROUTE_TRANSIENT_CODES.has(normalized)) return 'transient'
+  if (ROUTE_PERMANENT_CODES.has(normalized)) return 'permanent'
+  if (ROUTE_BUDGET_CODES.has(normalized)) return 'budget'
+  return 'unknown'
+}
+
+export interface RouteFailureOptions {
+  readonly activationId?: string
+  readonly hostRunId?: string
+  readonly at?: number
+}
+
+/**
+ * Apply one route failure to a cursor. The function is pure and deterministic:
+ * transient failures retry the same route at 1/2/4 seconds, then advance once;
+ * permanent failures advance immediately; unknown and budget failures exhaust.
+ */
+export function recordRouteFailure(
+  input: RouteCursor | undefined,
+  code: string,
+  routeCount: number,
+  options: RouteFailureOptions = {},
+): RouteCursor {
+  const now = options.at ?? Date.now()
+  const cursor: RouteCursor = input === undefined
+    ? createRouteCursor(routeCount)
+    : {
+      ...input,
+      routeAttempts: [...input.routeAttempts],
+      cooldowns: [...input.cooldowns],
+      ...input.lastFailure === undefined ? {} : { lastFailure: { ...input.lastFailure } },
+    }
+  const activationId = options.activationId ?? cursor.lastFailure?.activationId ?? ''
+  const hostRunId = options.hostRunId ?? cursor.lastFailure?.hostRunId ?? ''
+  if (cursor.lastFailure !== undefined
+    && cursor.lastFailure.activationId === activationId
+    && cursor.lastFailure.hostRunId === hostRunId) {
+    return cursor
+  }
+  const failureClass = classifyRouteFailure(code)
+  cursor.lastFailure = { activationId, hostRunId, code, class: failureClass, at: now }
+  const count = (cursor.routeAttempts[cursor.currentRouteIndex] ?? 0) + 1
+  cursor.routeAttempts[cursor.currentRouteIndex] = count
+  if (failureClass === 'unknown' || failureClass === 'budget' || routeCount <= 1 && failureClass !== 'transient') {
+    cursor.state = 'exhausted'
+    cursor.nextActionAt = undefined
+    return cursor
+  }
+  if (failureClass === 'transient' && count < ROUTE_MAX_TRANSIENT_ATTEMPTS) {
+    const delay = ROUTE_COOLDOWNS_MS[Math.min(count - 1, ROUTE_COOLDOWNS_MS.length - 1)]!
+    cursor.state = 'waiting'
+    cursor.nextActionAt = now + delay
+    cursor.cooldowns = cursor.cooldowns.filter(item => item.routeIndex !== cursor.currentRouteIndex)
+    cursor.cooldowns.push({ routeIndex: cursor.currentRouteIndex, until: cursor.nextActionAt, reason: code })
+    return cursor
+  }
+  if (cursor.currentRouteIndex + 1 < routeCount) {
+    cursor.currentRouteIndex += 1
+    cursor.routeGeneration += 1
+    cursor.routeAttempts[cursor.currentRouteIndex] = 0
+    cursor.cooldowns = []
+    if (failureClass === 'transient') {
+      cursor.state = 'waiting'
+      cursor.nextActionAt = now + ROUTE_COOLDOWNS_MS[0]!
+      cursor.cooldowns.push({ routeIndex: cursor.currentRouteIndex, until: cursor.nextActionAt, reason: code })
+    } else {
+      cursor.state = 'ready'
+      cursor.nextActionAt = undefined
+    }
+    return cursor
+  }
+  cursor.state = 'exhausted'
+  cursor.nextActionAt = undefined
+  return cursor
+}
+
+/** Whether a route cursor may create its next activation now. */
+export function routeCursorReady(cursor: RouteCursor | undefined, now = Date.now()): boolean {
+  if (cursor === undefined) return true
+  if (cursor.state === 'exhausted') return false
+  return cursor.state === 'ready' || (cursor.nextActionAt ?? 0) <= now
+}
+
+/** The durable route chain for one member, including the legacy singular route. */
+export function memberRouteChain(member: Pick<TeamMember, 'provider' | 'model' | 'fallback' | 'fallbacks'>): TeamModelFallback[] {
+  if (member.provider === undefined || member.model === undefined || member.provider === '' || member.model === '') return []
+  return [{ provider: member.provider, model: member.model }, ...normalizeRouteChain(member.fallback, member.fallbacks)]
 }
 
 /** Deliver a durable member report to the live captain at its next model step. */
@@ -416,6 +545,69 @@ async function updateFallbackState(
   void ctx
 }
 
+export interface PersistedRouteFailure {
+  readonly taskId?: string
+  readonly cursor: RouteCursor
+  readonly route?: TeamModelFallback
+  readonly advanced: boolean
+}
+
+/**
+ * Persist one request failure against the exact activation's task attempt.
+ * The activation binding, rather than the current member name, selects the
+ * task. Late errors from an old Agent therefore cannot move a newer attempt.
+ */
+export async function recordPersistedRouteFailure(input: {
+  stateRoot: string
+  teamId: string
+  memberName: string
+  activationId: string
+  hostRunId?: string
+  code: string
+}): Promise<PersistedRouteFailure | undefined> {
+  return withTeamLock(`team:${input.stateRoot}:${input.teamId}`, async () => {
+    const team = await readTeam(input.stateRoot, input.teamId)
+    if (team === undefined) return undefined
+    const lease = team.activations?.find(candidate => candidate.activationId === input.activationId)
+    const member = lease === undefined
+      ? team.members.find(candidate => candidate.name === input.memberName && candidate.status !== 'removed')
+      : team.members.find(candidate => candidate.id === lease.memberId
+        && candidate.generation === lease.memberGeneration
+        && candidate.status !== 'removed')
+    if (member === undefined) return undefined
+    const routes = memberRouteChain(member)
+    const task = team.tasks.find(candidate => candidate.attemptActivationId === input.activationId
+      && (candidate.status === 'claimed' || candidate.status === 'in_progress'))
+    if (task === undefined) return undefined
+    const previous = task.attemptRoute
+    const cursor = recordRouteFailure(previous, input.code, Math.max(1, routes.length), {
+      activationId: input.activationId,
+      ...input.hostRunId === undefined ? {} : { hostRunId: input.hostRunId },
+    })
+    task.attemptRoute = cursor
+    task.updatedAt = Date.now()
+    const route = routes[cursor.currentRouteIndex]
+    if (route !== undefined) {
+      if (cursor.currentRouteIndex > 0) {
+        member.activeProvider = route.provider
+        member.activeModel = route.model
+        member.fallbackActive = true
+      } else {
+        delete member.activeProvider
+        delete member.activeModel
+        delete member.fallbackActive
+      }
+    }
+    await writeTeam(input.stateRoot, team)
+    return {
+      taskId: task.id,
+      cursor,
+      ...route === undefined ? {} : { route },
+      advanced: (previous?.currentRouteIndex ?? 0) !== cursor.currentRouteIndex,
+    }
+  })
+}
+
 function pendingSelectionKey(parentSessionId: string, label: string): string {
   return `${parentSessionId}\u0000${label}`
 }
@@ -433,6 +625,7 @@ function selectionFromMember(member: TeamMember | undefined): MemberLlmSelection
     model,
     ...reasoningEffort === undefined || reasoningEffort === '' ? {} : { reasoningEffort },
     ...member.fallback === undefined || member.fallbackActive === true ? {} : { fallback: member.fallback },
+    ...member.fallbacks === undefined ? {} : { fallbacks: member.fallbacks },
   }
 }
 
@@ -476,6 +669,10 @@ export async function resolveMemberLlmSelection(
   const defaultProvider = request.defaultProvider?.trim()
   const explicitEffort = request.reasoningEffort?.trim()
   const fallback = request.fallback
+  const fallbacks = request.fallbacks
+  if (fallbacks !== undefined && fallbacks.length > 4) {
+    throw new Error('member fallbacks may contain at most 4 routes')
+  }
   if (request.provider !== undefined && explicitProvider === '') {
     throw new Error('member LLM provider must not be empty')
   }
@@ -555,6 +752,7 @@ export async function resolveMemberLlmSelection(
       ? {}
       : { reasoningEffort: String(resolved.reasoningEffort) },
     ...fallback === undefined ? {} : { fallback },
+    ...fallbacks === undefined ? {} : { fallbacks },
   }
 }
 
@@ -757,7 +955,18 @@ export function installMemberSelectionRuntime(
     let switched = false
     const disposeFallback = childCtx.on('agent/request-error', async (payload, next) => {
       if (payload.agent.id !== child.id || payload.signal.aborted) return next()
+      const binding = boundAgentRun(payload.agent)
       if (recordBoundAgentDiagnostic(payload.agent, `${payload.failure.code}: ${payload.failure.message}`)) {
+        if (binding !== undefined) {
+          await recordPersistedRouteFailure({
+            stateRoot, teamId, memberName,
+            activationId: binding.activationId,
+            hostRunId: binding.hostRunId,
+            code: payload.failure.code,
+          }).catch(error => {
+            ctx.logger.warn(`agent-teams: failed to persist route failure for ${child.id}: ${String(error)}`)
+          })
+        }
         // A route-owned AgentTeams activation records the failure and returns
         // undefined, deliberately suppressing the host retry policy. The exact
         // subagent/end then moves the durable route/task state.
@@ -849,7 +1058,12 @@ function assignedNonTerminalCount(team: TeamState, memberName: string): number {
  * @param stateDir - configured state directory, so the member can locate the
  *   team files with its own file tools.
  */
-export function memberPersona(team: TeamState, member: TeamMember, stateDir: string, executionPrompt?: string): string {
+export function memberPersona(
+  team: TeamState,
+  member: TeamMember,
+  stateDir: string,
+  executionPrompt?: string,
+): string {
   const goal = team.description?.trim() || '(not provided)'
   const injectedPrompt = member.executionPrompt?.trim() || executionPrompt?.trim()
   const protocol = truncatedPersonaProtocol(team.profile?.protocol)

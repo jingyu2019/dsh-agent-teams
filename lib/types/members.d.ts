@@ -16,7 +16,7 @@ import { type Agent } from '@deepseek-ai/dsh-agent';
 import type { Session } from '@deepseek-ai/dsh-session';
 import { type MemberStartResult, type SessionFormatBearer } from './harness-compat.ts';
 import type { MemberToolFilter } from './tool-policies.ts';
-import { type TeamMember, type TeamState, type TeamTask } from './types.ts';
+import { type RouteCursor, type RouteFailureClass, type TeamMember, type TeamModelFallback, type TeamState, type TeamTask } from './types.ts';
 /** Persona snapshot of a profile protocol; the full text lives on team.json. */
 export declare const PERSONA_PROTOCOL_MAX_CHARS = 400;
 /** Runtime knobs for member spawning, resolved from plugin config. */
@@ -32,6 +32,11 @@ export interface MemberRuntimeConfig {
         provider: string;
         model: string;
     };
+    /** Ordered additional routes after the primary route. */
+    fallbacks?: {
+        provider: string;
+        model: string;
+    }[];
 }
 /** Durable provider/model/reasoning snapshot for one member. */
 export interface MemberLlmSelection {
@@ -46,6 +51,11 @@ export interface MemberLlmSelection {
         provider: string;
         model: string;
     };
+    /** Ordered additional routes after the primary route. */
+    fallbacks?: {
+        provider: string;
+        model: string;
+    }[];
 }
 /** Optional member-level route requested by the captain. */
 export interface MemberLlmSelectionRequest {
@@ -64,6 +74,11 @@ export interface MemberLlmSelectionRequest {
         provider: string;
         model: string;
     };
+    /** Ordered additional routes after the primary route. */
+    fallbacks?: {
+        provider: string;
+        model: string;
+    }[];
 }
 /** A composed member route plus where each half came from. */
 export interface MemberRouteResolution {
@@ -134,6 +149,30 @@ export declare function selectFallbackRoute(current: {
         model: string;
     };
 };
+/** Per-route transient attempt cap and deterministic backoff schedule. */
+export declare const ROUTE_MAX_TRANSIENT_ATTEMPTS = 3;
+export declare const ROUTE_COOLDOWNS_MS: readonly [1000, 2000, 4000];
+/** Normalize a legacy singular fallback and an ordered chain into one list. */
+export declare function normalizeRouteChain(fallback: TeamModelFallback | undefined, fallbacks: readonly TeamModelFallback[] | undefined): TeamModelFallback[];
+/** Initialize the durable cursor for one newly-started task attempt. */
+export declare function createRouteCursor(routeCount?: number): RouteCursor;
+/** Classify a provider failure without relying on host retry policy. */
+export declare function classifyRouteFailure(code: string): RouteFailureClass;
+export interface RouteFailureOptions {
+    readonly activationId?: string;
+    readonly hostRunId?: string;
+    readonly at?: number;
+}
+/**
+ * Apply one route failure to a cursor. The function is pure and deterministic:
+ * transient failures retry the same route at 1/2/4 seconds, then advance once;
+ * permanent failures advance immediately; unknown and budget failures exhaust.
+ */
+export declare function recordRouteFailure(input: RouteCursor | undefined, code: string, routeCount: number, options?: RouteFailureOptions): RouteCursor;
+/** Whether a route cursor may create its next activation now. */
+export declare function routeCursorReady(cursor: RouteCursor | undefined, now?: number): boolean;
+/** The durable route chain for one member, including the legacy singular route. */
+export declare function memberRouteChain(member: Pick<TeamMember, 'provider' | 'model' | 'fallback' | 'fallbacks'>): TeamModelFallback[];
 /** Deliver a durable member report to the live captain at its next model step. */
 export declare function steerCaptainReport(captain: Pick<Agent, 'steer'> & SessionFormatBearer, from: string, content: string, receipt?: string): boolean;
 interface FailedMemberAttempt {
@@ -198,6 +237,25 @@ export declare function failMemberOpenAttempt(ctx: Context, stateRoot: string, t
     readonly code: string;
     readonly message: string;
 }, fallbackSession: Session, observed: FailedMemberAttempt): Promise<boolean>;
+export interface PersistedRouteFailure {
+    readonly taskId?: string;
+    readonly cursor: RouteCursor;
+    readonly route?: TeamModelFallback;
+    readonly advanced: boolean;
+}
+/**
+ * Persist one request failure against the exact activation's task attempt.
+ * The activation binding, rather than the current member name, selects the
+ * task. Late errors from an old Agent therefore cannot move a newer attempt.
+ */
+export declare function recordPersistedRouteFailure(input: {
+    stateRoot: string;
+    teamId: string;
+    memberName: string;
+    activationId: string;
+    hostRunId?: string;
+    code: string;
+}): Promise<PersistedRouteFailure | undefined>;
 /**
  * Resolve one member's complete model selection. Ordinary members snapshot the
  * captain's current request route and reasoning effort. When provider or model

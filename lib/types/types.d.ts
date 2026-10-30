@@ -153,6 +153,8 @@ export interface TeamTask {
     attemptActivationEpoch?: number;
     /** Exact completed activation awaiting a captain decision. */
     parking?: TaskParking;
+    /** Durable ordered route state for this task attempt (issue #76). */
+    attemptRoute?: RouteCursor;
     /** Quality-gate kind. Missing values are treated as `work`. */
     kind?: TaskKind;
     /** Review / requirements / repair loop index, 1-based when present. */
@@ -291,6 +293,28 @@ export interface TaskParking {
     noticeDueAt: number;
     noticeKey: string;
 }
+/** Failure classes used by the durable per-attempt route cursor. */
+export type RouteFailureClass = 'transient' | 'permanent' | 'unknown' | 'budget';
+/** Per-attempt ordered fallback/cooldown state; never shared across attempts. */
+export interface RouteCursor {
+    routeGeneration: number;
+    currentRouteIndex: number;
+    routeAttempts: number[];
+    cooldowns: Array<{
+        routeIndex: number;
+        until: number;
+        reason: string;
+    }>;
+    state: 'ready' | 'waiting' | 'exhausted';
+    nextActionAt?: number;
+    lastFailure?: {
+        activationId: string;
+        hostRunId: string;
+        code: string;
+        class: RouteFailureClass;
+        at: number;
+    };
+}
 /** Member lifecycle status. */
 export type MemberStatus = 'idle' | 'working' | 'removed';
 /** One team member: a continuable subagent plus its team-side record. */
@@ -311,6 +335,8 @@ export interface TeamMember {
     executionPrompt?: string;
     /** Configured second-choice route. */
     fallback?: TeamModelFallback;
+    /** Ordered additional routes after the primary; legacy `fallback` is route 1. */
+    fallbacks?: TeamModelFallback[];
     /** Active route after fallback, without changing the primary descriptor route. */
     activeProvider?: string;
     activeModel?: string;
@@ -393,6 +419,8 @@ export interface TeamProfileSnapshot {
     protocol?: string;
     executionPrompt?: string;
     fallback?: TeamModelFallback;
+    /** Ordered additional routes after the primary; legacy `fallback` is route 1. */
+    fallbacks?: TeamModelFallback[];
     /** Frozen planning mode: captain plans the graph; seed keeps template tasks. */
     taskPlanning?: 'captain' | 'seed';
     /** Frozen review-loop policy from the creating profile. */

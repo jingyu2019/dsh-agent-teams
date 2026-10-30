@@ -70,6 +70,8 @@ export interface DispatchTicket {
     readonly previousAssignee?: string;
     /** True when this ticket rotates an unobserved durable open attempt. */
     readonly recoveredOwned: boolean;
+    /** True when this ticket resumes a persisted route cursor without rotating the attempt. */
+    readonly routeRetry: boolean;
     /** Original task generation, used to restore a failed automatic recovery. */
     readonly previousStatus?: 'claimed' | 'in_progress';
     readonly previousAttempt?: number;
@@ -81,6 +83,7 @@ export interface DispatchTicket {
     readonly profileProtocol?: string;
     readonly profileSeedId?: string;
     readonly dependencyOutputs: readonly DependencyOutput[];
+    readonly routeIndex?: number;
     readonly executionPrompt?: string;
     readonly kind?: string;
     readonly round?: number;

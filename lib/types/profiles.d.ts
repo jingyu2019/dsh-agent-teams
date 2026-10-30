@@ -27,6 +27,8 @@ export interface TeamProfileMemberConfig {
     reasoning_effort?: string;
     executionPrompt?: string;
     fallback?: TeamModelFallbackConfig;
+    /** Ordered additional routes after the primary, at most four. */
+    fallbacks?: TeamModelFallbackConfig[];
     /**
      * Owner-declared tool-policy id this profile member selects (#59). The
      * profile only names a configured policy; it never carries raw tool lists.
@@ -47,6 +49,8 @@ export interface TeamProfileConfig {
     protocol?: string;
     executionPrompt?: string;
     fallback?: TeamModelFallbackConfig;
+    /** Ordered additional routes after the primary, at most four. */
+    fallbacks?: TeamModelFallbackConfig[];
     members: TeamProfileMemberConfig[];
     /**
      * `captain` means the profile supplies people and guardrails only; the
@@ -66,6 +70,7 @@ export interface NormalizedProfileMember {
     reasoningEffort?: string;
     executionPrompt?: string;
     fallback?: TeamModelFallbackConfig;
+    fallbacks?: TeamModelFallbackConfig[];
     toolPolicy?: string;
 }
 /** A profile seed task after assignee canonicalization; `sourceIndex` is the YAML order. */
@@ -84,6 +89,7 @@ export interface NormalizedTeamProfile {
     protocol?: string;
     executionPrompt?: string;
     fallback?: TeamModelFallbackConfig;
+    fallbacks?: TeamModelFallbackConfig[];
     taskPlanning: 'captain' | 'seed';
     members: NormalizedProfileMember[];
     tasks: NormalizedProfileTask[];

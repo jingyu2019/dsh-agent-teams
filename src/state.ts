@@ -198,6 +198,7 @@ export function clearTaskActivation(task: TeamTask): void {
   task.attemptActivationId = undefined
   task.attemptActivationEpoch = undefined
   task.parking = undefined
+  task.attemptRoute = undefined
 }
 
 /** Start a fresh task generation for one owner. */
@@ -836,6 +837,8 @@ function isTeamMember(value: unknown): value is TeamMember {
     && isOptionalString(value['spawnError'])
     && (value['executionPrompt'] === undefined || typeof value['executionPrompt'] === 'string')
     && (value['fallback'] === undefined || (isRecord(value['fallback']) && typeof value['fallback']['provider'] === 'string' && typeof value['fallback']['model'] === 'string'))
+    && (value['fallbacks'] === undefined || (Array.isArray(value['fallbacks'])
+      && value['fallbacks'].every(route => isRecord(route) && typeof route['provider'] === 'string' && typeof route['model'] === 'string')))
     && (value['fallbackActive'] === undefined || typeof value['fallbackActive'] === 'boolean')
     // A member without a policy keeps the legacy shape: both fields stay absent.
     && isOptionalNonBlankString(value['toolPolicy'])
@@ -856,6 +859,8 @@ function isTeamProfileSnapshot(value: unknown): value is TeamProfileSnapshot {
     && isOptionalString(value['protocol'])
     && (value['executionPrompt'] === undefined || typeof value['executionPrompt'] === 'string')
     && (value['fallback'] === undefined || (isRecord(value['fallback']) && typeof value['fallback']['provider'] === 'string' && typeof value['fallback']['model'] === 'string'))
+    && (value['fallbacks'] === undefined || (Array.isArray(value['fallbacks'])
+      && value['fallbacks'].every(route => isRecord(route) && typeof route['provider'] === 'string' && typeof route['model'] === 'string')))
     && (value['taskPlanning'] === undefined || value['taskPlanning'] === 'captain' || value['taskPlanning'] === 'seed')
     && (value['reviewPolicy'] === undefined || isReviewPolicy(value['reviewPolicy']))
 }
@@ -1104,9 +1109,30 @@ export function isTeamTask(value: unknown): value is TeamTask {
     && isOptionalString(value['handoffId'])
     && isOptionalString(value['handoffFromMemberId'])
     && (value['reassigning'] === undefined || typeof value['reassigning'] === 'boolean')
+    && (value['attemptRoute'] === undefined || isRouteCursor(value['attemptRoute']))
     && isFiniteNumber(value['createdAt'])
     && isFiniteNumber(value['updatedAt'])
     && hasValidQualityTaskFields(value)
+}
+
+function isRouteCursor(value: unknown): value is import('./types.ts').RouteCursor {
+  if (!isRecord(value)) return false
+  const attempts = value['routeAttempts']
+  const cooldowns = value['cooldowns']
+  const last = value['lastFailure']
+  return Number.isSafeInteger(value['routeGeneration']) && (value['routeGeneration'] as number) >= 1
+    && Number.isSafeInteger(value['currentRouteIndex']) && (value['currentRouteIndex'] as number) >= 0
+    && Array.isArray(attempts) && attempts.every(item => Number.isSafeInteger(item) && item >= 0)
+    && Array.isArray(cooldowns) && cooldowns.every(item => isRecord(item)
+      && Number.isSafeInteger(item['routeIndex']) && isFiniteNumber(item['until']) && typeof item['reason'] === 'string')
+    && (value['state'] === 'ready' || value['state'] === 'waiting' || value['state'] === 'exhausted')
+    && (value['nextActionAt'] === undefined || isFiniteNumber(value['nextActionAt']))
+    && (last === undefined || (isRecord(last)
+      && typeof last['activationId'] === 'string'
+      && typeof last['hostRunId'] === 'string'
+      && typeof last['code'] === 'string'
+      && (last['class'] === 'transient' || last['class'] === 'permanent' || last['class'] === 'unknown' || last['class'] === 'budget')
+      && isFiniteNumber(last['at'])))
 }
 
 /** Validate the full team record before it can participate in authorization. */

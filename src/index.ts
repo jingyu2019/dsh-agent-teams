@@ -85,6 +85,8 @@ export interface Config {
   executionPrompt?: string
   /** Plugin-wide fallback route for unavailable member models. */
   fallback?: import('./profiles.ts').TeamModelFallbackConfig
+  /** Ordered additional member routes; the legacy singular route is still accepted. */
+  fallbacks?: import('./profiles.ts').TeamModelFallbackConfig[]
   /** Member delegation depth cap (default `0`; `0` forbids delegation entirely). */
   memberMaxDepth?: number
   /** Team size cap in members (default `8`). */
@@ -120,6 +122,7 @@ const fallbackRouteConfig = z.union([
   z.object({ provider: z.string().required(), model: z.string().required() }),
   z.const(undefined),
 ])
+const fallbackRoutesConfig = z.array(z.object({ provider: z.string().required(), model: z.string().required() })).max(4)
 
 // Same Schemastery defaulting trap for a tool policy: an `allow`-only policy
 // would materialize `deny: []` and fail a `.min(1)` on an absent list. Model
@@ -138,11 +141,13 @@ export const Config: z<Config> = z.object({
   memberLlmProvider: z.string(),
   executionPrompt: z.string(),
   fallback: fallbackRouteConfig,
+  fallbacks: fallbackRoutesConfig,
   profiles: z.dict(z.object({
     description: z.string(),
     protocol: z.string(),
     executionPrompt: z.string(),
     fallback: fallbackRouteConfig,
+    fallbacks: fallbackRoutesConfig,
     members: z.array(z.object({
       name: z.string().required(),
       role: z.string(),
@@ -151,6 +156,7 @@ export const Config: z<Config> = z.object({
       reasoning_effort: z.string(),
       executionPrompt: z.string(),
       fallback: fallbackRouteConfig,
+      fallbacks: fallbackRoutesConfig,
       // Owner-declared tool-policy id this profile member selects (#59).
       tool_policy: z.string(),
     })).min(1).required(),
@@ -202,6 +208,7 @@ export function apply(ctx: Context, config: Config): void {
     memberLlmProvider: config.memberLlmProvider,
     executionPrompt: config.executionPrompt,
     fallback: config.fallback,
+    fallbacks: config.fallbacks,
     memberMaxDepth: config.memberMaxDepth ?? 0,
     maxMembers: config.maxMembers ?? 8,
     maxConcurrentWorkers: config.maxConcurrentWorkers ?? config.maxMembers ?? 8,

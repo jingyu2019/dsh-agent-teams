@@ -108,6 +108,8 @@ export interface ToolsConfig {
   executionPrompt?: string
   /** Plugin fallback route. */
   fallback?: import('./profiles.ts').TeamModelFallbackConfig
+  /** Ordered additional member routes. */
+  fallbacks?: import('./profiles.ts').TeamModelFallbackConfig[]
   /** Member delegation depth cap. */
   memberMaxDepth?: number
   /** Team size cap (members). */
@@ -739,7 +741,11 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           return { accepted: await deliverToMember(ctx, captain, member.id, text, signal, mode) }
         }
         const selection = await resolveMemberLlmSelection(ctx, captain, {
-          provider: member.provider, model: member.model, reasoningEffort: member.reasoningEffort, fallback: member.fallback,
+          provider: member.activeProvider ?? member.provider,
+          model: member.activeModel ?? member.model,
+          reasoningEffort: member.fallbackActive === true ? undefined : member.reasoningEffort,
+          fallback: member.fallback,
+          fallbacks: member.fallbacks,
         }, signal)
         const receipt = await spawnMember(ctx, memberRuntime(config), memberSelections, selection, captain, team, member, config.stateDir, signal, text, member.toolFilter, memberRelaxableDeny(config, member))
         orphan = { ...member }
@@ -783,6 +789,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             model: mutation.model,
             reasoningEffort: trimmedOptional(mutation.reasoningEffort),
             fallback: member.fallback,
+            fallbacks: member.fallbacks,
           }, signal)
           member.role = trimmedOptional(mutation.role)
           member.provider = selection.provider
@@ -882,12 +889,17 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const selections = []
       for (const member of fresh.members) {
         const selection = await resolveMemberLlmSelection(ctx, captain, {
-          provider: member.provider, model: member.model, reasoningEffort: member.reasoningEffort, fallback: member.fallback,
+          provider: member.provider, model: member.model, reasoningEffort: member.reasoningEffort,
+          fallback: member.fallback, fallbacks: member.fallbacks,
         }, runSignal)
         selections.push(selection)
         member.provider = selection.provider
         member.model = selection.model
         member.reasoningEffort = selection.reasoningEffort
+        if (selection.fallback === undefined) delete member.fallback
+        else member.fallback = selection.fallback
+        if (selection.fallbacks === undefined) delete member.fallbacks
+        else member.fallbacks = selection.fallbacks
       }
       await validateMemberLlmSelections(ctx, selections, runSignal)
       fresh.phase = 'running'
@@ -1410,6 +1422,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           defaultProvider: config.memberLlmProvider,
           reasoningEffort: trimmedOptional(args.reasoning_effort),
           fallback: config.fallback,
+          fallbacks: config.fallbacks,
         }, exec.signal)
         const toolSelection = memberToolSelection(config, captain, optionalToolPolicyId(args.tool_policy))
         const member: TeamMember = {
@@ -2679,6 +2692,7 @@ async function initializeProfileTeam(input: {
       defaultProvider: input.config.memberLlmProvider,
       reasoningEffort: template.reasoningEffort,
       fallback: template.fallback ?? profile.fallback ?? input.config.fallback,
+      fallbacks: template.fallbacks ?? profile.fallbacks ?? input.config.fallbacks,
     }, input.exec.signal))
   }
   await validateMemberLlmSelections(input.ctx, selections, input.exec.signal)
@@ -2694,6 +2708,7 @@ async function initializeProfileTeam(input: {
       ...profile.protocol === undefined ? {} : { protocol: profile.protocol },
       ...profile.executionPrompt === undefined ? {} : { executionPrompt: profile.executionPrompt },
       ...profile.fallback === undefined ? {} : { fallback: profile.fallback },
+      ...profile.fallbacks === undefined ? {} : { fallbacks: profile.fallbacks },
       taskPlanning: profile.taskPlanning,
       ...profile.reviewPolicy === undefined ? {} : { reviewPolicy: profile.reviewPolicy },
     },
@@ -2715,6 +2730,7 @@ async function initializeProfileTeam(input: {
         reasoningEffort: selection.reasoningEffort,
         executionPrompt: template.executionPrompt ?? profile.executionPrompt ?? input.config.executionPrompt,
         ...selection.fallback === undefined ? {} : { fallback: selection.fallback },
+        ...selection.fallbacks === undefined ? {} : { fallbacks: selection.fallbacks },
         ...toolSelection,
         joinedAt: now,
         status: 'idle' as const,
@@ -2902,6 +2918,7 @@ function memberRuntime(config: ToolsConfig): MemberRuntimeConfig {
     maxDepth: config.memberMaxDepth,
     executionPrompt: config.executionPrompt,
     fallback: config.fallback,
+    fallbacks: config.fallbacks,
   }
 }
 
