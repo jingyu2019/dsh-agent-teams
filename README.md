@@ -208,6 +208,23 @@ This is model tool visibility and invocation policy for global tools, not an OS 
 
 `slashCommand: false` disables the deterministic `/agent-teams` activation surfaces (slash command and gesture boundary), leaving the natural-language trigger as the only entry point.
 
+Optional W5/W7 capabilities are local-only and disabled by default:
+
+```yaml
+    artifactRoots:
+      - id: reports
+        path: /absolute/owner/artifacts
+        allowRead: true
+    agentLibrary:
+      enabled: true
+    worktrees:
+      enabled: true
+      root: /absolute/path/outside/the/repository
+      baseRef: main
+```
+
+Attachments accept only regular files in the sender's task scope or an owner-configured artifact root; protected state, dependency, secret and repository-metadata paths are rejected. Avatars are raster-only, local, content-addressed and authenticated. Reusable agent presets are immutable revisions copied into new members. Member-lane worktrees bind one resident child to one path/branch; integration and cleanup require the explicit confirmation-gated `agent_teams_worktree` action and never force or prune.
+
 ## Boundaries
 
 - One captain leads one active team at a time.

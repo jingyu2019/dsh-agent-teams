@@ -197,6 +197,23 @@ dsh plugin --profile web add github:NanmiCoder/dsh-agent-teams
 
 `slashCommand: false` 可关闭确定性的 `/agent-teams` 激活面（slash 命令与手势边界），仅保留自然语言触发。
 
+可选的 W5/W7 能力均为本地能力，默认关闭：
+
+```yaml
+    artifactRoots:
+      - id: reports
+        path: /absolute/owner/artifacts
+        allowRead: true
+    agentLibrary:
+      enabled: true
+    worktrees:
+      enabled: true
+      root: /absolute/path/outside/the/repository
+      baseRef: main
+```
+
+附件只接受发送者当前任务范围内的普通文件，或部署方配置的 artifact root；状态、依赖、秘密和仓库元数据路径会被拒绝。头像仅支持本地 PNG/JPEG/WebP，按内容寻址并通过认证路由读取。全局 Agent 预设是不可变修订，新成员复制其快照。成员工作树把一个常驻子会话绑定到固定 path/branch；集成与清理必须显式调用确认门控的 `agent_teams_worktree`，且永不使用 force/prune。
+
 ## 使用边界
 
 - 一个队长同一时间只能带一个活动团队。
