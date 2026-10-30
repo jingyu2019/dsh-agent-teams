@@ -24,6 +24,8 @@ Additional items resolved after the original audit:
 - **#162 / #241** provide an explicit context reset for idle members; host-driven automatic compaction remains a separate host capability.
 - **#317** is a duplicate token-complaint root cause addressed by #96, per-member model routing, and the lighter invoke-profile path.
 
+Current open non-PR state (2026-10-31): **48 issues** — 29 accepted/fixed in this fork, 9 duplicate, 4 already fixed, 3 out of scope, and 3 still evidence-gated (`#117`, `#151`, `#190`). The evidence-gated three require host memory samples, package identity, or compact traces respectively.
+
 `compatibility.json` now includes exact rc.4 and rc.5 targets. The real `plugin-manager-install` and `progressive-entry` checks pass on rc.5; evidence is in [`docs/harness-0.2.1-rc.5/`](./harness-0.2.1-rc.5/README.md).
 
 ## Baseline
