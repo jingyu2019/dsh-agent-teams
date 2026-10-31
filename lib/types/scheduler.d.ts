@@ -62,7 +62,34 @@ export interface TeamScheduler {
     kickTeam(workspace: string, teamId: string, captain?: Agent): Promise<void>;
     /** Try to flush fallback mail or give one member one ready task. */
     kickMember(workspace: string, teamId: string, memberName: string, captain?: Agent): Promise<void>;
+    /** Release process-local activation context for a team that no longer exists. */
+    forgetTeam(teamId: string, memberIds?: readonly string[]): void;
+    /** Read process-local bookkeeping sizes for teardown regressions. */
+    diagnostics(): {
+        activationRoots: number;
+        activationWorkspaces: number;
+        pendingByChild: number;
+        runToActivation: number;
+        parkedAttempts: number;
+        routeRetryTimers: number;
+        probeTimers: number;
+        memberQueues: number;
+        lifecycleLanes: number;
+    };
 }
+/** Process-local lookup needed to settle host callbacks after a child leaves the registry. */
+export interface ActivationContextIndex {
+    remember(teamId: string, stateRoot: string, workspace: string): void;
+    root(teamId: string): string | undefined;
+    workspace(teamId: string): string | undefined;
+    forget(teamId: string): void;
+    size(): {
+        roots: number;
+        workspaces: number;
+    };
+}
+/** Create one explicitly forgettable activation-context index. */
+export declare function createActivationContextIndex(): ActivationContextIndex;
 /** One completed recursive dependency shown to the assignee. */
 export interface DependencyOutput {
     readonly id: string;

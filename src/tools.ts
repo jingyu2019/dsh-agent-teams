@@ -96,10 +96,10 @@ import {
   type MemberRuntimeConfig,
 } from './members.ts'
 import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamMessage, type TeamState, type TeamTask } from './types.ts'
-import { collectCompletedDependencyOutputs, formatDependencyOutputs, installTeamScheduler, type DispatchRequest, type DispatchResult } from './scheduler.ts'
+import { collectCompletedDependencyOutputs, formatDependencyOutputs, installTeamScheduler, type DispatchRequest, type DispatchResult, type TeamScheduler } from './scheduler.ts'
 import { installMailboxAdmission, isCurrentMail, mailboxContent, mailboxPrompt, readCurrentMailbox } from './mailbox.ts'
 import { resolveMemberSkills, resolveTeamProfile, type SkillBindingConfig } from './profiles.ts'
-import { forkLineageNote, leadIdentityOf, leadIdentityOfAsync, nearestLiveLead, sessionLeadsTeam, sessionLeadsTeamAsync } from './lineage.ts'
+import { ancestryCacheEntryCount, forgetAncestryCache, forkLineageNote, leadIdentityOf, leadIdentityOfAsync, nearestLiveLead, sessionLeadsTeam, sessionLeadsTeamAsync } from './lineage.ts'
 
 export { steerCaptainReport } from './members.ts'
 
@@ -195,6 +195,7 @@ export interface AgentTeamsRuntime {
   approveStagedTeam(captain: Agent, teamId: string, signal?: AbortSignal): Promise<{ teamId: string; members: number; tasks: number }>
   continueStagedPlanning(captain: Agent, teamId: string): Promise<{ teamId: string; alreadyWaiting: boolean }>
   discardStagedTeam(captain: Agent, teamId: string): Promise<{ teamId: string }>
+  memoryDiagnostics(): ReturnType<TeamScheduler['diagnostics']> & { ancestryCache: number }
 }
 
 /** The caller agent, or a loud failure for non-agent callers. */
@@ -1161,6 +1162,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       await archiveTeamDir(stateRoot, fresh.id)
       return { teamId: fresh.id, teamName: fresh.name }
     })
+    scheduler.forgetTeam(discarded.teamId)
+    forgetAncestryCache([captain.id])
     // Preserve this control fact for the next genuine user turn, then abort the
     // still-running Captain turn. Without both operations a late model step can
     // observe the missing active team and incorrectly create it again.
@@ -1462,6 +1465,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         const previous = member.id
         if (previous === '') return { member_name: member.name, reset: false }
         await recordRetiredMemberIds(stateRoot, [previous])
+        forgetAncestryCache([previous])
         member.id = ''
         member.status = 'idle'
         member.generation = (member.generation ?? 1) + 1
@@ -2274,6 +2278,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       if (revoked.member.id !== '') {
         await recordRetiredMemberIds(stateRoot, [revoked.member.id])
         await stopTeamMemberActivations(ctx, await memberOperationParent(ctx, team, captain), [revoked.member], exec.signal, stateRoot, team.id)
+        forgetAncestryCache([revoked.member.id])
       }
       await scheduler.kickTeam(workspace, team.id, await liveLeadAnchorAgent(ctx, team, captain))
       return {
@@ -3597,6 +3602,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         // mailboxes stay on disk for later review and dependency rebuilds.
         await archiveTeamDir(stateRoot, fresh.id)
       })
+      scheduler.forgetTeam(team.id, members.map(member => member.id))
+      forgetAncestryCache([captain.id, ...members.map(member => member.id)])
       return { deleted: true, team_name: team.name }
     },
   }))
@@ -3606,6 +3613,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   ))
 
   const runtime: AgentTeamsRuntime = {
+    memoryDiagnostics: () => ({ ...scheduler.diagnostics(), ancestryCache: ancestryCacheEntryCount() }),
     isPendingMember: memberSelections.isPendingMember,
     updateStagedPlan,
     updateStagedPlanBatch,

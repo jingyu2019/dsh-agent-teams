@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-10-31T09:00:00+08:00",
+  "host": {
+    "dsh": "0.2.1-rc.5",
+    "node": "v26.12.1",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "localDesktopInstall": {
+    "profile": "/Users/openclaw/.dsh/profiles/desktop",
+    "backup": "/Users/openclaw/dsh-backups/20261031-085947",
+    "beforeVersion": "0.1.27",
+    "afterVersion": "0.1.28",
+    "artifact": "/tmp/local-dsh-issue117-repair-pack-1793414191/nanmicoder-dsh-agent-teams-0.1.28.tgz",
+    "artifactSha256": "860e38b0f806827afe0c546b690de1932606210b6e7a507e1fda409aea73d729",
+    "pluginManagerExit": 0,
+    "installedPackageMatchesArtifact": true,
+    "preexistingWarning": "@deepseek-ai/dsh-subagent-codex@0.2.1-rc.3 is incompatible with rc.5 and was already installed; AgentTeams itself installed and loaded in the isolated runtime.",
+    "desktopUiInteraction": "Not performed because the macOS session was locked when the installer requested a host reload. The exact installed package bytes were copied to an isolated rc.5 runtime for runtime verification."
+  },
+  "installedBytesStability": {
+    "scenario": "stability",
+    "checksPassed": 13,
+    "requests": 108,
+    "memorySamples": 15,
+    "rssStart": 241418240,
+    "rssEnd": 285523968,
+    "rssDelta": 44105728,
+    "heapUsedStart": 104433728,
+    "heapUsedEnd": 127163528,
+    "heapUsedDelta": 22729800,
+    "externalStart": 5690758,
+    "externalEnd": 19137728,
+    "maxHeapUsed": 127597928
+  },
+  "retentionRepair": {
+    "containers": [
+      {
+        "name": "ancestryCache",
+        "owner": "src/lineage.ts",
+        "beforeCount": 201,
+        "beforeScope": "0 entries at start; 201 after 100 team cycles",
+        "repair": "LRU bound at 256 plus explicit teardown deletion for known captain/member session ids"
+      },
+      {
+        "name": "activationRoots",
+        "owner": "src/scheduler.ts",
+        "beforeCount": 100,
+        "beforeScope": "one entry per deleted team",
+        "repair": "activation context index with forgetTeam called by delete/discard"
+      },
+      {
+        "name": "activationWorkspaces",
+        "owner": "src/scheduler.ts",
+        "beforeCount": 100,
+        "beforeScope": "one entry per deleted team",
+        "repair": "activation context index with forgetTeam called by delete/discard"
+      }
+    ],
+    "postRepairLifecycleEvidence": {
+      "activationRoots": 0,
+      "activationWorkspaces": 0,
+      "pendingByChild": 0,
+      "runToActivation": 0,
+      "knownDeletedSessionAncestryEntries": 0
+    }
+  },
+  "hundredCycleSoak": {
+    "workload": {
+      "cycles": 100,
+      "membersPerCycle": 2,
+      "tasksPerCycle": 2,
+      "model": "deterministic fixture",
+      "forcedGcBeforeEachSample": true
+    },
+    "preRepair": {
+      "requests": 240,
+      "heapUsedStart": 85743088,
+      "heapUsedCycle100": 123200632,
+      "heapSlopeBytesPerCycle": 358802.68394839484,
+      "rssSlopeBytesPerCycle": 271971.84384038404
+    },
+    "hostControlWithoutAgentTeams": {
+      "cycles": 100,
+      "requests": 200,
+      "sessionsCreatedAndDisposed": 200,
+      "heapUsedStart": 81192136,
+      "heapUsedCycle100": 112587640,
+      "heapSlopeBytesPerCycle": 319907.89467746776
+    },
+    "postRepair": {
+      "requests": 252,
+      "heapUsedStart": 83145992,
+      "heapUsedCycle100": 122268120,
+      "heapDelta": 39122128,
+      "heapSlopeBytesPerCycle": 351391.05545754585,
+      "rssStart": 250216448,
+      "rssEnd": 257703936,
+      "rssDelta": 7487488,
+      "rssSlopeBytesPerCycle": -81464.7086468647,
+      "externalStart": 4902693,
+      "externalEnd": 4972409,
+      "externalStartupToStableDelta": 69716,
+      "activeHandles": [
+        0,
+        25
+      ]
+    }
+  },
+  "heapSnapshotAttribution": {
+    "hindsightSkillText": {
+      "instancesStart": 0,
+      "instancesPluginEnd": 128,
+      "instancesControlEnd": 128,
+      "selfSizeDeltaBytes": 21024768
+    },
+    "skillFrontmatterStrings": {
+      "instancesStart": 0,
+      "instancesPluginEnd": 640,
+      "instancesControlEnd": 640,
+      "selfSizeDeltaBytes": 25819136
+    },
+    "interpretation": "The no-AgentTeams control reproduces the dominant skill-text retention. AgentTeams creates and later disposes child sessions, but the host retains per-session skill material in both runs."
+  },
+  "conclusion": {
+    "pluginOwnedContainersFixed": true,
+    "realProviderOomReproduced": false,
+    "issue117Disposition": "Fork-side plugin retention is repaired and regression-tested. The dominant observed growth is host/session skill retention and still requires a Harness-side fix or real-provider evidence; do not describe this audit as reproducing the reporter's OOM.",
+    "unverified": [
+      "real provider API workload",
+      "GUI interaction while the macOS session is locked",
+      "Harness-side per-session skill eviction",
+      "Windows and Linux desktop behavior"
+    ]
+  }
+}

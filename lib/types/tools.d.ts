@@ -15,6 +15,7 @@ import { type MemberToolPolicy } from './tool-policies.ts';
 import type { ArtifactRootConfig, ArtifactSnapshot } from './types.ts';
 import { type MemberRuntimeConfig } from './members.ts';
 import { type TeamState, type TeamTask } from './types.ts';
+import { type TeamScheduler } from './scheduler.ts';
 import { type SkillBindingConfig } from './profiles.ts';
 export { steerCaptainReport } from './members.ts';
 /** Resolved plugin config consumed by the tools. */
@@ -133,6 +134,9 @@ export interface AgentTeamsRuntime {
     discardStagedTeam(captain: Agent, teamId: string): Promise<{
         teamId: string;
     }>;
+    memoryDiagnostics(): ReturnType<TeamScheduler['diagnostics']> & {
+        ancestryCache: number;
+    };
 }
 /** Public schema guidance shared by every tool-policy selection surface. */
 export declare const TOOL_POLICY_DESCRIPTION = "Optional owner-declared tool-policy id. Omit when no policy is needed. Never invent an id; an unknown non-empty id is rejected atomically.";

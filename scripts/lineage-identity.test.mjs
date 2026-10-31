@@ -10,7 +10,7 @@
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isTopLevelSession, teamLeadMatch } from '../lib/lineage.js'
+import { ANCESTRY_CACHE_MAX, ancestryCacheEntryCount, forgetAncestryCache, isTopLevelSession, resolveAncestry, sessionAncestry, teamLeadMatch } from '../lib/lineage.js'
 
 /** Plain team record as `findTeamByCaptain`/`findTeamByParticipant` see it. */
 const team = members => ({ captainSessionId: 'session-captain', members })
@@ -74,4 +74,52 @@ test('only a top-level conversation may inherit lead identity', () => {
   assert.equal(isTopLevelSession({ header: { origin: 'subagent' } }), false)
   assert.equal(isTopLevelSession({ header: { delegationDepth: 1 } }), false)
   assert.equal(isTopLevelSession({ header: { origin: 'subagent', delegationDepth: 0 } }), false)
+})
+
+test('the durable ancestry cache is bounded and evicts the oldest session', async () => {
+  const headers = new Map()
+  const context = {
+    agents: { get: () => undefined },
+    get(name) {
+      if (name === 'sessions') return { get: () => undefined }
+      if (name === 'sessionPersistence') {
+        return { stat: async id => ({ header: headers.get(String(id)) }) }
+      }
+      return undefined
+    },
+  }
+  const sessions = []
+  for (let index = 0; index <= ANCESTRY_CACHE_MAX; index++) {
+    const parent = `parent-${index}`
+    headers.set(parent, { parentSession: 'root-session' })
+    sessions.push({ id: `session-${index}`, header: { parentSession: parent } })
+  }
+
+  for (const session of sessions) await resolveAncestry(context, session)
+
+  assert.equal(ANCESTRY_CACHE_MAX, 256)
+  assert.deepEqual(sessionAncestry(context, sessions.at(-1)), ['parent-256', 'root-session'])
+  // The first session fell out of the bounded cache, so synchronous lookup can
+  // only follow this process's first live hop, not the persisted second hop.
+  assert.deepEqual(sessionAncestry(context, sessions[0]), ['parent-0'])
+})
+
+test('team teardown can explicitly forget durable ancestry', async () => {
+  const headers = new Map([['parent', { parentSession: 'captain' }]])
+  const context = {
+    agents: { get: () => undefined },
+    get(name) {
+      if (name === 'sessions') return { get: () => undefined }
+      if (name === 'sessionPersistence') return { stat: async id => ({ header: headers.get(String(id)) }) }
+      return undefined
+    },
+  }
+  const session = { id: 'session-forgotten', header: { parentSession: 'parent' } }
+
+  assert.deepEqual(await resolveAncestry(context, session), ['parent', 'captain'])
+  assert.deepEqual(sessionAncestry(context, session), ['parent', 'captain'])
+  const beforeForget = ancestryCacheEntryCount()
+  forgetAncestryCache([session.id])
+  assert.equal(ancestryCacheEntryCount(), beforeForget - 1)
+  assert.deepEqual(sessionAncestry(context, session), ['parent'])
 })
