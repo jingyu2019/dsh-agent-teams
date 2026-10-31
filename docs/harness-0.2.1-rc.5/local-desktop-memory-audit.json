@@ -12,7 +12,7 @@
     "backup": "/Users/openclaw/dsh-backups/20261031-085947",
     "beforeVersion": "0.1.27",
     "afterVersion": "0.1.28",
-    "artifact": "/tmp/local-dsh-issue117-repair-pack-1793414191/nanmicoder-dsh-agent-teams-0.1.28.tgz",
+    "artifact": "/Users/openclaw/dsh-backups/20261031-085947/nanmicoder-dsh-agent-teams-0.1.28.tgz",
     "artifactSha256": "860e38b0f806827afe0c546b690de1932606210b6e7a507e1fda409aea73d729",
     "pluginManagerExit": 0,
     "installedPackageMatchesArtifact": true,
