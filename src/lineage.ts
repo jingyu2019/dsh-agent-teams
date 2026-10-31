@@ -25,6 +25,8 @@ import type { Session, SessionHeader, SessionId } from '@deepseek-ai/dsh-session
 
 /** Maximum fork-chain depth resolved for one identity (cycle- and length-bounded). */
 export const LINEAGE_MAX_DEPTH = 32
+/** Maximum durable ancestry entries retained by this process (LRU-bounded). */
+export const ANCESTRY_CACHE_MAX = 256
 
 /** One calling session's durable identity as the team lookups need it. */
 export interface LeadIdentity {
@@ -64,6 +66,39 @@ function optionalService<T>(ctx: Context, name: string): T | undefined {
 
 /** Ancestry this process already resolved for one session. */
 const ancestryCache = new Map<string, readonly string[]>()
+
+/** Insert one resolved ancestry as most-recent and evict the oldest overflow. */
+function rememberAncestry(sessionId: string, ancestry: readonly string[]): void {
+  ancestryCache.delete(sessionId)
+  ancestryCache.set(sessionId, ancestry)
+  while (ancestryCache.size > ANCESTRY_CACHE_MAX) {
+    const oldest = ancestryCache.keys().next().value
+    if (oldest === undefined) break
+    ancestryCache.delete(oldest)
+  }
+}
+
+/** Read one ancestry as most-recent, preserving LRU order without extending the bound. */
+function readAncestry(sessionId: string): readonly string[] | undefined {
+  const cached = ancestryCache.get(sessionId)
+  if (cached !== undefined) rememberAncestry(sessionId, cached)
+  return cached
+}
+
+/** Drop explicit session identities during team/member teardown. */
+export function forgetAncestryCache(sessionIds: readonly string[]): void {
+  for (const sessionId of sessionIds) ancestryCache.delete(sessionId)
+}
+
+/** Current retained ancestry entries for teardown diagnostics and regression tests. */
+export function ancestryCacheEntryCount(): number {
+  return ancestryCache.size
+}
+
+/** Whether one explicit identity is still retained by the ancestry cache. */
+export function ancestryCacheHas(sessionId: string): boolean {
+  return ancestryCache.has(sessionId)
+}
 
 /** The live session for one id: resident agent first, then the live session store. */
 export function liveSession(ctx: Context, id: string): Session | undefined {
@@ -111,7 +146,7 @@ export async function resolveAncestry(ctx: Context, session: Session): Promise<r
     ancestry.push(parent)
     parent = await durableParent(ctx, parent)
   }
-  ancestryCache.set(session.id, ancestry)
+  rememberAncestry(session.id, ancestry)
   return ancestry
 }
 
@@ -120,7 +155,7 @@ export async function resolveAncestry(ctx: Context, session: Session): Promise<r
  * hop, then resident sessions, then whatever the async resolver cached.
  */
 export function sessionAncestry(ctx: Context, session: Session): readonly string[] {
-  const cached = ancestryCache.get(session.id)
+  const cached = readAncestry(session.id)
   if (cached !== undefined) return cached
   const ancestry: string[] = []
   const seen = new Set<string>([session.id])

@@ -17,6 +17,7 @@ import { buildActivationDirective, invokedAgentTeamsGoal, invokedAgentTeamsInvoc
 import { readArchivedTeam, readMailbox, readTeam, readUnreadMailbox } from '../lib/state.js'
 import { FINAL_REPORT_GRACE_MS, isCurrentMail, isFinalReportForSettlement } from '../lib/mailbox.js'
 import { assembleTeamSnapshot, collectArchivedTeamsActivity } from '../lib/snapshot.js'
+import { ancestryCacheHas, resolveAncestry } from '../lib/lineage.js'
 
 const deliveryHarness = process.argv.includes('--delivery-harness')
 const modernHarness = deliveryHarness || process.argv.includes('--modern-harness')
@@ -44,8 +45,9 @@ function check(label, condition, detail = '') {
   if (!condition) failures.push(label)
 }
 
-function session(parentSession) {
+function session(id, parentSession) {
   return {
+    id,
     header: { cwd: workspace, parentSession, ...(modernHarness ? {} : { seedLength: 0 }) },
     ...(modernHarness ? { ownEvents() { return this._ownEvents ?? [] } } : { events: [] }),
     append() {},
@@ -60,7 +62,7 @@ function makeAgent(id, parentSession) {
     id,
     status: 'idle',
     options: { provider: 'fake', model: 'fake-model' },
-    session: session(parentSession),
+    session: session(id, parentSession),
     followups: [],
     steers: [],
     injections: [],
@@ -527,7 +529,24 @@ try {
     profileStatus.profile?.name === 'demo-delivery'
       && profileStatus.tasks.some(item => item.seed_id === 'requirements')
       && profileStatus.tasks.some(item => item.seed_id === 'implement'))
+  const beforeDeleteTeam = await readTeam(stateRoot, 'profile-demo')
+  const releasedAncestryIds = [captain.id, ...beforeDeleteTeam.members.map(member => member.id)].filter(Boolean)
+  const releasedAgents = [captain, ...beforeDeleteTeam.members.map(member => liveAgents.get(member.id) ?? disposedAgents.get(member.id))]
+    .filter(Boolean)
+  for (const agent of releasedAgents) await resolveAncestry(ctx, agent.session)
+  check(`known team session ids are cached before delete ${JSON.stringify({ releasedAncestryIds, cached: releasedAncestryIds.filter(ancestryCacheHas) })}`,
+    releasedAncestryIds.every(ancestryCacheHas))
+  const beforeDeleteDiagnostics = agentTeamsRuntime.memoryDiagnostics()
   await call('agent_teams_delete', {})
+  const afterDeleteDiagnostics = agentTeamsRuntime.memoryDiagnostics()
+  check(`team deletion releases activation context and pending bookkeeping ${JSON.stringify({ beforeDeleteDiagnostics, afterDeleteDiagnostics })}`,
+    afterDeleteDiagnostics.activationRoots === 0
+      && afterDeleteDiagnostics.activationWorkspaces === 0
+      && releasedAncestryIds.every(id => !ancestryCacheHas(id))
+      && afterDeleteDiagnostics.pendingByChild === 0
+      && afterDeleteDiagnostics.runToActivation === 0
+      && afterDeleteDiagnostics.memberQueues === 0
+      && afterDeleteDiagnostics.lifecycleLanes === 0)
 
   const deliveriesBeforeDiscard = deliveries.length
   const captainCancelsBeforeDiscard = captain.cancelCount ?? 0
@@ -539,15 +558,20 @@ try {
     approval: 'required',
   })
   await call('agent_teams_create_task', { subject: 'should never run', assignee: 'analyst' })
+  const beforeDiscardDiagnostics = agentTeamsRuntime.memoryDiagnostics()
   const discardedPlan = await agentTeamsRuntime.discardStagedTeam(captain, 'rejected-demo')
+  const afterDiscardDiagnostics = agentTeamsRuntime.memoryDiagnostics()
   const discardedArchive = await readArchivedTeam(stateRoot, 'rejected-demo')
-  check('discarding a staged plan archives it without spawning or dispatching',
+  check(`discarding a staged plan archives it without spawning or dispatching ${JSON.stringify({ beforeDiscardDiagnostics, afterDiscardDiagnostics })}`,
     discardedPlan.teamId === 'rejected-demo'
       && await readTeam(stateRoot, 'rejected-demo') === undefined
       && discardedArchive?.phase === 'staged'
       && discardedArchive.members.every(member => member.id === '')
       && discardedArchive.tasks.every(task => task.status === 'pending')
-      && deliveries.length === deliveriesBeforeDiscard)
+      && deliveries.length === deliveriesBeforeDiscard
+      && afterDiscardDiagnostics.activationRoots === 0
+      && afterDiscardDiagnostics.activationWorkspaces === 0
+      && afterDiscardDiagnostics.ancestryCache <= beforeDiscardDiagnostics.ancestryCache)
   const discardControlText = captain.injections.at(-1)?.content?.map(block => block.text ?? '').join('\n') ?? ''
   check('discard aborts the active Captain turn and parks an authoritative no-recreate context',
     (captain.cancelCount ?? 0) === captainCancelsBeforeDiscard + 1

@@ -29,4 +29,16 @@ The real DSH `stability` scenario also passes on rc.5 with all 13 checks. The fi
 - `RSS`: 235,388,928 → 259,899,392 bytes (+24.5 MiB)
 - `maxHeapUsed`: 116,684,656 bytes
 
-The heap was bounded in this repeated team lifecycle run; RSS growth is consistent with V8/runtime page retention. This does not reproduce a long-running real-model OOM, so #117 still needs a user-side RSS/heapUsed series for the failing workload. The machine-readable summary is [`memory-audit.json`](./memory-audit.json).
+The heap was bounded in this repeated team lifecycle run; RSS growth is consistent with V8/runtime page retention. The machine-readable summary is [`memory-audit.json`](./memory-audit.json).
+
+## Local desktop install and #117 soak
+
+The final development artifact was installed into the real desktop profile and then copied byte-for-byte into an isolated rc.5 runtime for repeatable testing. The exact installed package passed `stability` (13/13 checks) and a 100-cycle workload with two members and two tasks per cycle. Every cycle was claimed, started, completed, reported and deleted; the fixture forced GC before each memory sample.
+
+- Host control without AgentTeams: `heapUsed` slope **319,707 B/cycle** across 200 ordinary child sessions.
+- AgentTeams before the retention repair: **358,803 B/cycle** across 201 sessions.
+- AgentTeams after the retention repair: **351,391 B/cycle** across 252 model requests; RSS slope was **−81,465 B/cycle**, `external` rose by 69,716 bytes after startup and then stayed flat at 4,972,409 bytes, and active handles stayed at 25.
+
+The independent heap audit found three plugin-owned unbounded containers: `ancestryCache` (201 entries), `activationRoots` (100) and `activationWorkspaces` (100). The repair bounds the ancestry cache at 256 entries, deletes known session entries during teardown, and adds an explicit activation-context `forgetTeam` path used by team deletion and staged-plan discard. Lifecycle verification now asserts that activation roots/workspaces and pending activation bookkeeping are zero after deletion.
+
+The dominant heap growth is still not plugin-specific. A no-AgentTeams control created and disposed 200 ordinary child sessions and retained the same 128 copies of the large Hindsight skill text (**21,024,768 bytes**) as the AgentTeams run. This points at Harness per-session skill retention rather than the repaired team maps. The soak used a deterministic model and **does not reproduce the reporter’s real-provider OOM**; GUI verification was unavailable because the macOS session was locked during the host reload. Full local-install and audit data is in [`local-desktop-memory-audit.json`](./local-desktop-memory-audit.json).

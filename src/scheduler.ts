@@ -129,6 +129,48 @@ export interface TeamScheduler {
   kickTeam(workspace: string, teamId: string, captain?: Agent): Promise<void>
   /** Try to flush fallback mail or give one member one ready task. */
   kickMember(workspace: string, teamId: string, memberName: string, captain?: Agent): Promise<void>
+  /** Release process-local activation context for a team that no longer exists. */
+  forgetTeam(teamId: string, memberIds?: readonly string[]): void
+  /** Read process-local bookkeeping sizes for teardown regressions. */
+  diagnostics(): {
+    activationRoots: number
+    activationWorkspaces: number
+    pendingByChild: number
+    runToActivation: number
+    parkedAttempts: number
+    routeRetryTimers: number
+    probeTimers: number
+    memberQueues: number
+    lifecycleLanes: number
+  }
+}
+
+/** Process-local lookup needed to settle host callbacks after a child leaves the registry. */
+export interface ActivationContextIndex {
+  remember(teamId: string, stateRoot: string, workspace: string): void
+  root(teamId: string): string | undefined
+  workspace(teamId: string): string | undefined
+  forget(teamId: string): void
+  size(): { roots: number; workspaces: number }
+}
+
+/** Create one explicitly forgettable activation-context index. */
+export function createActivationContextIndex(): ActivationContextIndex {
+  const roots = new Map<string, string>()
+  const workspaces = new Map<string, string>()
+  return {
+    remember(teamId, stateRoot, workspace) {
+      roots.set(teamId, stateRoot)
+      workspaces.set(teamId, workspace)
+    },
+    root: teamId => roots.get(teamId),
+    workspace: teamId => workspaces.get(teamId),
+    forget(teamId) {
+      roots.delete(teamId)
+      workspaces.delete(teamId)
+    },
+    size: () => ({ roots: roots.size, workspaces: workspaces.size }),
+  }
 }
 
 /** One completed recursive dependency shown to the assignee. */
@@ -387,8 +429,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
 
   const pendingByChild = new Map<string, { teamId: string; activationId: string }>()
   const runToActivation = new Map<string, { teamId: string; activationId: string }>()
-  const activationRoots = new Map<string, string>()
-  const activationWorkspaces = new Map<string, string>()
+  const activationContexts = createActivationContextIndex()
   const lifecycleLanes = new Map<string, Promise<unknown>>()
   const probeIntervalMs = normalizeProbeIntervalMs(config.probeIntervalMs)
   const clockNow = config.now ?? Date.now
@@ -804,8 +845,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       }
     }
     pendingByChild.set(reservedChildId, { teamId: team.id, activationId })
-    activationRoots.set(team.id, stateRoot)
-    activationWorkspaces.set(team.id, workspace)
+    activationContexts.remember(team.id, stateRoot, workspace)
     return { lease, newChild, reservedChildId }
   }
 
@@ -913,7 +953,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     const pointer = pendingByChild.get(childId)
     if (pointer === undefined) return
     const agent = ctx.agents.get(info.id)
-    const stateRoot = activationRoots.get(pointer.teamId) ?? agent?.session.header.cwd ?? process.cwd()
+    const stateRoot = activationContexts.root(pointer.teamId) ?? agent?.session.header.cwd ?? process.cwd()
     await withTeamLock(teamLockKey(stateRoot, pointer.teamId), async () => {
       const team = await readTeam(stateRoot, pointer.teamId)
       if (team === undefined) return
@@ -959,7 +999,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     }
     if (pointer === undefined) return
     const agent = ctx.agents.get(info.id)
-    const stateRoot = activationRoots.get(pointer.teamId) ?? agent?.session.header.cwd ?? process.cwd()
+    const stateRoot = activationContexts.root(pointer.teamId) ?? agent?.session.header.cwd ?? process.cwd()
     const message = info.lastAssistantMessage?.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
     await settleActivation({
       teamId: pointer.teamId,
@@ -969,7 +1009,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       ...message === undefined || message === '' ? {} : { lastAssistantMessage: message },
       source: 'end',
     }, stateRoot)
-    const workspace = activationWorkspaces.get(pointer.teamId)
+    const workspace = activationContexts.workspace(pointer.teamId)
     if (workspace !== undefined) await flushDueNotices(workspace, stateRoot, pointer.teamId)
     const fresh = await readTeam(stateRoot, pointer.teamId)
     const memberName = fresh?.members.find(member => member.id === String(info.id))?.name
@@ -1030,7 +1070,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
         ...output === undefined || output === '' ? {} : { lastAssistantMessage: output },
         source: 'result',
       }, input.stateRoot)
-      const workspace = activationWorkspaces.get(input.teamId)
+      const workspace = activationContexts.workspace(input.teamId)
       if (workspace !== undefined) await flushDueNotices(workspace, input.stateRoot, input.teamId)
     }, async error => {
       try {
@@ -1046,7 +1086,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
         diagnostic: errorText,
         source: 'result',
       }, input.stateRoot)
-      const workspace = activationWorkspaces.get(input.teamId)
+      const workspace = activationContexts.workspace(input.teamId)
       if (workspace !== undefined) await flushDueNotices(workspace, input.stateRoot, input.teamId)
     }).catch(error => {
       ctx.logger.warn(`agent-teams: activation result reconciliation failed: ${String(error)}`)
@@ -1098,15 +1138,13 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       }
       await writeTeam(stateRoot, team)
     })
-    activationRoots.set(teamId, stateRoot)
-    activationWorkspaces.set(teamId, workspace)
+    activationContexts.remember(teamId, stateRoot, workspace)
   }
 
   const recoverActivations = async (workspace: string, stateRoot: string, teamId: string): Promise<void> => {
     const team = await readTeam(stateRoot, teamId)
     if (team === undefined) return
-    activationRoots.set(teamId, stateRoot)
-    activationWorkspaces.set(teamId, workspace)
+    activationContexts.remember(teamId, stateRoot, workspace)
     for (const lease of [...(team.activations ?? [])]) {
       if (lease.state === 'released' || lease.state === 'rejected') continue
       // A start event is delivered through an async lifecycle lane. Do not
@@ -1221,6 +1259,38 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
   }
 
   const runtime: TeamScheduler = {
+    forgetTeam(teamId, memberIds = []) {
+      const stateRoot = activationContexts.root(teamId)
+      if (stateRoot !== undefined) clearTeamProbeTimer(stateRoot, teamId)
+      activationContexts.forget(teamId)
+      for (const [childId, pointer] of pendingByChild) {
+        if (pointer.teamId === teamId) pendingByChild.delete(childId)
+      }
+      for (const [runId, pointer] of runToActivation) {
+        if (pointer.teamId === teamId) runToActivation.delete(runId)
+      }
+      for (const [key, timer] of routeRetryTimers) {
+        if (!key.includes(`\u0000${teamId}\u0000`)) continue
+        routeRetryTimers.delete(key)
+        cancelTimer(timer)
+      }
+      for (const memberId of memberIds) parkedAttempts.delete(memberId)
+    },
+    diagnostics() {
+      const contexts = activationContexts.size()
+      return {
+        activationRoots: contexts.roots,
+        activationWorkspaces: contexts.workspaces,
+        pendingByChild: pendingByChild.size,
+        runToActivation: runToActivation.size,
+        parkedAttempts: parkedAttempts.size,
+        routeRetryTimers: routeRetryTimers.size,
+        probeTimers: probeTimers.size,
+        memberQueues: memberQueues.size,
+        lifecycleLanes: lifecycleLanes.size,
+      }
+    },
+
     async kickTeam(workspace, teamId, suppliedCaptain) {
       const stateRoot = stateRootOf(workspace, config)
       await recoverActivations(workspace, stateRoot, teamId)

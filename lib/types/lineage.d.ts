@@ -24,6 +24,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { Session } from '@deepseek-ai/dsh-session';
 /** Maximum fork-chain depth resolved for one identity (cycle- and length-bounded). */
 export declare const LINEAGE_MAX_DEPTH = 32;
+/** Maximum durable ancestry entries retained by this process (LRU-bounded). */
+export declare const ANCESTRY_CACHE_MAX = 256;
 /** One calling session's durable identity as the team lookups need it. */
 export interface LeadIdentity {
     /** The calling session id. */
@@ -33,6 +35,12 @@ export interface LeadIdentity {
     /** Whether this session may inherit lead identity from an ancestor at all. */
     readonly inheritsLead: boolean;
 }
+/** Drop explicit session identities during team/member teardown. */
+export declare function forgetAncestryCache(sessionIds: readonly string[]): void;
+/** Current retained ancestry entries for teardown diagnostics and regression tests. */
+export declare function ancestryCacheEntryCount(): number;
+/** Whether one explicit identity is still retained by the ancestry cache. */
+export declare function ancestryCacheHas(sessionId: string): boolean;
 /** The live session for one id: resident agent first, then the live session store. */
 export declare function liveSession(ctx: Context, id: string): Session | undefined;
 /** Whether one session is a top-level conversation rather than a subagent child. */
