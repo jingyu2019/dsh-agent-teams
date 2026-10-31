@@ -17,7 +17,7 @@
     "pluginManagerExit": 0,
     "installedPackageMatchesArtifact": true,
     "preexistingWarning": "@deepseek-ai/dsh-subagent-codex@0.2.1-rc.3 is incompatible with rc.5 and was already installed; AgentTeams itself installed and loaded in the isolated runtime.",
-    "desktopUiInteraction": "Not performed because the macOS session was locked when the installer requested a host reload. The exact installed package bytes were copied to an isolated rc.5 runtime for runtime verification."
+    "desktopUiInteraction": "Verified after unlock: the desktop UI rendered the AgentTeams activity panel for a six-member team and opened the plugin settings page. The macOS session re-locked before the full custom-plugin version list could be scrolled to completion; installed package identity and bytes were verified independently."
   },
   "installedBytesStability": {
     "scenario": "stability",
@@ -129,7 +129,7 @@
     "issue117Disposition": "Fork-side plugin retention is repaired and regression-tested. The dominant observed growth is host/session skill retention and still requires a Harness-side fix or real-provider evidence; do not describe this audit as reproducing the reporter's OOM.",
     "unverified": [
       "real provider API workload",
-      "GUI interaction while the macOS session is locked",
+      "full end-to-end GUI workflow while the session remained unlocked",
       "Harness-side per-session skill eviction",
       "Windows and Linux desktop behavior"
     ]
