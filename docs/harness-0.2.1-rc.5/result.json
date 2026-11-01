@@ -1,27 +1,149 @@
 {
   "passed": true,
   "version": "0.2.1-rc.5",
-  "artifactSha256": "1b9dd37f25b998c1a3b9d51f93a2953f374a0a27c0ba6908921cff43f819d0fe",
-  "pluginVersion": "0.1.28",
+  "artifactSha256": "3fa113d5961b34c83806775b601eaf422b2b10877ea4c01fab99f7f6abcb6a02",
+  "pluginVersion": "0.1.29",
   "testFiles": {
     "compatibility.mjs": "7671a6174bb8098b1f9081facfec5452331ef7660f880d93a95c901de27bc32e",
-    "../compatibility.json": "0b7ed4755f8c348dbddbd83204ed907f4d246773ba579b05046d071db680d6da",
+    "../compatibility.json": "1c10f06a615c6dc227b66eaa816fe97e4de06f5827b8efd631358483a6b9462f",
     "harness-validation.mjs": "cd31589d19c1bb5e1971319b65ce54d4b49173d000b662dac8647ed2adfc723f",
     "harness-runtime-verify.mjs": "aecf0b3446e87de8108d8d3dfdb8d02ffabef8bf287e0613eec7db1b5e1504c8",
     "harness-runtime-scenarios.mjs": "5a1a6c66c8650cd4d84966dc0ec60afd2b4f86a095369a215606851adc41b35d",
-    "fixtures/harness-runtime-llm.mjs": "42b3bb0e35510e09e2e3ebd5e7e061b36baf40f58b08f9ea11e58dc91d4c9ead",
+    "fixtures/harness-runtime-llm.mjs": "07e6759a939cb10bf3c7b000191c18690dd79184b586c3db6b75266ffe28147d",
     "fixtures/harness-runtime-resume.mjs": "17f8be68c143a2f49e0c45de90665c4cf24aac2f06d8a415db062e71424b10a7",
     "fixtures/harness-runtime-idle.mjs": "508f2437610624aaf5196c66c533a0f7b1da021343b1534c1a60818cca54bc72",
     "fixtures/harness-runtime-entry.mjs": "816515fd8f59e173217f2f47dedbbe5c239d693173950f02e3a5135adff40f31",
     "fixtures/harness-runtime-web-approval.mjs": "bc29f96cb9e8f462567048f8f8b5a239f6f420b73b2602e41c69cd5ceee9e627",
     "fixtures/harness-runtime-protocol.mjs": "1be0de75af86c9fb96b35c88d2e52ac1c2e9eacc8a9f8451e58842df83736485",
-    "fixtures/harness-runtime-stability.mjs": "c049f4838a4123683dbe3024ef9b9d8441f691ac17da8e340654b7be0a753d21"
+    "fixtures/harness-runtime-stability.mjs": "7c653917bad967be6ae8c05961e25bf5ac24895609be57e8ac8b3c4e0a45cdec"
   },
   "node": "v26.12.1",
   "platform": "darwin",
   "arch": "arm64",
   "cohortCount": 296,
   "runs": [
+    {
+      "scenario": "lifecycle",
+      "passed": true,
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "timedOut": false
+      },
+      "assertions": {
+        "exit0": true,
+        "productMarker": true,
+        "pluginToolsVisible": true,
+        "memberExecuted": true,
+        "memberToolsRestricted": true,
+        "explicitReasoning": true,
+        "taskTerminal": true,
+        "secondWake": true,
+        "fifoMessageOrder": true,
+        "messagesSentWhileBusy": true
+      },
+      "requests": 16,
+      "memberRequests": 6
+    },
+    {
+      "scenario": "lifecycle-cold-restore",
+      "passed": true,
+      "assertions": {
+        "memberToolsRestricted": true,
+        "exit0": true,
+        "driverCompleted": true,
+        "sameMemberRestored": true,
+        "routeRestored": true,
+        "reasoningRestored": true
+      },
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "timedOut": false
+      }
+    },
+    {
+      "scenario": "fallback",
+      "passed": true,
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "timedOut": false
+      },
+      "assertions": {
+        "exit0": true,
+        "productMarker": true,
+        "pluginToolsVisible": true,
+        "memberExecuted": true,
+        "memberToolsRestricted": true,
+        "explicitReasoning": true,
+        "taskTerminal": true,
+        "secondWake": true,
+        "fallbackActivated": true,
+        "fallbackReasoningReset": true
+      },
+      "requests": 15,
+      "memberRequests": 7
+    },
+    {
+      "scenario": "fallback-cold-restore",
+      "passed": true,
+      "assertions": {
+        "memberToolsRestricted": true,
+        "exit0": true,
+        "driverCompleted": true,
+        "sameMemberRestored": true,
+        "routeRestored": true,
+        "reasoningRestored": true
+      },
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "timedOut": false
+      }
+    },
+    {
+      "scenario": "failure",
+      "passed": true,
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "timedOut": false
+      },
+      "assertions": {
+        "exit0": true,
+        "productMarker": true,
+        "pluginToolsVisible": true,
+        "memberExecuted": true,
+        "memberToolsRestricted": true,
+        "explicitReasoning": true,
+        "taskTerminal": true
+      },
+      "requests": 6,
+      "memberRequests": 1
+    },
+    {
+      "scenario": "captain-idle-wakeup",
+      "passed": true,
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "timedOut": false
+      },
+      "assertions": {
+        "exit0": true,
+        "productMarker": true,
+        "pluginToolsVisible": true,
+        "memberExecuted": true,
+        "memberToolsRestricted": true,
+        "explicitReasoning": true,
+        "taskTerminal": true,
+        "captainActuallyYielded": true,
+        "notifiedAfterIdle": true
+      },
+      "requests": 11,
+      "memberRequests": 5
+    },
     {
       "scenario": "progressive-entry",
       "passed": true,
@@ -39,6 +161,179 @@
         "command",
         "profile-command",
         "profile-raw"
+      ],
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "timedOut": false
+      }
+    },
+    {
+      "scenario": "web-approval",
+      "passed": true,
+      "assertions": {
+        "claimedProjection": true,
+        "exit0": true,
+        "productMarker": true,
+        "driverCompleted": true,
+        "stagedBeforeApproval": true,
+        "independentApprovalWake": true,
+        "reportWakeAfterYield": true,
+        "noPollingOrDuplicateApproval": true,
+        "oneUserMessageAndHttpApproval": true,
+        "invalidTeamRejected": true,
+        "repeatApprovalRejected": true,
+        "stableCaptainHeaders": true,
+        "memberFourTools": true,
+        "taskCompleted": true
+      },
+      "evidence": {
+        "event": "web-approval-passed",
+        "sessionId": "session-f90c0d72-4f3f-46e8-a050-5e96e39b7494",
+        "teamId": "runtime-lab",
+        "memberId": "5aec4399-3af8-44d0-8f5a-a6394f8362b4",
+        "taskStatus": "completed",
+        "captainRequests": 7,
+        "order": 32,
+        "time": 1793499847928
+      },
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "timedOut": false
+      }
+    },
+    {
+      "scenario": "protocol-compatibility",
+      "passed": true,
+      "assertions": {
+        "exit0": true,
+        "productMarker": true,
+        "legacyAllowlistAndColdRestore": true,
+        "legacyProfileDirectory": true,
+        "actualPtcDiscard": true,
+        "actualPruning": true,
+        "actualCompaction": true,
+        "existingPlanRevised": true,
+        "lifecycleArchived": true
+      },
+      "cases": [
+        {
+          "event": "protocol-case-passed",
+          "label": "legacy-allowlist-cold-compact",
+          "requests": 7,
+          "compactedHistory": true,
+          "persistedSubject": "Recovered task",
+          "archived": true,
+          "profile": "north"
+        },
+        {
+          "event": "protocol-case-passed",
+          "label": "ptc-discard-and-compact",
+          "requests": 9,
+          "compactedHistory": true,
+          "persistedSubject": "Recovered task",
+          "archived": true
+        }
+      ],
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "timedOut": false
+      }
+    },
+    {
+      "scenario": "stability",
+      "passed": true,
+      "assertions": {
+        "exit0": true,
+        "productMarker": true,
+        "hmr": true,
+        "lazy-start": true,
+        "running-plan-correction": true,
+        "steering": true,
+        "read-receipt-continuation": true,
+        "reassign": true,
+        "archive": true,
+        "batch-plan": true,
+        "terminal-evidence": true,
+        "report-retry": true,
+        "settlement-dedup": true
+      },
+      "evidence": [
+        {
+          "event": "stability-hmr-passed",
+          "sameAgent": true,
+          "persona": true,
+          "customToolDenied": true,
+          "time": 1793499851286
+        },
+        {
+          "event": "stability-lazy-start-passed",
+          "readyRequests": 1,
+          "blockedRequests": 0,
+          "welcomeRequests": 0,
+          "time": 1793499851286
+        },
+        {
+          "event": "stability-running-plan-correction-passed",
+          "pendingEdit": true,
+          "captainCancellation": true,
+          "blockedRequests": 0,
+          "time": 1793499851502
+        },
+        {
+          "event": "stability-steering-passed",
+          "queuedMessages": 32,
+          "modelStepsUntilConsumed": 1,
+          "time": 1793499852816
+        },
+        {
+          "event": "stability-read-receipt-continuation-passed",
+          "modelContinued": true,
+          "time": 1793499852905
+        },
+        {
+          "event": "stability-reassign-passed",
+          "sameMember": true,
+          "staleInputExcluded": true,
+          "time": 1793499853076
+        },
+        {
+          "event": "stability-archive-passed",
+          "pendingMessagesCleared": 32,
+          "descendantsStopped": true,
+          "siblingPreserved": true,
+          "retiredResumeRejected": true,
+          "time": 1793499856582
+        },
+        {
+          "event": "stability-batch-plan-passed",
+          "members": 5,
+          "tasks": 6,
+          "setupToolCalls": 1,
+          "previousEquivalentToolCalls": 12,
+          "memberModelRequests": 0,
+          "time": 1793499856646
+        },
+        {
+          "event": "stability-terminal-evidence-passed",
+          "records": 1,
+          "duplicateAppend": false,
+          "originalResultPreserved": true,
+          "time": 1793499856883
+        },
+        {
+          "event": "stability-report-retry-passed",
+          "duplicateModelRequests": 0,
+          "time": 1793499856944
+        },
+        {
+          "event": "stability-settlement-dedup-passed",
+          "reportWakes": 1,
+          "duplicateModelRequests": 0,
+          "time": 1793499856962
+        }
       ],
       "exit": {
         "code": 0,

@@ -3,7 +3,7 @@
   "manifestVersion": "0.15",
   "id": "com.nanmicoder.agent-teams",
   "name": "@nanmicoder/dsh-agent-teams",
-  "version": "0.1.28",
+  "version": "0.1.29",
   "license": "MIT",
   "source": "git+https://github.com/NanmiCoder/dsh-agent-teams.git",
   "facets": {

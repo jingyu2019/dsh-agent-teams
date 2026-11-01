@@ -11,6 +11,11 @@ function record(data) { appendFileSync(process.env.LAB_TRACE, JSON.stringify({ .
 function textChunks(text) { return [{ type: 'block-start', index: 0, blockType: 'text' }, { type: 'text-delta', index: 0, text }, { type: 'block-end', index: 0, block: { type: 'text', text } }, { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } }, { type: 'finish', reason: { kind: 'stop' } }]; }
 function call(name, args) { const id = ToolCallId('lab-' + Date.now().toString(36) + '-' + (++seq)), arguments_ = JSON.stringify(args); return [{ type: 'block-start', index: 0, blockType: 'tool-call' }, { type: 'tool-call-delta', index: 0, id, name, argumentsDelta: arguments_ }, { type: 'block-end', index: 0, block: { type: 'tool-call', id, name, arguments: arguments_ } }, { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } }, { type: 'finish', reason: { kind: 'tool-calls' } }]; }
 function history(options) { return options.messages.flatMap(m => m.role === 'tool' ? [{ type: 'tool-result', content: m.content, isError: m.isError, toolCallId: m.toolCallId }] : m.content ?? []); }
+function runtimeTeamState() {
+    const file = join(process.cwd(), '.agent-teams/runtime-lab/team.json');
+    if (!existsSync(file)) return undefined;
+    try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return undefined; }
+}
 class FixtureAdapter extends LlmAdapter {
     async listModels() { return [model, { ...model, id: 'fixture-failing' }, { ...model, id: 'fixture-fallback' }]; }
     async resolveModel(provider, id) { return { ...model, provider, id }; }
@@ -22,6 +27,11 @@ class FixtureAdapter extends LlmAdapter {
         const currentNames = options.messages.slice(options.messages.findLastIndex(m => m.role === 'user' && m.source?.kind === 'user') + 1).flatMap(m => m.content ?? []).filter(b => b.type === 'tool-call').map(b => b.name);
         const toolText = blocks.filter(b => b.type === 'tool-result').flatMap(b => b.content?.filter(t => t.type === 'text').map(t => t.text) ?? []).join('\n');
         const isMember = system?.includes('MEMBER_FIXTURE') === true;
+        const teamState = isMember ? undefined : runtimeTeamState();
+        const hasWorker = teamState?.members?.some(member => member.name === 'worker') === true;
+        const hasTask = (teamState?.tasks?.length ?? 0) > 0;
+        const authFailed = teamState?.tasks?.some(task => task.status === 'failed'
+            && (task.attemptRoute?.lastFailure?.code === 'AUTH' || String(task.output ?? '').includes('AUTH'))) === true;
         const teamTools = (options.tools ?? []).filter(t => t.name.startsWith('agent_teams_'));
         const requestKey = JSON.stringify([options.purpose, isMember, teamTools.map(t => t.name)]);
         if (!capturedRequests.has(requestKey)) {
@@ -123,11 +133,11 @@ class FixtureAdapter extends LlmAdapter {
                 chunks = call('agent_teams_status', {});
             else chunks = textChunks('STAGED_ENTRY_OK');
         }
-        else if (!names.includes('agent_teams_create'))
+        else if (teamState === undefined)
             chunks = call('agent_teams_create', { name: 'runtime-lab', description: 'Deterministic real Harness test', approval: 'automatic' });
-        else if (!names.includes('agent_teams_add_member'))
+        else if (!hasWorker)
             chunks = call('agent_teams_add_member', { name: 'worker', role: 'MEMBER_FIXTURE', executionPrompt: 'MEMBER_FIXTURE: complete the assigned task and report.', reasoning_effort: 'high', ...(process.env.LAB_SCENARIO === 'fallback' || process.env.LAB_SCENARIO === 'failure' ? { model: 'fixture-failing' } : {}) });
-        else if (!names.includes('agent_teams_create_task'))
+        else if (!hasTask)
             chunks = call('agent_teams_create_task', { subject: 'Runtime fixture task', description: 'MEMBER_FIXTURE: complete the deterministic task', assignee: 'worker' });
         else if (process.env.LAB_SCENARIO === 'captain-idle-wakeup') {
             if ((toolText + userText).includes('MEMBER_REPORT_OK')) {
@@ -137,7 +147,7 @@ class FixtureAdapter extends LlmAdapter {
             else
                 chunks = textChunks('CAPTAIN_YIELDED_WAITING_FOR_MEMBER');
         }
-        else if (process.env.LAB_SCENARIO === 'failure' && toolText.includes('AUTH'))
+        else if (process.env.LAB_SCENARIO === 'failure' && authFailed)
             chunks = textChunks('AGENTTEAMS_EXPECTED_FAILURE_OK');
         else if (process.env.LAB_SCENARIO === 'lifecycle' && !tools.some(t => t.name === 'agent_teams_send_message' && t.arguments.includes('FIFO_FIRST'))) {
             for (let i = 0; i < 100 && !memberStarted; i++)
