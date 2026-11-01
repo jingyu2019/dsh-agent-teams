@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "capturedAt": "2026-10-31T09:00:00+08:00",
+  "capturedAt": "2026-11-01T12:05:52+08:00",
   "host": {
     "dsh": "0.2.1-rc.5",
     "node": "v26.12.1",
@@ -9,30 +9,30 @@
   },
   "localDesktopInstall": {
     "profile": "/Users/openclaw/.dsh/profiles/desktop",
-    "backup": "/Users/openclaw/dsh-backups/20261031-085947",
-    "beforeVersion": "0.1.27",
-    "afterVersion": "0.1.28",
-    "artifact": "/Users/openclaw/dsh-backups/20261031-085947/nanmicoder-dsh-agent-teams-0.1.28.tgz",
-    "artifactSha256": "860e38b0f806827afe0c546b690de1932606210b6e7a507e1fda409aea73d729",
+    "backup": "/Users/openclaw/dsh-backups/20261101-091117",
+    "beforeVersion": "0.1.28",
+    "afterVersion": "0.1.29",
+    "artifact": "/Users/openclaw/dsh-backups/20261101-091117/nanmicoder-dsh-agent-teams-0.1.29.tgz",
+    "artifactSha256": "3fa113d5961b34c83806775b601eaf422b2b10877ea4c01fab99f7f6abcb6a02",
     "pluginManagerExit": 0,
     "installedPackageMatchesArtifact": true,
     "preexistingWarning": "@deepseek-ai/dsh-subagent-codex@0.2.1-rc.3 is incompatible with rc.5 and was already installed; AgentTeams itself installed and loaded in the isolated runtime.",
-    "desktopUiInteraction": "Verified after unlock: the desktop UI rendered the AgentTeams activity panel for a six-member team and opened the plugin settings page. The macOS session re-locked before the full custom-plugin version list could be scrolled to completion; installed package identity and bytes were verified independently."
+    "desktopUiInteraction": "AgentTeams 0.1.29 was installed into the desktop profile and its extracted artifact tree matched byte-for-byte. The already-running desktop host still held the previous 0.1.28 process and macOS was locked at capture time, so a fresh 0.1.29 UI smoke test remains pending until the next unlock/restart. The prior unlocked smoke test on 0.1.28 verified the AgentTeams activity panel and plugin settings surface."
   },
   "installedBytesStability": {
     "scenario": "stability",
     "checksPassed": 13,
     "requests": 108,
     "memorySamples": 15,
-    "rssStart": 241418240,
-    "rssEnd": 285523968,
-    "rssDelta": 44105728,
-    "heapUsedStart": 104433728,
-    "heapUsedEnd": 127163528,
-    "heapUsedDelta": 22729800,
-    "externalStart": 5690758,
-    "externalEnd": 19137728,
-    "maxHeapUsed": 127597928
+    "rssStart": 252248064,
+    "rssEnd": 201310208,
+    "rssDelta": -50937856,
+    "heapUsedStart": 103746232,
+    "heapUsedEnd": 119599776,
+    "heapUsedDelta": 15853544,
+    "externalStart": 5589276,
+    "externalEnd": 19092574,
+    "maxHeapUsed": 127949752
   },
   "retentionRepair": {
     "containers": [
@@ -90,15 +90,15 @@
       "heapSlopeBytesPerCycle": 319907.89467746776
     },
     "postRepair": {
-      "requests": 252,
-      "heapUsedStart": 83145992,
-      "heapUsedCycle100": 122268120,
-      "heapDelta": 39122128,
-      "heapSlopeBytesPerCycle": 351391.05545754585,
-      "rssStart": 250216448,
-      "rssEnd": 257703936,
-      "rssDelta": 7487488,
-      "rssSlopeBytesPerCycle": -81464.7086468647,
+      "requests": 249,
+      "heapUsedStart": 48493080,
+      "heapUsedCycle100": 87414808,
+      "heapDelta": 38921728,
+      "heapSlopeBytesPerCycle": 347910.247920792,
+      "rssStart": 210911232,
+      "rssEnd": 219447296,
+      "rssDelta": 8536064,
+      "rssSlopeBytesPerCycle": 162628.08540054006,
       "externalStart": 4902693,
       "externalEnd": 4972409,
       "externalStartupToStableDelta": 69716,
