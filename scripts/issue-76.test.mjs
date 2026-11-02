@@ -16,6 +16,11 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+/** Recursive-remove retries cover drains that publish their final write just after a kick returns. */
+async function cleanupWorkspace(workspace) {
+  await rm(workspace, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 })
+}
+
 const primary = { provider: 'p', model: 'primary' }
 const second = { provider: 'p', model: 'second' }
 const third = { provider: 'q', model: 'third' }
@@ -102,7 +107,7 @@ test('restart-safe waiting cursor resumes the same attempt after its due time', 
     const after = await readTeam(stateRoot, 'routes')
     assert.equal(after.tasks[0].attempt, 1)
     assert.equal(after.tasks[0].attemptId, attemptId)
-  } finally { await rm(workspace, { recursive: true, force: true }) }
+  } finally { await cleanupWorkspace(workspace) }
 })
 
 test('persisted AUTH failure binds the exact activation and advances the member route', async () => {
@@ -176,5 +181,5 @@ test('stale route failure cannot mask max-tokens terminal settlement', async () 
     assert.equal(after.tasks[0].status, 'failed')
     assert.match(after.tasks[0].output, /max-tokens/)
     assert.equal(after.activations[0].permitHeld, false)
-  } finally { await rm(workspace, { recursive: true, force: true }) }
+  } finally { await cleanupWorkspace(workspace) }
 })
