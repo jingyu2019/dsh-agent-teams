@@ -1,0 +1,91 @@
+# AgentTeams optimization directions — 2026-11-02
+
+This document records the next evidence-backed optimization opportunities after the rc.5 / 0.1.29 baseline work. It is deliberately separate from the release candidate: none of these items changes the current verified artifact.
+
+## Evidence baseline
+
+- Plugin: `@nanmicoder/dsh-agent-teams@0.1.29`
+- Host: DeepSeek Harness `0.2.1-rc.5`
+- Current verification: `pnpm verify`, 11/11 real rc.5 runtime scenarios, exact 296-package cohort, desktop 0.1.29 smoke.
+- The plugin is no longer the dominant source of the 100-cycle residual heap growth. A no-plugin control retains the same 128 copies of a 21 MiB Hindsight skill string.
+
+## P0 — host memory / skill retention
+
+**Evidence:** `docs/harness-0.2.1-rc.5/local-desktop-memory-audit.json` records the plugin and no-plugin control retaining the same skill text instances. The plugin-owned `ancestryCache`, `activationRoots` and `activationWorkspaces` are fixed and bounded.
+
+**Direction:** treat this as a Harness-side per-session skill projection/cache issue, not a team-lock leak. Add a user-runnable memory trace that samples RSS, heapUsed, heapTotal, external, arrayBuffers and active handles while recording session counts. The trace should be safe for a user to attach to #117 without credentials or conversation contents.
+
+**Expected gain:** gives upstream maintainers a reproducible ownership histogram and prevents further speculative plugin fixes.
+
+## P0 — activity panel polling I/O
+
+**Evidence:** `src/client/activity-monitor.ts` polls every 1,000 ms for live targets and every 5,000 ms for cardless discovery. `src/snapshot.ts` scans all team directories and reads every team plus each member mailbox on a live request; the archived path scans every archive.
+
+**Direction:** add an ETag/digest or `Last-Modified` response to `/plugins/dsh-agent-teams/state`, and let the browser skip JSON replacement when unchanged. A later step can add a targeted cursor or SSE stream. Keep polling as the compatibility fallback.
+
+**Expected gain:** less filesystem I/O and JSON allocation for idle or large workspaces, especially with many teams and archived histories.
+
+## P1 — mailbox growth and read amplification
+
+**Evidence:** `src/state.ts` `readMailbox` reads the complete JSONL file; acknowledged messages remain in the file. Snapshot assembly reads unread messages for every member and the captain on polling.
+
+**Direction:** compact acknowledged/discarded records into a bounded archive, or split an active inbox from a durable audit log. Preserve diagnostic malformed lines and existing message IDs during migration.
+
+**Expected gain:** bounded parse time and memory as long-running teams exchange many messages.
+
+## P1 — archive index and lazy detail
+
+**Evidence:** `collectArchivedTeamsActivity` calls `listArchivedTeamIds` and reads the full team record for every archive. The activity panel may only need summary rows for most archived teams.
+
+**Direction:** maintain a bounded archive index (`id`, `name`, `mtime`, member/task counts, phase), then load full archived snapshots only when a user expands a team.
+
+**Expected gain:** faster panel startup and less memory pressure after many completed teams.
+
+## P1 — snapshot payload budget
+
+**Evidence:** live snapshots carry member `executionPrompt`, task descriptions, unread inbox content, attachment metadata and up to 200 timeline entries per team.
+
+**Direction:** split the snapshot into a lightweight list payload and a detail payload keyed by `teamId`; keep timeline/message bodies on demand.
+
+**Expected gain:** smaller browser messages and fewer retained JS objects while the panel is open.
+
+## P2 — prompt and tool-surface budget
+
+**Evidence:** the stable captain surface has 23 tools; `toolSurface: core` exposes an 11-tool subset. The full surface is still the default.
+
+**Direction:** measure rendered schema bytes and token estimates for both surfaces, then decide whether core should be recommended for normal sessions. Do not change the default without a paired quality/capability evaluation.
+
+**Expected gain:** lower prompt overhead and fewer wrong-tool choices in ordinary sessions.
+
+## P2 — cross-platform runtime evidence
+
+**Evidence:** the repository has an Ubuntu/Windows CI matrix, but this fork currently archives only darwin/arm64 runtime evidence. The desktop smoke is separate from the headless runtime suite.
+
+**Direction:** archive CI results for rc.5 on Ubuntu and Windows, including plugin-manager install and the 11 runtime scenarios. Keep platform evidence distinct from the desktop UI smoke.
+
+**Expected gain:** release claims become platform-specific and auditable.
+
+## P2 — exact-cohort install latency
+
+**Evidence:** the rc.5 candidate installs a 296-package exact cohort; the desktop profile uses pnpm 11 and a local file artifact. The tarball is about 2.2 MiB.
+
+**Direction:** cache the exact cohort by lockfile digest, preserve the artifact SHA in doctor output, and add a preflight that distinguishes “already installed” from “registry fetch required”.
+
+**Expected gain:** faster upgrades and fewer timeout-driven partial installs.
+
+## P2 — shared test cleanup helper
+
+**Evidence:** `issue-76` and `issue-272` exposed `ENOTEMPTY` cleanup races because background writes can publish just after a scheduler kick returns. Both now use recursive-remove retries.
+
+**Direction:** centralize a test cleanup helper with bounded recursive retry and use it for scheduler/inbox fixtures. Do not hide non-cleanup errors.
+
+**Expected gain:** removes recurring full-suite flakes without weakening assertions.
+
+## Recommended order
+
+1. Add a credential-free memory trace and classify host skill retention.
+2. Add state-route digest/ETag and skip unchanged polling updates.
+3. Bound active mailbox files and add an archive index.
+4. Split live snapshots into summary/detail payloads.
+5. Measure and evaluate a core-by-default tool surface.
+6. Archive Ubuntu/Windows rc.5 evidence.

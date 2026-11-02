@@ -68,7 +68,7 @@ The conversation card and activity panel use Harness's official locale service. 
 | Retaining an older Alpha | `0.1.2-alpha.2` | `0.1.29` |
 | Newer hosts | `0.2.1-rc.6` and later | `0.1.29` |
 
-All rows except the last are the CI verification matrix. For rc.5, this fork has archived local darwin/arm64 evidence for the full runtime suite; its Ubuntu/Windows matrix jobs are configured but are not archived from this fork. The exact 0.1.29 artifact was installed byte-for-byte into the desktop profile, while a fresh GUI smoke test remains pending until the host is restarted while unlocked.
+All rows except the last are the CI verification matrix. For rc.5, this fork has archived local darwin/arm64 evidence for the full runtime suite; its Ubuntu/Windows matrix jobs are configured but are not archived from this fork. The exact 0.1.29 artifact was installed byte-for-byte into the desktop profile. After the host was restarted and unlocked, a fresh GUI smoke test rendered the AgentTeams activity panel for a live six-member team.
 
 ### Desktop app
 

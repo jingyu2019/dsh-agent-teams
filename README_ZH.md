@@ -67,7 +67,7 @@
 | 保留旧 Alpha | `0.1.2-alpha.2` | `0.1.29` |
 | 更新的宿主 | `0.2.1-rc.6` 及之后版本 | `0.1.29` |
 
-除最后一行外均为 CI 验证矩阵。对于 rc.5，本 fork 当前归档的是 darwin/arm64 上的完整运行时证据；Ubuntu/Windows 矩阵任务已配置，但本 fork 尚无对应归档结果。精确的 0.1.29 产物已逐字节安装到桌面 profile；全新的 GUI smoke test 仍需在解锁并重启宿主后完成。
+除最后一行外均为 CI 验证矩阵。对于 rc.5，本 fork 当前归档的是 darwin/arm64 上的完整运行时证据；Ubuntu/Windows 矩阵任务已配置，但本 fork 尚无对应归档结果。精确的 0.1.29 产物已逐字节安装到桌面 profile；在解锁并重启宿主后，全新的 GUI smoke test 已成功渲染六个成员的 AgentTeams 实时活动面板。
 
 ### 桌面端
 

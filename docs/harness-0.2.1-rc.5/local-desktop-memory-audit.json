@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "capturedAt": "2026-11-01T12:05:52+08:00",
+  "capturedAt": "2026-11-02T11:52:17+08:00",
   "host": {
     "dsh": "0.2.1-rc.5",
     "node": "v26.12.1",
@@ -13,26 +13,28 @@
     "beforeVersion": "0.1.28",
     "afterVersion": "0.1.29",
     "artifact": "/Users/openclaw/dsh-backups/20261101-091117/nanmicoder-dsh-agent-teams-0.1.29.tgz",
-    "artifactSha256": "3fa113d5961b34c83806775b601eaf422b2b10877ea4c01fab99f7f6abcb6a02",
+    "artifactSha256": "b6cfe5d9ba78598c85ee74661c04433278a6be2c9243b975da1ee67ab6377180",
     "pluginManagerExit": 0,
     "installedPackageMatchesArtifact": true,
     "preexistingWarning": "@deepseek-ai/dsh-subagent-codex@0.2.1-rc.3 is incompatible with rc.5 and was already installed; AgentTeams itself installed and loaded in the isolated runtime.",
-    "desktopUiInteraction": "AgentTeams 0.1.29 was installed into the desktop profile and its extracted artifact tree matched byte-for-byte. The already-running desktop host still held the previous 0.1.28 process and macOS was locked at capture time, so a fresh 0.1.29 UI smoke test remains pending until the next unlock/restart. The prior unlocked smoke test on 0.1.28 verified the AgentTeams activity panel and plugin settings surface."
+    "desktopUiInteraction": "Verified on 2026-11-02 after restarting the 0.1.29 desktop host and unlocking macOS: the AgentTeams activity panel rendered a live six-member team. The extracted artifact tree also matched the installed package byte-for-byte."
   },
   "installedBytesStability": {
     "scenario": "stability",
     "checksPassed": 13,
+    "samples": 15,
     "requests": 108,
-    "memorySamples": 15,
-    "rssStart": 252248064,
-    "rssEnd": 201310208,
-    "rssDelta": -50937856,
-    "heapUsedStart": 103746232,
-    "heapUsedEnd": 119599776,
-    "heapUsedDelta": 15853544,
-    "externalStart": 5589276,
-    "externalEnd": 19092574,
-    "maxHeapUsed": 127949752
+    "rssStart": 238288896,
+    "rssEnd": 269320192,
+    "rssDelta": 31031296,
+    "heapUsedStart": 104703240,
+    "heapUsedEnd": 123231592,
+    "heapUsedDelta": 18528352,
+    "heapTotalStart": 152616960,
+    "heapTotalEnd": 169656320,
+    "maxRss": 269320192,
+    "maxHeapUsed": 123231592,
+    "minHeapUsed": 97017856
   },
   "retentionRepair": {
     "containers": [
@@ -128,8 +130,8 @@
     "realProviderOomReproduced": false,
     "issue117Disposition": "Fork-side plugin retention is repaired and regression-tested. The dominant observed growth is host/session skill retention and still requires a Harness-side fix or real-provider evidence; do not describe this audit as reproducing the reporter's OOM.",
     "unverified": [
+      "full end-to-end GUI workflow beyond the AgentTeams activity-panel smoke test",
       "real provider API workload",
-      "full end-to-end GUI workflow while the session remained unlocked",
       "Harness-side per-session skill eviction",
       "Windows and Linux desktop behavior"
     ]

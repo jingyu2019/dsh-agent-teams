@@ -52,7 +52,7 @@ async function fixture(stopReason = 'completed') {
       return { accepted: true }
     },
   })
-  return { workspace, stateRoot, captain, live, ctx, scheduler, cleanup: () => rm(workspace, { recursive: true, force: true }) }
+  return { workspace, stateRoot, captain, live, ctx, scheduler, cleanup: () => rm(workspace, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 }) }
 }
 
 test('completed activation creates exact task parking and one due notice', async () => {
