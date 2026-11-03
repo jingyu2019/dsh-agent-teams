@@ -20,6 +20,10 @@ export type { ContractAmendmentInput } from './quality-gates.ts';
 export declare const CAPTAIN_KEY = "captain";
 /** Bounded durable timeline retained in team.json. */
 export declare const TIMELINE_CAP = 500;
+/** Read/discarded mailbox records retained in the actively parsed inbox. */
+export declare const MAILBOX_READ_HISTORY_CAP = 200;
+/** Soft byte budget for the actively parsed inbox; unread, malformed and final-report records are never dropped. */
+export declare const MAILBOX_FILE_MAX_BYTES = 1000000;
 /**
  * Serialize mutations of one team across the whole process.
  * @param key - the team id (or any mutation scope).
@@ -175,6 +179,11 @@ export declare function findTeamByCaptain(stateRoot: string, captainSessionId: s
 export declare function findTeamByParticipant(stateRoot: string, agentSessionId: string, lead?: LeadIdentity): Promise<TeamState | undefined>;
 /** Build a fresh message record. */
 export declare function createMessage(from: string, to: string, content: string): TeamMessage;
+/** Split one mailbox into a bounded active file and old acknowledged records. */
+export declare function compactMailboxText(raw: string, readHistoryCap?: number, maxBytes?: number): {
+    active: string;
+    archived: string;
+};
 /**
  * Append one message to an agent's mailbox (JSONL).
  * @param stateRoot - resolved absolute state root directory.

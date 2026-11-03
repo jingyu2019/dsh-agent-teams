@@ -17,3 +17,7 @@ export declare class RequestBodyError extends Error {
 export declare function readJsonRequest(req: IncomingMessage, maxBytes?: number): Promise<Record<string, unknown>>;
 /** Raw WebServer routes do not inherit Connection's authentication fence. */
 export declare function authenticatedWebRoutes(server: WebRouteHost, connection: () => BrowserRequestGate | undefined): WebRouteHost;
+/** Stable strong ETag for one serialized JSON response. */
+export declare function activityEtag(body: string): string;
+/** Whether one request's If-None-Match header contains the exact ETag. */
+export declare function requestMatchesEtag(value: string | string[] | undefined, etag: string): boolean;

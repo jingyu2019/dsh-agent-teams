@@ -232,6 +232,16 @@ Attachments accept only regular files in the sender's task scope or an owner-con
 
 `agent_teams_compact_member` invokes the host `ctx.compaction.compactNow` service for one live idle member; the plugin does not fabricate compaction or summarize history itself.
 
+## Memory diagnostics
+
+For long-running memory reports, sample the live DSH/Node process without reading sessions, prompts, messages or credentials:
+
+```sh
+dsh-agent-teams-memory-trace --pid <dsh-pid> --samples 60 --interval-ms 1000 --out memory-trace.jsonl
+```
+
+The command emits timestamped PID, RSS, elapsed time and sampling latency as JSONL. `--max-rss-mb` returns non-zero when a sample crosses a threshold. Heap-internal ownership still requires a V8 heap snapshot from the reviewing host.
+
 ## Boundaries
 
 - One captain leads one active team at a time.

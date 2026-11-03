@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createHash } from 'node:crypto'
 import type { HostConnectionService } from '@deepseek-ai/dsh-client-connection'
 
 /** Public WebServer route surface used by the plugin. */
@@ -95,4 +96,15 @@ export function authenticatedWebRoutes(
       })
     },
   }
+}
+
+/** Stable strong ETag for one serialized JSON response. */
+export function activityEtag(body: string): string {
+  return `"${createHash('sha256').update(body).digest('base64url')}"`
+}
+
+/** Whether one request's If-None-Match header contains the exact ETag. */
+export function requestMatchesEtag(value: string | string[] | undefined, etag: string): boolean {
+  const values = Array.isArray(value) ? value : value === undefined ? [] : [value]
+  return values.some(candidate => candidate.split(',').some(item => item.trim() === etag))
 }

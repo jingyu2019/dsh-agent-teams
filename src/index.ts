@@ -52,7 +52,7 @@ import { CORE_CAPTAIN_TOOL_NAMES, TEAM_TOOL_NAMES } from './tool-names.ts'
 
 export { MEMBER_TOOL_NAMES, TEAM_TOOL_NAMES } from './tool-names.ts'
 
-import { authenticatedWebRoutes, readJsonRequest, RequestBodyError, type BrowserRequestGate, type WebRouteHost } from './web-routes.ts'
+import { activityEtag, authenticatedWebRoutes, readJsonRequest, requestMatchesEtag, RequestBodyError, type BrowserRequestGate, type WebRouteHost } from './web-routes.ts'
 
 /** Web-server service key candidates, newest first. */
 const WEB_SERVER_KEYS = ['webServer', 'httpServer'] as const
@@ -349,9 +349,16 @@ export function apply(ctx: Context, config: Config): void {
         ? await collectArchivedTeamsActivity(ctx, roots)
         : await collectTeamsActivity(ctx, roots)
       const body = JSON.stringify({ teams: snapshots })
+      const etag = activityEtag(body)
+      if (requestMatchesEtag(req.headers['if-none-match'], etag)) {
+        res.writeHead(304, { etag, 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store',
+        etag,
       })
       res.end(body)
     },

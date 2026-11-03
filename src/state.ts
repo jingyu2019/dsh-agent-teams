@@ -15,7 +15,7 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { MemberToolFilter } from './tool-policies.ts'
 import { FINDING_SEVERITIES, REVIEW_VERDICTS, TASK_KINDS, TERMINAL_TASK_STATUSES, type AvatarRef, type ContextLifecycleCapability, type MessageAttachment, type ReviewFinding, type TaskProbe, type TaskStatus, type TeamMember, type TeamMessage, type TeamProfileSnapshot, type TeamState, type TeamTask, type TimelineAction, type TimelineEntry, type WorktreeLane } from './types.ts'
@@ -54,6 +54,10 @@ export const CAPTAIN_KEY = 'captain'
 const MAILBOX_DELIVERY_LEASE_MS = 60_000
 /** Bounded durable timeline retained in team.json. */
 export const TIMELINE_CAP = 500
+/** Read/discarded mailbox records retained in the actively parsed inbox. */
+export const MAILBOX_READ_HISTORY_CAP = 200
+/** Soft byte budget for the actively parsed inbox; unread, malformed and final-report records are never dropped. */
+export const MAILBOX_FILE_MAX_BYTES = 1_000_000
 /** Durable deny-list for AgentTeams members that must never be resumed. */
 const RETIRED_MEMBERS_FILE = 'retired-members.json'
 
@@ -574,6 +578,58 @@ export function createMessage(from: string, to: string, content: string): TeamMe
   return { id: randomUUID(), from, to, content, ts: Date.now() }
 }
 
+const mailboxFile = (stateRoot: string, teamId: string, agentKey: string): string => (
+  join(stateRoot, teamId, 'inbox', `${sanitizeKey(agentKey)}.jsonl`)
+)
+
+const mailboxArchiveFile = (stateRoot: string, teamId: string, agentKey: string): string => (
+  join(stateRoot, teamId, 'inbox', 'archive', `${sanitizeKey(agentKey)}.jsonl`)
+)
+
+/** Split one mailbox into a bounded active file and old acknowledged records. */
+export function compactMailboxText(
+  raw: string,
+  readHistoryCap = MAILBOX_READ_HISTORY_CAP,
+  maxBytes = MAILBOX_FILE_MAX_BYTES,
+): { active: string; archived: string } {
+  const records = raw.split('\n').filter(line => line.trim() !== '').map((line) => {
+    try {
+      const value: unknown = JSON.parse(line)
+      return isTeamMessage(value) ? { line, message: value } : { line, message: undefined }
+    } catch {
+      return { line, message: undefined }
+    }
+  })
+  // Final reports are settlement evidence: they stay in the actively parsed
+  // file so the bounded archive can never hide the exact report a later
+  // settlement check needs.
+  const acknowledged = records.filter(record => record.message !== undefined
+    && record.message.reportKind !== 'final'
+    && (record.message.readAt !== undefined || record.message.discardedAt !== undefined))
+  const keepAcknowledged = (count: number): { active: string; archived: string } => {
+    const firstKept = Math.max(0, acknowledged.length - count)
+    const archivedIds = new Set(acknowledged.slice(0, firstKept).map(record => record.message!.id))
+    const activeLines = records.filter(record => record.message === undefined || !archivedIds.has(record.message.id)).map(record => record.line)
+    const archivedLines = records.filter(record => record.message !== undefined && archivedIds.has(record.message.id)).map(record => record.line)
+    return {
+      active: activeLines.length === 0 ? '' : activeLines.join('\n') + '\n',
+      archived: archivedLines.length === 0 ? '' : archivedLines.join('\n') + '\n',
+    }
+  }
+  let compacted = keepAcknowledged(readHistoryCap)
+  if (Buffer.byteLength(compacted.active) > maxBytes) compacted = keepAcknowledged(0)
+  return compacted
+}
+
+async function compactMailboxFile(stateRoot: string, teamId: string, agentKey: string, raw: string): Promise<string> {
+  const compacted = compactMailboxText(raw)
+  if (compacted.archived === '') return raw
+  const archive = mailboxArchiveFile(stateRoot, teamId, agentKey)
+  await mkdir(join(stateRoot, teamId, 'inbox', 'archive'), { recursive: true })
+  await appendFile(archive, compacted.archived, 'utf8')
+  return compacted.active
+}
+
 /**
  * Append one message to an agent's mailbox (JSONL).
  * @param stateRoot - resolved absolute state root directory.
@@ -587,7 +643,7 @@ export async function appendMailbox(
   agentKey: string,
   message: TeamMessage,
 ): Promise<void> {
-  const file = join(stateRoot, teamId, 'inbox', `${sanitizeKey(agentKey)}.jsonl`)
+  const file = mailboxFile(stateRoot, teamId, agentKey)
   await mkdir(join(stateRoot, teamId, 'inbox'), { recursive: true })
   let existing = ''
   try {
@@ -598,7 +654,8 @@ export async function appendMailbox(
     }
   }
   const separator = existing !== '' && !existing.endsWith('\n') ? '\n' : ''
-  await atomicWriteText(file, `${existing}${separator}${JSON.stringify(message)}\n`)
+  const combined = `${existing}${separator}${JSON.stringify(message)}\n`
+  await atomicWriteText(file, await compactMailboxFile(stateRoot, teamId, agentKey, combined))
 }
 
 
@@ -611,6 +668,20 @@ export async function appendMailboxOnce(
 ): Promise<boolean> {
   const existing = await readMailbox(stateRoot, teamId, agentKey)
   if (existing.some(candidate => candidate.id === message.id)) return false
+  try {
+    const archived = await readFile(mailboxArchiveFile(stateRoot, teamId, agentKey), 'utf8')
+    for (const line of archived.split('\n')) {
+      if (line.trim() === '') continue
+      try {
+        const value: unknown = JSON.parse(line)
+        if (isTeamMessage(value) && value.id === message.id) return false
+      } catch {
+        // Malformed archive lines do not block future append idempotency checks.
+      }
+    }
+  } catch (error: unknown) {
+    if (!(error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT')) throw error
+  }
   await appendMailbox(stateRoot, teamId, agentKey, message)
   return true
 }
@@ -630,7 +701,7 @@ export async function readMailbox(
   agentKey: string,
   onMalformedLine?: (lineNumber: number, error: unknown) => void,
 ): Promise<TeamMessage[]> {
-  const file = join(stateRoot, teamId, 'inbox', `${sanitizeKey(agentKey)}.jsonl`)
+  const file = mailboxFile(stateRoot, teamId, agentKey)
   try {
     const raw = await readFile(file, 'utf8')
     const messages: TeamMessage[] = []
@@ -707,7 +778,7 @@ async function mutateMailbox(
       return rawLine
     }
   })
-  await atomicWriteText(file, lines.join('\n'))
+  await atomicWriteText(file, await compactMailboxFile(stateRoot, teamId, agentKey, lines.join('\n')))
 }
 
 /** Lease selected fallback messages to one delivery path. */
@@ -786,37 +857,52 @@ export async function renameMailboxOwner(
   const fromKey = sanitizeKey(from)
   const toKey = sanitizeKey(to)
   if (fromKey === toKey) return
-  const fromFile = join(stateRoot, teamId, 'inbox', `${fromKey}.jsonl`)
-  const toFile = join(stateRoot, teamId, 'inbox', `${toKey}.jsonl`)
-  let raw: string
-  try {
-    raw = await readFile(fromFile, 'utf8')
-  } catch (error: unknown) {
-    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') return
-    throw error
-  }
-  const lines = raw.split('\n').map((rawLine) => {
-    const line = stripLeadingBom(rawLine)
-    if (line.trim() === '') return rawLine
-    try {
-      const value: unknown = JSON.parse(line)
-      if (!isTeamMessage(value)) return rawLine
-      return JSON.stringify({
-        ...value,
-        ...value.from === from ? { from: to } : {},
-        ...value.to === from ? { to } : {},
-      })
-    } catch {
-      return rawLine
-    }
-  })
-  await atomicWriteText(toFile, lines.join('\n'))
   const remove = ops.remove ?? ((path: string) => rm(path, { force: true }))
+  const moveFile = async (source: string, destination: string): Promise<void> => {
+    let raw: string
+    try {
+      raw = await readFile(source, 'utf8')
+    } catch (error: unknown) {
+      if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    const lines = raw.split('\n').map((rawLine) => {
+      const line = stripLeadingBom(rawLine)
+      if (line.trim() === '') return rawLine
+      try {
+        const value: unknown = JSON.parse(line)
+        if (!isTeamMessage(value)) return rawLine
+        return JSON.stringify({
+          ...value,
+          ...value.from === from ? { from: to } : {},
+          ...value.to === from ? { to } : {},
+        })
+      } catch {
+        return rawLine
+      }
+    })
+    await atomicWriteText(destination, lines.join('\n'))
+    try {
+      await remove(source)
+    } catch (error: unknown) {
+      // Do not leave a duplicate destination if the source could not be removed.
+      await remove(destination).catch(() => undefined)
+      throw error
+    }
+  }
+  const activeFrom = join(stateRoot, teamId, 'inbox', `${fromKey}.jsonl`)
+  const activeTo = join(stateRoot, teamId, 'inbox', `${toKey}.jsonl`)
+  const archiveFrom = mailboxArchiveFile(stateRoot, teamId, from)
+  const archiveTo = mailboxArchiveFile(stateRoot, teamId, to)
+  let archiveMoved = false
   try {
-    await remove(fromFile)
+    await moveFile(archiveFrom, archiveTo)
+    archiveMoved = true
+    await moveFile(activeFrom, activeTo)
   } catch (error: unknown) {
-    // Do not leave a duplicate destination if the source could not be removed.
-    await remove(toFile).catch(() => undefined)
+    if (archiveMoved) {
+      await moveFile(archiveTo, archiveFrom).catch(() => undefined)
+    }
     throw error
   }
 }

@@ -221,6 +221,16 @@ dsh plugin --profile web add github:NanmiCoder/dsh-agent-teams
 
 `agent_teams_compact_member` 对指定的在线空闲成员调用宿主 `ctx.compaction.compactNow`；插件不会伪造压缩，也不会自行总结历史。
 
+## 内存诊断
+
+长时内存问题可用下面的命令采样 DSH/Node 进程；它不会读取会话、提示词、消息或凭据：
+
+```sh
+dsh-agent-teams-memory-trace --pid <dsh-pid> --samples 60 --interval-ms 1000 --out memory-trace.jsonl
+```
+
+命令以 JSONL 输出时间、PID、RSS、运行时间和采样耗时。设置 `--max-rss-mb` 可在超过阈值时返回非零。需要判断 V8 内部对象归属时，仍应在复核宿主上采集 heap snapshot。
+
 ## 使用边界
 
 - 一个队长同一时间只能带一个活动团队。
