@@ -119,6 +119,8 @@ export declare const ACTIVITY_POLL_MS = 1000;
  * every ordinary session into a one-second filesystem scan.
  */
 export declare const ACTIVITY_PROBE_MS = 5000;
+/** Slow cadence while the document is hidden; live data resumes on visibility. */
+export declare const ACTIVITY_HIDDEN_MS = 10000;
 /** Host route serving live and archived team snapshots. */
 export declare const ACTIVITY_STATE_URL = "/plugins/dsh-agent-teams/state";
 export declare const ACTIVITY_HALT_URL = "/plugins/dsh-agent-teams/halt";
@@ -147,6 +149,10 @@ export interface ActivityPollingRuntime {
     }) => Promise<ActivityFetchResponse>;
     readonly schedule?: (callback: () => void, intervalMs: number) => unknown;
     readonly cancel?: (timer: unknown) => void;
+    /** Whether the page is currently visible; defaults to `document.hidden`. */
+    readonly documentHidden?: () => boolean;
+    /** Subscribe to visibility changes; returns an unsubscribe function. */
+    readonly subscribeVisibility?: (listener: () => void) => () => void;
     readonly publishSnapshots?: (update: Partial<ActivitySnapshots>) => void;
     readonly settleTargets?: (keys: ReadonlySet<string>) => void;
 }

@@ -67,3 +67,62 @@ test('activity polling revalidates live and archive snapshots without duplicate 
   assert.equal(published.length, 2, '304 responses must not republish unchanged snapshots')
   poll.stop()
 })
+
+test('scoped polling names the session once and keeps the archive query valid', async () => {
+  const calls = []
+  let scheduled
+  const target = { key: 'session:team', sessionId: 'session', teamId: 'team' }
+  const poll = startActivityPolling([target], {
+    fetchState: async (url) => {
+      calls.push(url)
+      return response(200, '"e"', { teams: [] })
+    },
+    schedule: callback => { scheduled = callback; return 1 },
+    cancel: () => {},
+    publishSnapshots: () => {},
+    settleTargets: () => {},
+  })
+  await poll.firstTick
+  assert.equal(calls[0], '/plugins/dsh-agent-teams/state?sessionId=session')
+  assert.equal(calls[1], '/plugins/dsh-agent-teams/state?sessionId=session&archived=1')
+  poll.stop()
+})
+
+test('mixed-session targets keep the unscoped union query', async () => {
+  const calls = []
+  const poll = startActivityPolling([
+    { key: 'a:t', sessionId: 'a', teamId: 't' },
+    { key: 'b:u', sessionId: 'b', teamId: 'u' },
+  ], {
+    fetchState: async (url) => { calls.push(url); return response(200, '"e"', { teams: [] }) },
+    schedule: () => 1,
+    cancel: () => {},
+    publishSnapshots: () => {},
+    settleTargets: () => {},
+  })
+  await poll.firstTick
+  assert.equal(calls[0], '/plugins/dsh-agent-teams/state')
+  poll.stop()
+})
+
+test('a hidden document polls at the slow cadence and reschedules on visibility', async () => {
+  const intervals = []
+  let listener
+  let visibility
+  let hidden = true
+  const poll = startActivityPolling([{ key: 's:t', sessionId: 's', teamId: 't' }], {
+    fetchState: async () => response(200, '"e"', { teams: [] }),
+    schedule: (callback, intervalMs) => { intervals.push(intervalMs); listener = callback; return 1 },
+    cancel: () => {},
+    publishSnapshots: () => {},
+    settleTargets: () => {},
+    documentHidden: () => hidden,
+    subscribeVisibility: callback => { visibility = callback; return () => {} },
+  })
+  await poll.firstTick
+  assert.equal(intervals.at(-1), 10_000)
+  hidden = false
+  visibility()
+  assert.equal(intervals.at(-1), 1_000)
+  poll.stop()
+})
