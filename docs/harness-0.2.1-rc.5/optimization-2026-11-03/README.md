@@ -6,7 +6,7 @@ This directory records a real-host **full matrix** run of the post-optimization 
 
 - Host: DeepSeek Harness `0.2.1-rc.5`
 - Plugin: `@nanmicoder/dsh-agent-teams@0.1.29` (development build)
-- Artifact SHA-256: `87dc4769535ded20c07f6f0f2285d4d9796cf9d6417d613bc73db97b50fb0e93`
+- Artifact SHA-256: `facfe4cebd1a7c61a09c8501ffe1c3f879b356a10754f33170a8517b593b0283`
 - Node: `v26.12.1`, darwin arm64
 - Exact cohort: 296 DSH packages
 - Network: npm registry (`registry.npmjs.org`) reachable; real `dsh plugin add` install path
@@ -24,10 +24,12 @@ Only the model is a deterministic fixture; real provider APIs and browser intera
 - Running/archived snapshots omit staging-only member prompts and task descriptions; snapshots carry the newest 50 timeline entries the panel renders.
 - `dsh-agent-teams-memory-trace` samples only OS process metadata for #117-style reports.
 - Tests share one bounded `removeTestTree` retry helper.
+- The package exports an applicable default plugin object so a loader using `exports.default ?? exports` resolves `apply` (#335).
+- `agent_teams_delete` can opt in to archiving member host sessions (#333).
 
 ## Desktop profile install
 
-The same artifact was installed with `dsh plugin --profile desktop add file:...`. The installed tree's `lib/snapshot.js`, `lib/state.js`, `lib/web-routes.js`, `lib/client/activity-monitor.js` and `lib/index.js` are byte-identical to this workspace build. The pre-existing `@deepseek-ai/dsh-subagent-codex@0.2.1-rc.3` incompatibility warning is a third-party package issue already documented in `../README.md`.
+The same artifact was installed with `dsh plugin --profile desktop add file:...`. The installed tree's `lib/index.js`, `lib/member-sessions.js` and `lib/snapshot.js`, `lib/state.js`, `lib/web-routes.js`, `lib/client/activity-monitor.js` and `lib/index.js` are byte-identical to this workspace build. The pre-existing `@deepseek-ai/dsh-subagent-codex@0.2.1-rc.3` incompatibility warning is a third-party package issue already documented in `../README.md`.
 
 ## Platform coverage
 
