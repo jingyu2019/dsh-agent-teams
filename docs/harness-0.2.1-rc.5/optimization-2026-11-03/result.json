@@ -1,7 +1,7 @@
 {
   "passed": true,
   "version": "0.2.1-rc.5",
-  "artifactSha256": "87dc4769535ded20c07f6f0f2285d4d9796cf9d6417d613bc73db97b50fb0e93",
+  "artifactSha256": "facfe4cebd1a7c61a09c8501ffe1c3f879b356a10754f33170a8517b593b0283",
   "pluginVersion": "0.1.29",
   "testFiles": {
     "compatibility.mjs": "7671a6174bb8098b1f9081facfec5452331ef7660f880d93a95c901de27bc32e",
@@ -189,13 +189,13 @@
       },
       "evidence": {
         "event": "web-approval-passed",
-        "sessionId": "session-47d666a0-3b53-4582-83aa-5c9f8f33737d",
+        "sessionId": "session-d3679ea5-13fa-4acb-ba45-9550b62a20e5",
         "teamId": "runtime-lab",
-        "memberId": "e3078c15-bc3a-4edf-88c6-16418857456a",
+        "memberId": "355eacb1-28b7-4f1a-ba4d-438d9a9ef102",
         "taskStatus": "completed",
         "captainRequests": 7,
         "order": 32,
-        "time": 1793710698062
+        "time": 1793713824213
       },
       "exit": {
         "code": 0,
@@ -266,38 +266,38 @@
           "sameAgent": true,
           "persona": true,
           "customToolDenied": true,
-          "time": 1793710700196
+          "time": 1793713826378
         },
         {
           "event": "stability-lazy-start-passed",
           "readyRequests": 1,
           "blockedRequests": 0,
           "welcomeRequests": 0,
-          "time": 1793710700196
+          "time": 1793713826378
         },
         {
           "event": "stability-running-plan-correction-passed",
           "pendingEdit": true,
           "captainCancellation": true,
           "blockedRequests": 0,
-          "time": 1793710700273
+          "time": 1793713826455
         },
         {
           "event": "stability-steering-passed",
           "queuedMessages": 32,
           "modelStepsUntilConsumed": 1,
-          "time": 1793710700999
+          "time": 1793713827193
         },
         {
           "event": "stability-read-receipt-continuation-passed",
           "modelContinued": true,
-          "time": 1793710701063
+          "time": 1793713827260
         },
         {
           "event": "stability-reassign-passed",
           "sameMember": true,
           "staleInputExcluded": true,
-          "time": 1793710701210
+          "time": 1793713827415
         },
         {
           "event": "stability-archive-passed",
@@ -305,7 +305,7 @@
           "descendantsStopped": true,
           "siblingPreserved": true,
           "retiredResumeRejected": true,
-          "time": 1793710702079
+          "time": 1793713828271
         },
         {
           "event": "stability-batch-plan-passed",
@@ -314,25 +314,25 @@
           "setupToolCalls": 1,
           "previousEquivalentToolCalls": 12,
           "memberModelRequests": 0,
-          "time": 1793710702142
+          "time": 1793713828332
         },
         {
           "event": "stability-terminal-evidence-passed",
           "records": 1,
           "duplicateAppend": false,
           "originalResultPreserved": true,
-          "time": 1793710702406
+          "time": 1793713828556
         },
         {
           "event": "stability-report-retry-passed",
           "duplicateModelRequests": 0,
-          "time": 1793710702491
+          "time": 1793713828618
         },
         {
           "event": "stability-settlement-dedup-passed",
           "reportWakes": 1,
           "duplicateModelRequests": 0,
-          "time": 1793710702511
+          "time": 1793713828641
         }
       ],
       "exit": {
