@@ -1,7 +1,7 @@
 {
   "version": "0.2.1-rc.5",
   "count": 296,
-  "lockSha256": "ed68c49704441597e4d04020fb797a1201dcab2acf5ddf9ae8e7ba3b944882b9",
+  "lockSha256": "7b7bf70720839fd8d9aac8cd0aa878216e5fd096212b1c60e6d7bac4ca814126",
   "cohort": [
     {
       "path": "node_modules/@deepseek-ai/dsh",
