@@ -2,6 +2,21 @@
 
 This document records the next evidence-backed optimization opportunities after the rc.5 / 0.1.29 baseline work. It is deliberately separate from the release candidate: none of these items changes the current verified artifact.
 
+## Implementation status (2026-11-03)
+
+Implemented in this fork, each with a focused regression suite in `pnpm verify`:
+
+| Direction | Change | Evidence |
+|---|---|---|
+| P0 memory | `dsh-agent-teams-memory-trace` samples only OS process metadata (PID, RSS, elapsed time) | `scripts/memory-trace.test.mjs` |
+| P0 polling I/O | `/state` returns a strong ETag; the browser sends `If-None-Match` and skips replacing unchanged JSON on 304 | `scripts/activity-etag.test.mjs` |
+| P1 mailbox | Acknowledged non-final records are compacted into `inbox/archive/<agent>.jsonl`; unread, malformed and final-report records stay active | `scripts/mailbox-compaction.test.mjs` |
+| P1 archive | Archived snapshots are cached by `team.json` mtime+size, evicted on change/delete, capped at 256 entries | `scripts/activity-archive-cache.test.mjs` |
+| P1 payload | Running/archived snapshots omit staging-only prompts and task descriptions; timeline capped to the 50 rendered entries | `scripts/snapshot-payload.test.mjs` |
+| P2 tool surface | `scripts/tool-surface-budget.mjs` measures the real registered definitions: full captain 19 tools / 20,003 B, core 11 tools / 15,945 B, 20.3% smaller | `scripts/tool-surface-budget.test.mjs`, `docs/tool-surface-budget.json` |
+
+Still open from this document: cross-platform rc.5 archive, exact-cohort install preflight, and a shared bounded test-cleanup helper.
+
 ## Evidence baseline
 
 - Plugin: `@nanmicoder/dsh-agent-teams@0.1.29`
