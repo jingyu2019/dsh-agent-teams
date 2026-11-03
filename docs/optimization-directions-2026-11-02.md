@@ -113,6 +113,6 @@ Updated 2026-11-03 after implementation:
 - P1 payload: staging-only fields removed from running/archived snapshots; timeline capped at 50.
 - P2 tool surface: reproducible budget measurement (19 tools / 20,003 B vs 11 / 15,945 B).
 - P2 test cleanup: shared bounded retry helper replaces two local copies.
-- rc.5 regression subset: `docs/harness-0.2.1-rc.5/optimization-2026-11-03/`.
+- rc.5 full matrix re-run on the optimized artifact: 11/11 scenarios, 296-package cohort, `docs/harness-0.2.1-rc.5/optimization-2026-11-03/`.
 
 Still requiring another machine/registry path: Ubuntu and Windows rc.5 archive evidence, and an exact-cohort install preflight that distinguishes cached from registry fetch.
