@@ -1,0 +1,164 @@
+{
+  "captain": {
+    "tools": 19,
+    "bytes": 20003,
+    "estimatedTokens": 5001,
+    "rows": [
+      {
+        "name": "agent_teams_create",
+        "bytes": 2427
+      },
+      {
+        "name": "agent_teams_invoke_profile",
+        "bytes": 967
+      },
+      {
+        "name": "agent_teams_approve",
+        "bytes": 447
+      },
+      {
+        "name": "agent_teams_edit_plan",
+        "bytes": 2330
+      },
+      {
+        "name": "agent_teams_add_member",
+        "bytes": 1994
+      },
+      {
+        "name": "agent_teams_update_member_route",
+        "bytes": 856
+      },
+      {
+        "name": "agent_teams_remove_member",
+        "bytes": 350
+      },
+      {
+        "name": "agent_teams_create_task",
+        "bytes": 3161
+      },
+      {
+        "name": "agent_teams_reassign_task",
+        "bytes": 808
+      },
+      {
+        "name": "agent_teams_amend_task",
+        "bytes": 1542
+      },
+      {
+        "name": "agent_teams_collect",
+        "bytes": 898
+      },
+      {
+        "name": "agent_teams_resume",
+        "bytes": 322
+      },
+      {
+        "name": "agent_teams_delete",
+        "bytes": 327
+      },
+      {
+        "name": "agent_teams_list_agent_presets",
+        "bytes": 267
+      },
+      {
+        "name": "agent_teams_save_agent_preset",
+        "bytes": 1178
+      },
+      {
+        "name": "agent_teams_delete_agent_preset",
+        "bytes": 252
+      },
+      {
+        "name": "agent_teams_worktree",
+        "bytes": 728
+      },
+      {
+        "name": "agent_teams_reset_member_context",
+        "bytes": 610
+      },
+      {
+        "name": "agent_teams_compact_member",
+        "bytes": 539
+      }
+    ]
+  },
+  "coreCaptain": {
+    "tools": 11,
+    "bytes": 15945,
+    "estimatedTokens": 3987,
+    "rows": [
+      {
+        "name": "agent_teams_create",
+        "bytes": 2427
+      },
+      {
+        "name": "agent_teams_invoke_profile",
+        "bytes": 967
+      },
+      {
+        "name": "agent_teams_approve",
+        "bytes": 447
+      },
+      {
+        "name": "agent_teams_add_member",
+        "bytes": 1994
+      },
+      {
+        "name": "agent_teams_create_task",
+        "bytes": 3161
+      },
+      {
+        "name": "agent_teams_reassign_task",
+        "bytes": 808
+      },
+      {
+        "name": "agent_teams_update_task",
+        "bytes": 3009
+      },
+      {
+        "name": "agent_teams_send_message",
+        "bytes": 1502
+      },
+      {
+        "name": "agent_teams_status",
+        "bytes": 405
+      },
+      {
+        "name": "agent_teams_collect",
+        "bytes": 898
+      },
+      {
+        "name": "agent_teams_delete",
+        "bytes": 327
+      }
+    ]
+  },
+  "member": {
+    "tools": 4,
+    "bytes": 5551,
+    "estimatedTokens": 1388,
+    "rows": [
+      {
+        "name": "agent_teams_claim_task",
+        "bytes": 635
+      },
+      {
+        "name": "agent_teams_update_task",
+        "bytes": 3009
+      },
+      {
+        "name": "agent_teams_send_message",
+        "bytes": 1502
+      },
+      {
+        "name": "agent_teams_status",
+        "bytes": 405
+      }
+    ]
+  },
+  "savings": {
+    "tools": 8,
+    "bytes": 4058,
+    "percent": 20.3
+  }
+}

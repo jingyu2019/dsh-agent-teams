@@ -217,6 +217,8 @@ export const ACTIVITY_HALT_URL = '/plugins/dsh-agent-teams/halt'
 
 interface ActivityFetchResponse {
   readonly ok: boolean
+  readonly status?: number
+  readonly headers?: { get(name: string): string | null }
   json(): Promise<unknown>
 }
 
@@ -232,7 +234,11 @@ export interface ActivityPollingRuntime {
   readonly discoverySessionId?: string
   readonly fetchState?: (
     url: string,
-    init: { readonly cache: 'no-store'; readonly signal: AbortSignal },
+    init: {
+      readonly cache: 'no-store'
+      readonly signal: AbortSignal
+      readonly headers?: Readonly<Record<string, string>>
+    },
   ) => Promise<ActivityFetchResponse>
   readonly schedule?: (callback: () => void, intervalMs: number) => unknown
   readonly cancel?: (timer: unknown) => void
@@ -286,6 +292,11 @@ export function startActivityPolling(
   let discoveredLiveKeys = new Set<string>()
   let controller: AbortController | undefined
   let timer: unknown
+  let liveEtag: string | undefined
+  let archivedEtag: string | undefined
+  let lastLiveTeams: readonly ActivityTeam[] = []
+  let lastArchivedTeams: readonly ActivityTeam[] | undefined
+  let hasLiveSnapshot = false
   const intervalMs = (): number => (hot ? ACTIVITY_POLL_MS : ACTIVITY_PROBE_MS)
   const reschedule = (): void => {
     cancel(timer)
@@ -299,14 +310,24 @@ export function startActivityPolling(
       const liveResponse = await fetchState(ACTIVITY_STATE_URL, {
         cache: 'no-store',
         signal: controller.signal,
+        ...liveEtag === undefined ? {} : { headers: { 'if-none-match': liveEtag } },
       })
-      if (!liveResponse.ok) throw new Error('Activity unavailable')
-      const body = (await liveResponse.json()) as { teams?: unknown }
+      const liveNotModified = liveResponse.status === 304
+      if (!liveResponse.ok && !liveNotModified) throw new Error('Activity unavailable')
       if (cancelled) return
-      if (!Array.isArray(body.teams)) throw new Error('Invalid activity response')
+      let liveTeams = lastLiveTeams
+      if (!liveNotModified) {
+        const body = (await liveResponse.json()) as { teams?: unknown }
+        if (!Array.isArray(body.teams)) throw new Error('Invalid activity response')
+        liveTeams = body.teams as readonly ActivityTeam[]
+        lastLiveTeams = liveTeams
+        hasLiveSnapshot = true
+        liveEtag = liveResponse.headers?.get('etag') ?? undefined
+      } else if (!hasLiveSnapshot) {
+        throw new Error('304 activity response without a prior snapshot')
+      }
       runtime.onStatus?.('ready')
-      const liveTeams = body.teams as readonly ActivityTeam[]
-      publishSnapshots({ teams: liveTeams })
+      if (!liveNotModified) publishSnapshots({ teams: liveTeams })
       const previousDiscoveredKeys = discoveredLiveKeys
       discoveredLiveKeys = new Set(discoverySessionId === undefined || discoverySessionId === ''
         ? []
@@ -337,12 +358,22 @@ export function startActivityPolling(
       const archivedResponse = await fetchState(`${ACTIVITY_STATE_URL}?archived=1`, {
         cache: 'no-store',
         signal: controller.signal,
+        ...archivedEtag === undefined ? {} : { headers: { 'if-none-match': archivedEtag } },
       })
-      if (!archivedResponse.ok) throw new Error('Archive unavailable')
-      const archivedBody = (await archivedResponse.json()) as { teams?: unknown }
+      const archivedNotModified = archivedResponse.status === 304
+      if (!archivedResponse.ok && !archivedNotModified) throw new Error('Archive unavailable')
       if (cancelled) return
-      if (!Array.isArray(archivedBody.teams)) throw new Error('Invalid archive response')
-      publishSnapshots({ archivedTeams: archivedBody.teams as readonly ActivityTeam[] })
+      if (!archivedNotModified) {
+        const archivedBody = (await archivedResponse.json()) as { teams?: unknown }
+        if (!Array.isArray(archivedBody.teams)) throw new Error('Invalid archive response')
+        lastArchivedTeams = archivedBody.teams as readonly ActivityTeam[]
+        archivedEtag = archivedResponse.headers?.get('etag') ?? undefined
+      } else if (lastArchivedTeams === undefined) {
+        throw new Error('304 archive response without a prior snapshot')
+      }
+      if (!archivedNotModified && lastArchivedTeams !== undefined) {
+        publishSnapshots({ archivedTeams: lastArchivedTeams })
+      }
       discoveryComplete = true
       settleTargets(new Set(missing.map((target) => target.key)))
     } catch (error: unknown) {

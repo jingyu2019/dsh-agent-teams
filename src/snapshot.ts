@@ -9,7 +9,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { readdir } from 'node:fs/promises'
+import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { memberActivity } from './members.ts'
 import { canDeclareDelivery, describeQualityLoop, verdictAuditNotes } from './quality-gates.ts'
@@ -21,6 +21,9 @@ import {
   taskDepthsById, taskVisualState,
 } from './state.ts'
 import type { MemberStatus, TeamState, TeamTask, TimelineEntry } from './types.ts'
+
+/** Durable timeline entries carried by a snapshot; the panel renders the newest 50. */
+export const SNAPSHOT_TIMELINE_LIMIT = 50
 
 /** Visual task state for the activity panel. */
 export type VisualTaskState = 'blocked' | 'open' | 'claimed' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -49,7 +52,7 @@ export interface TeamActivityMember {
 export interface TeamActivityTask {
   readonly id: string
   readonly subject: string
-  readonly description: string
+  readonly description?: string
   readonly status: string
   readonly state: VisualTaskState
   readonly assignee: string
@@ -94,7 +97,7 @@ export interface TeamActivitySnapshot {
   readonly tasks: readonly TeamActivityTask[]
   readonly messageCount: number
   readonly captainInbox: readonly TeamActivityMessage[]
-  /** Latest 200 durable activity entries, oldest first. */
+  /** Newest 50 durable activity entries, oldest first. */
   readonly timeline: readonly TimelineEntry[]
   /** Present when the snapshot could audit the workspace bytes. */
   readonly loopState?: string
@@ -175,7 +178,9 @@ export async function assembleTeamSnapshot(
       provider: member.provider?.trim() ?? '',
       model: member.model?.trim() ?? '',
       reasoningEffort: member.reasoningEffort?.trim() ?? '',
-      executionPrompt: member.executionPrompt ?? '',
+      // Only the staged plan editor renders member prompts. Running and
+      // archived teams must not carry every long execution prompt on each poll.
+      executionPrompt: state.phase === 'staged' ? member.executionPrompt ?? '' : '',
       ...avatarUrl(state.id, memberAvatarRef(state, member)) === undefined ? {} : { avatarUrl: avatarUrl(state.id, memberAvatarRef(state, member)) as string },
       status: member.status,
       activity: options.historic === true
@@ -226,7 +231,9 @@ export async function assembleTeamSnapshot(
     tasks: tasks.map((task) => ({
       id: task.id,
       subject: task.subject,
-      description: task.description ?? '',
+      // Task descriptions exist for the staging editor; a running board only
+      // needs the subject and state, so long briefs stay off the wire.
+      ...state.phase === 'staged' ? { description: task.description ?? '' } : {},
       status: task.status,
       state: taskVisualState(task.status, task.dependencies, tasks),
       assignee: task.assignee ?? '',
@@ -253,7 +260,7 @@ export async function assembleTeamSnapshot(
         })),
       },
     })),
-    timeline: (state.timeline ?? []).slice(-200),
+    timeline: (state.timeline ?? []).slice(-SNAPSHOT_TIMELINE_LIMIT),
   }
 }
 
@@ -294,10 +301,58 @@ export async function collectTeamsActivity(
   return snapshots
 }
 
+/** Bound on cached archived snapshots; oldest entries are evicted first. */
+export const ARCHIVED_SNAPSHOT_CACHE_LIMIT = 256
+
+interface CachedArchivedSnapshot {
+  readonly stamp: string
+  readonly snapshot: TeamActivitySnapshot
+}
+
+// Archives are immutable after `archiveTeamDir` moves them, so a snapshot can
+// be reused until team.json changes. Keyed by state root + team id, with the
+// display workspace name folded into the stamp because it is part of the payload.
+const archivedSnapshotCache = new Map<string, CachedArchivedSnapshot>()
+
+/** Clear the archived snapshot cache (tests and explicit reloads). */
+export function clearArchivedSnapshotCache(): void {
+  archivedSnapshotCache.clear()
+}
+
+/** Number of archived snapshots currently cached. */
+export function archivedSnapshotCacheSize(): number {
+  return archivedSnapshotCache.size
+}
+
+function cacheArchivedSnapshot(key: string, entry: CachedArchivedSnapshot): void {
+  archivedSnapshotCache.delete(key)
+  archivedSnapshotCache.set(key, entry)
+  while (archivedSnapshotCache.size > ARCHIVED_SNAPSHOT_CACHE_LIMIT) {
+    const oldest = archivedSnapshotCache.keys().next()
+    if (oldest.done === true) break
+    archivedSnapshotCache.delete(oldest.value)
+  }
+}
+
+async function archivedTeamStamp(stateRoot: string, teamId: string, workspace: string): Promise<string | undefined> {
+  try {
+    const info = await stat(join(stateRoot, 'archive', teamId, 'team.json'))
+    return `${info.mtimeMs}:${info.size}:${workspace}`
+  } catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
 /**
  * Collect every archived team under the given workspace state roots (the
  * `archive/` subdirectory of each state root). Used by the historic panel
  * path to restore full team detail after deletion.
+ *
+ * Archived teams never change after their directory is moved, so each full
+ * snapshot is cached by `team.json` mtime+size. Repeat polling therefore only
+ * lists directories and stats one file per archive instead of re-reading the
+ * team record and every member mailbox.
  * @param ctx - the plugin context.
  * @param roots - `{ workspace, stateRoot }` pairs.
  * @returns the archived snapshots in stable order.
@@ -307,22 +362,45 @@ export async function collectArchivedTeamsActivity(
   roots: readonly { workspace: string; stateRoot: string }[],
 ): Promise<TeamActivitySnapshot[]> {
   const snapshots: TeamActivitySnapshot[] = []
+  const liveKeys = new Set<string>()
   for (const root of roots) {
     for (const teamId of await listArchivedTeamIds(root.stateRoot)) {
+      const key = `${root.stateRoot}\u0000${teamId}`
+      liveKeys.add(key)
       try {
+        const stamp = await archivedTeamStamp(root.stateRoot, teamId, root.workspace)
+        if (stamp === undefined) {
+          archivedSnapshotCache.delete(key)
+          continue
+        }
+        const cached = archivedSnapshotCache.get(key)
+        if (cached !== undefined && cached.stamp === stamp) {
+          snapshots.push(cached.snapshot)
+          continue
+        }
         const state = await readArchivedTeam(root.stateRoot, teamId)
-        if (state === undefined) continue
-        snapshots.push(await assembleTeamSnapshot(
+        if (state === undefined) {
+          archivedSnapshotCache.delete(key)
+          continue
+        }
+        const snapshot = await assembleTeamSnapshot(
           ctx,
           join(root.stateRoot, 'archive'),
           root.workspace,
           state,
           { includeRemoved: true, historic: true },
-        ))
+        )
+        cacheArchivedSnapshot(key, { stamp, snapshot })
+        snapshots.push(snapshot)
       } catch {
+        archivedSnapshotCache.delete(key)
         ctx.logger.warn(`agent-teams: skipped unreadable archived team "${teamId}" in workspace "${root.workspace}"`)
       }
     }
+  }
+  // Deleted or moved archives must not stay resident forever.
+  for (const key of [...archivedSnapshotCache.keys()]) {
+    if (!liveKeys.has(key)) archivedSnapshotCache.delete(key)
   }
   return snapshots
 }

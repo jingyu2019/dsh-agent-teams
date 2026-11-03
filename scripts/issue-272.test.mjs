@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { removeTestTree } from './test-cleanup.mjs'
 import { join } from 'node:path'
 import test from 'node:test'
 import { appendMailbox, createMessage, createTeamDir, readMailbox, readTeam, writeTeam } from '../lib/state.js'
@@ -52,7 +53,7 @@ async function fixture(stopReason = 'completed') {
       return { accepted: true }
     },
   })
-  return { workspace, stateRoot, captain, live, ctx, scheduler, cleanup: () => rm(workspace, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 }) }
+  return { workspace, stateRoot, captain, live, ctx, scheduler, cleanup: () => removeTestTree(workspace) }
 }
 
 test('completed activation creates exact task parking and one due notice', async () => {

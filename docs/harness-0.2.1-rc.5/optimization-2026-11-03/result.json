@@ -1,0 +1,81 @@
+{
+  "passed": true,
+  "version": "0.2.1-rc.5",
+  "artifactSha256": "87dc4769535ded20c07f6f0f2285d4d9796cf9d6417d613bc73db97b50fb0e93",
+  "pluginVersion": "0.1.29",
+  "testFiles": {
+    "compatibility.mjs": "7671a6174bb8098b1f9081facfec5452331ef7660f880d93a95c901de27bc32e",
+    "../compatibility.json": "1c10f06a615c6dc227b66eaa816fe97e4de06f5827b8efd631358483a6b9462f",
+    "harness-validation.mjs": "cd31589d19c1bb5e1971319b65ce54d4b49173d000b662dac8647ed2adfc723f",
+    "harness-runtime-verify.mjs": "aecf0b3446e87de8108d8d3dfdb8d02ffabef8bf287e0613eec7db1b5e1504c8",
+    "harness-runtime-scenarios.mjs": "5a1a6c66c8650cd4d84966dc0ec60afd2b4f86a095369a215606851adc41b35d",
+    "fixtures/harness-runtime-llm.mjs": "07e6759a939cb10bf3c7b000191c18690dd79184b586c3db6b75266ffe28147d",
+    "fixtures/harness-runtime-resume.mjs": "17f8be68c143a2f49e0c45de90665c4cf24aac2f06d8a415db062e71424b10a7",
+    "fixtures/harness-runtime-idle.mjs": "508f2437610624aaf5196c66c533a0f7b1da021343b1534c1a60818cca54bc72",
+    "fixtures/harness-runtime-entry.mjs": "816515fd8f59e173217f2f47dedbbe5c239d693173950f02e3a5135adff40f31",
+    "fixtures/harness-runtime-web-approval.mjs": "bc29f96cb9e8f462567048f8f8b5a239f6f420b73b2602e41c69cd5ceee9e627",
+    "fixtures/harness-runtime-protocol.mjs": "1be0de75af86c9fb96b35c88d2e52ac1c2e9eacc8a9f8451e58842df83736485",
+    "fixtures/harness-runtime-stability.mjs": "7c653917bad967be6ae8c05961e25bf5ac24895609be57e8ac8b3c4e0a45cdec"
+  },
+  "node": "v26.12.1",
+  "platform": "darwin",
+  "arch": "arm64",
+  "cohortCount": 296,
+  "runs": [
+    {
+      "scenario": "lifecycle",
+      "passed": true,
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "timedOut": false
+      },
+      "assertions": {
+        "exit0": true,
+        "productMarker": true,
+        "pluginToolsVisible": true,
+        "memberExecuted": true,
+        "memberToolsRestricted": true,
+        "explicitReasoning": true,
+        "taskTerminal": true,
+        "secondWake": true,
+        "fifoMessageOrder": true,
+        "messagesSentWhileBusy": true
+      },
+      "requests": 16,
+      "memberRequests": 6
+    },
+    {
+      "scenario": "lifecycle-cold-restore",
+      "passed": true,
+      "assertions": {
+        "memberToolsRestricted": true,
+        "exit0": true,
+        "driverCompleted": true,
+        "sameMemberRestored": true,
+        "routeRestored": true,
+        "reasoningRestored": true
+      },
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "timedOut": false
+      }
+    },
+    {
+      "scenario": "plugin-manager-install",
+      "passed": true,
+      "assertions": {
+        "exit0": true,
+        "exactPluginVersion": true
+      }
+    }
+  ],
+  "unverified": [
+    "real provider APIs and credentials",
+    "browser interaction",
+    "other operating systems",
+    "native terminal execution",
+    "live user-data migration"
+  ]
+}

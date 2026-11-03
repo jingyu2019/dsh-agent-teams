@@ -9,6 +9,8 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { MemberStatus, TeamState, TimelineEntry } from './types.ts';
+/** Durable timeline entries carried by a snapshot; the panel renders the newest 50. */
+export declare const SNAPSHOT_TIMELINE_LIMIT = 50;
 /** Visual task state for the activity panel. */
 export type VisualTaskState = 'blocked' | 'open' | 'claimed' | 'running' | 'completed' | 'failed' | 'cancelled';
 /** One member row of the activity snapshot. */
@@ -34,7 +36,7 @@ export interface TeamActivityMember {
 export interface TeamActivityTask {
     readonly id: string;
     readonly subject: string;
-    readonly description: string;
+    readonly description?: string;
     readonly status: string;
     readonly state: VisualTaskState;
     readonly assignee: string;
@@ -77,7 +79,7 @@ export interface TeamActivitySnapshot {
     readonly tasks: readonly TeamActivityTask[];
     readonly messageCount: number;
     readonly captainInbox: readonly TeamActivityMessage[];
-    /** Latest 200 durable activity entries, oldest first. */
+    /** Newest 50 durable activity entries, oldest first. */
     readonly timeline: readonly TimelineEntry[];
     /** Present when the snapshot could audit the workspace bytes. */
     readonly loopState?: string;
@@ -126,10 +128,21 @@ export declare function collectTeamsActivity(ctx: Context, roots: readonly {
     stateRoot: string;
     workspacePath?: string;
 }[]): Promise<TeamActivitySnapshot[]>;
+/** Bound on cached archived snapshots; oldest entries are evicted first. */
+export declare const ARCHIVED_SNAPSHOT_CACHE_LIMIT = 256;
+/** Clear the archived snapshot cache (tests and explicit reloads). */
+export declare function clearArchivedSnapshotCache(): void;
+/** Number of archived snapshots currently cached. */
+export declare function archivedSnapshotCacheSize(): number;
 /**
  * Collect every archived team under the given workspace state roots (the
  * `archive/` subdirectory of each state root). Used by the historic panel
  * path to restore full team detail after deletion.
+ *
+ * Archived teams never change after their directory is moved, so each full
+ * snapshot is cached by `team.json` mtime+size. Repeat polling therefore only
+ * lists directories and stats one file per archive instead of re-reading the
+ * team record and every member mailbox.
  * @param ctx - the plugin context.
  * @param roots - `{ workspace, stateRoot }` pairs.
  * @returns the archived snapshots in stable order.
