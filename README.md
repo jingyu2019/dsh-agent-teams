@@ -252,6 +252,10 @@ dsh-agent-teams-install-preflight --profile-root ~/.dsh/profiles/desktop --host-
 
 It reports the declared spec, installed version, local artifact SHA-256, whether the exact DSH host cohort is present, and whether an upgrade needs a registry fetch. It never runs a package manager or reads credentials.
 
+## Ending a team
+
+`agent_teams_delete` archives the team state. Pass `archive_member_sessions: true` to also archive each member's durable host session through the workspace registry. This is opt-in because it changes session visibility; the archive is reversible with the host's `unarchiveSession`, and a host without that surface simply skips it.
+
 ## Boundaries
 
 - One captain leads one active team at a time.

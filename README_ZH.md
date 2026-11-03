@@ -241,6 +241,10 @@ dsh-agent-teams-install-preflight --profile-root ~/.dsh/profiles/desktop --host-
 
 输出声明范围、已安装版本、本地 artifact 的 SHA-256、宿主精确闭包是否齐全，以及升级是否需要访问 registry。该命令不运行包管理器，也不读取凭据。
 
+## 结束团队
+
+`agent_teams_delete` 会把团队状态归档。传入 `archive_member_sessions: true` 时，还会通过 workspace registry 归档每个成员的持久宿主会话。该选项默认关闭，因为会改变会话可见性；归档可用宿主的 `unarchiveSession` 还原，没有该能力的宿主会跳过而不是失败。
+
 ## 使用边界
 
 - 一个队长同一时间只能带一个活动团队。
