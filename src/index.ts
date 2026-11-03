@@ -1000,3 +1000,14 @@ export function apply(ctx: Context, config: Config): void {
     }
   })
 }
+
+/**
+ * Explicit default plugin object.
+ *
+ * Harness loaders normalize ES modules with `exports.default ?? exports`, and
+ * Windows/desktop packaging has been observed to reach a module namespace that
+ * then fails with `invalid plugin, ... received object` (#335). Exporting the
+ * applicable object as the default AND keeping the named `apply` export makes
+ * both unwrapping shapes resolve to a plugin with an `apply` method.
+ */
+export default { name, inject, Config, apply }
