@@ -242,6 +242,16 @@ dsh-agent-teams-memory-trace --pid <dsh-pid> --samples 60 --interval-ms 1000 --o
 
 The command emits timestamped PID, RSS, elapsed time and sampling latency as JSONL. `--max-rss-mb` returns non-zero when a sample crosses a threshold. Heap-internal ownership still requires a V8 heap snapshot from the reviewing host.
 
+## Install preflight
+
+Before upgrading, check what is actually installed without writing to the profile:
+
+```sh
+dsh-agent-teams-install-preflight --profile-root ~/.dsh/profiles/desktop --host-root <repo-or-dsh-cli-root> --json
+```
+
+It reports the declared spec, installed version, local artifact SHA-256, whether the exact DSH host cohort is present, and whether an upgrade needs a registry fetch. It never runs a package manager or reads credentials.
+
 ## Boundaries
 
 - One captain leads one active team at a time.
