@@ -118,3 +118,19 @@ export declare function usageSectionText(toolNames: string, profilesText?: strin
 /** Resolve owner configuration into the tool/scheduler runtime shape. */
 export declare function resolveToolsConfig(config: Config): ToolsConfig;
 export declare function apply(ctx: Context, config: Config): void;
+/**
+ * Explicit default plugin object.
+ *
+ * Harness loaders normalize ES modules with `exports.default ?? exports`, and
+ * Windows/desktop packaging has been observed to reach a module namespace that
+ * then fails with `invalid plugin, ... received object` (#335). Exporting the
+ * applicable object as the default AND keeping the named `apply` export makes
+ * both unwrapping shapes resolve to a plugin with an `apply` method.
+ */
+declare const _default: {
+    name: string;
+    inject: string[];
+    Config: z<Config>;
+    apply: typeof apply;
+};
+export default _default;
