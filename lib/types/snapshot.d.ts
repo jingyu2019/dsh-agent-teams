@@ -126,10 +126,21 @@ export declare function collectTeamsActivity(ctx: Context, roots: readonly {
     stateRoot: string;
     workspacePath?: string;
 }[]): Promise<TeamActivitySnapshot[]>;
+/** Bound on cached archived snapshots; oldest entries are evicted first. */
+export declare const ARCHIVED_SNAPSHOT_CACHE_LIMIT = 256;
+/** Clear the archived snapshot cache (tests and explicit reloads). */
+export declare function clearArchivedSnapshotCache(): void;
+/** Number of archived snapshots currently cached. */
+export declare function archivedSnapshotCacheSize(): number;
 /**
  * Collect every archived team under the given workspace state roots (the
  * `archive/` subdirectory of each state root). Used by the historic panel
  * path to restore full team detail after deletion.
+ *
+ * Archived teams never change after their directory is moved, so each full
+ * snapshot is cached by `team.json` mtime+size. Repeat polling therefore only
+ * lists directories and stats one file per archive instead of re-reading the
+ * team record and every member mailbox.
  * @param ctx - the plugin context.
  * @param roots - `{ workspace, stateRoot }` pairs.
  * @returns the archived snapshots in stable order.
