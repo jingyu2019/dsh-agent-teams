@@ -104,3 +104,15 @@ Still open from this document: cross-platform rc.5 archive, exact-cohort install
 4. Split live snapshots into summary/detail payloads.
 5. Measure and evaluate a core-by-default tool surface.
 6. Archive Ubuntu/Windows rc.5 evidence.
+Updated 2026-11-03 after implementation:
+
+- P0 memory trace: shipped as `dsh-agent-teams-memory-trace` (OS metadata only).
+- P0 polling: strong ETag plus `If-None-Match` revalidation.
+- P1 mailbox: bounded acknowledged archive; unread/malformed/final stay active.
+- P1 archive: mtime+size snapshot cache, 256-entry bound.
+- P1 payload: staging-only fields removed from running/archived snapshots; timeline capped at 50.
+- P2 tool surface: reproducible budget measurement (19 tools / 20,003 B vs 11 / 15,945 B).
+- P2 test cleanup: shared bounded retry helper replaces two local copies.
+- rc.5 regression subset: `docs/harness-0.2.1-rc.5/optimization-2026-11-03/`.
+
+Still requiring another machine/registry path: Ubuntu and Windows rc.5 archive evidence, and an exact-cohort install preflight that distinguishes cached from registry fetch.
