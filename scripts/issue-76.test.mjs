@@ -15,10 +15,11 @@ import { installTeamScheduler } from '../lib/scheduler.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { removeTestTree } from './test-cleanup.mjs'
 
-/** Recursive-remove retries cover drains that publish their final write just after a kick returns. */
+/** Shared bounded retry covers drains that publish their final write just after a kick returns. */
 async function cleanupWorkspace(workspace) {
-  await rm(workspace, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 })
+  await removeTestTree(workspace)
 }
 
 const primary = { provider: 'p', model: 'primary' }
