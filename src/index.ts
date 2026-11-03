@@ -35,6 +35,7 @@ import {
 } from './tools.ts'
 import { installAgentTeamsGestureBoundary, registerAgentTeamsCommand } from './command.ts'
 import { readFile } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
@@ -337,18 +338,39 @@ export function apply(ctx: Context, config: Config): void {
     path: '/plugins/dsh-agent-teams/state',
     handler: async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://x')
-      const roots = workspaceRegistry.list().map((workspace) => ({
-        workspace: workspace.title,
-        // The panel audits the same current bytes as agent_teams_status, so it
-        // cannot advertise a passing gate over a changed revision (#161).
-        workspacePath: workspace.path,
-        stateRoot: join(workspace.path, resolved.stateDir),
-      }))
+      // Multiple workspace registrations can resolve to the same state
+      // directory (a re-opened folder, a symlinked path, a nested project).
+      // Collect each physical state root once, or the same team appears twice
+      // on every poll and its bytes are paid for twice (#330).
+      const seenRoots = new Set<string>()
+      const roots: { workspace: string; workspacePath: string; stateRoot: string }[] = []
+      for (const workspace of workspaceRegistry.list()) {
+        const stateRoot = join(workspace.path, resolved.stateDir)
+        let identity = stateRoot
+        try {
+          identity = realpathSync(stateRoot)
+        } catch {
+          // A not-yet-created state directory is unique by its declared path.
+        }
+        if (seenRoots.has(identity)) continue
+        seenRoots.add(identity)
+        roots.push({
+          workspace: workspace.title,
+          // The panel audits the same current bytes as agent_teams_status, so
+          // it cannot advertise a passing gate over a changed revision (#161).
+          workspacePath: workspace.path,
+          stateRoot,
+        })
+      }
+      // ?sessionId= scopes collection to the session that is asking, so an
+      // ordinary poll no longer serializes every workspace's history (#330).
+      const sessionScope = url.searchParams.get('sessionId')?.trim() ?? ''
       // ?archived=1 serves teams moved to archive/ (post-delete review).
       const snapshots = url.searchParams.get('archived') === '1'
         ? await collectArchivedTeamsActivity(ctx, roots)
         : await collectTeamsActivity(ctx, roots)
-      const body = JSON.stringify({ teams: snapshots })
+      const scoped = sessionScope === '' ? snapshots : snapshots.filter(team => team.captainSessionId === sessionScope)
+      const body = JSON.stringify({ teams: scoped })
       const etag = activityEtag(body)
       if (requestMatchesEtag(req.headers['if-none-match'], etag)) {
         res.writeHead(304, { etag, 'cache-control': 'no-store' })
