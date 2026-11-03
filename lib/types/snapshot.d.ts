@@ -9,6 +9,8 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { MemberStatus, TeamState, TimelineEntry } from './types.ts';
+/** Durable timeline entries carried by a snapshot; the panel renders the newest 50. */
+export declare const SNAPSHOT_TIMELINE_LIMIT = 50;
 /** Visual task state for the activity panel. */
 export type VisualTaskState = 'blocked' | 'open' | 'claimed' | 'running' | 'completed' | 'failed' | 'cancelled';
 /** One member row of the activity snapshot. */
@@ -34,7 +36,7 @@ export interface TeamActivityMember {
 export interface TeamActivityTask {
     readonly id: string;
     readonly subject: string;
-    readonly description: string;
+    readonly description?: string;
     readonly status: string;
     readonly state: VisualTaskState;
     readonly assignee: string;
@@ -77,7 +79,7 @@ export interface TeamActivitySnapshot {
     readonly tasks: readonly TeamActivityTask[];
     readonly messageCount: number;
     readonly captainInbox: readonly TeamActivityMessage[];
-    /** Latest 200 durable activity entries, oldest first. */
+    /** Newest 50 durable activity entries, oldest first. */
     readonly timeline: readonly TimelineEntry[];
     /** Present when the snapshot could audit the workspace bytes. */
     readonly loopState?: string;

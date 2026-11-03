@@ -22,6 +22,9 @@ import {
 } from './state.ts'
 import type { MemberStatus, TeamState, TeamTask, TimelineEntry } from './types.ts'
 
+/** Durable timeline entries carried by a snapshot; the panel renders the newest 50. */
+export const SNAPSHOT_TIMELINE_LIMIT = 50
+
 /** Visual task state for the activity panel. */
 export type VisualTaskState = 'blocked' | 'open' | 'claimed' | 'running' | 'completed' | 'failed' | 'cancelled'
 
@@ -49,7 +52,7 @@ export interface TeamActivityMember {
 export interface TeamActivityTask {
   readonly id: string
   readonly subject: string
-  readonly description: string
+  readonly description?: string
   readonly status: string
   readonly state: VisualTaskState
   readonly assignee: string
@@ -94,7 +97,7 @@ export interface TeamActivitySnapshot {
   readonly tasks: readonly TeamActivityTask[]
   readonly messageCount: number
   readonly captainInbox: readonly TeamActivityMessage[]
-  /** Latest 200 durable activity entries, oldest first. */
+  /** Newest 50 durable activity entries, oldest first. */
   readonly timeline: readonly TimelineEntry[]
   /** Present when the snapshot could audit the workspace bytes. */
   readonly loopState?: string
@@ -175,7 +178,9 @@ export async function assembleTeamSnapshot(
       provider: member.provider?.trim() ?? '',
       model: member.model?.trim() ?? '',
       reasoningEffort: member.reasoningEffort?.trim() ?? '',
-      executionPrompt: member.executionPrompt ?? '',
+      // Only the staged plan editor renders member prompts. Running and
+      // archived teams must not carry every long execution prompt on each poll.
+      executionPrompt: state.phase === 'staged' ? member.executionPrompt ?? '' : '',
       ...avatarUrl(state.id, memberAvatarRef(state, member)) === undefined ? {} : { avatarUrl: avatarUrl(state.id, memberAvatarRef(state, member)) as string },
       status: member.status,
       activity: options.historic === true
@@ -226,7 +231,9 @@ export async function assembleTeamSnapshot(
     tasks: tasks.map((task) => ({
       id: task.id,
       subject: task.subject,
-      description: task.description ?? '',
+      // Task descriptions exist for the staging editor; a running board only
+      // needs the subject and state, so long briefs stay off the wire.
+      ...state.phase === 'staged' ? { description: task.description ?? '' } : {},
       status: task.status,
       state: taskVisualState(task.status, task.dependencies, tasks),
       assignee: task.assignee ?? '',
@@ -253,7 +260,7 @@ export async function assembleTeamSnapshot(
         })),
       },
     })),
-    timeline: (state.timeline ?? []).slice(-200),
+    timeline: (state.timeline ?? []).slice(-SNAPSHOT_TIMELINE_LIMIT),
   }
 }
 
