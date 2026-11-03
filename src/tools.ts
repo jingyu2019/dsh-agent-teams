@@ -65,6 +65,7 @@ import {
   taskKindOf,
 } from './state.ts'
 import { appendTaskEvidence } from './quality-gates.ts'
+import { archiveMemberSessions } from './member-sessions.ts'
 import {
   artifactDrift,
   bindReviewToRevision,
@@ -3552,8 +3553,13 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
 
   ctx.tools.register(defineTool({
     name: 'agent_teams_delete',
-    description: 'End and archive your team: interrupts members and moves the current tasks and mailboxes out of active state for later inspection. Use when the work is done or explicitly abandoned. A same-name archive replaces its previous generation.',
-    parameters: {},
+    description: 'End and archive your team: interrupts members and moves the current tasks and mailboxes out of active state for later inspection. Use when the work is done or explicitly abandoned. A same-name archive replaces its previous generation. Pass archive_member_sessions=true to also archive the durable host sessions of every member, so repeated teams do not leave orphan subagent sessions behind (#333).',
+    parameters: {
+      archive_member_sessions: {
+        type: 'boolean',
+        description: 'Opt-in: archive each member durable host session through the workspace registry. Default false preserves the previous behaviour.',
+      },
+    },
     output: {
       schema: {
         type: 'object',
@@ -3561,14 +3567,17 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         properties: {
           deleted: { type: 'boolean', required: true },
           team_name: { type: 'string', required: true },
+          archived_member_sessions: { type: 'integer' },
         },
       },
       render: (args, value) => [{
         type: 'text',
-        text: `Team "${value.team_name}" ended and archived.`,
+        text: value.archived_member_sessions === undefined
+          ? `Team "${value.team_name}" ended and archived.`
+          : `Team "${value.team_name}" ended and archived; ${value.archived_member_sessions} member session(s) archived.`,
       }],
     },
-    async execute(_args, exec) {
+    async execute(args, exec) {
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
       const stateRoot = stateRootOf(workspace, config)
@@ -3604,6 +3613,15 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       })
       scheduler.forgetTeam(team.id, members.map(member => member.id))
       forgetAncestryCache([captain.id, ...members.map(member => member.id)])
+      if (args.archive_member_sessions === true) {
+        const workspaceRegistry = ctx.get('workspaceRegistry') as { archiveSession?: (id: string, options?: { stopActivity?: boolean }) => Promise<void> } | undefined
+        const archived = await archiveMemberSessions(
+          workspaceRegistry,
+          members.map(member => member.id),
+          message => ctx.logger.warn(message),
+        )
+        return { deleted: true, team_name: team.name, archived_member_sessions: archived.archived }
+      }
       return { deleted: true, team_name: team.name }
     },
   }))
