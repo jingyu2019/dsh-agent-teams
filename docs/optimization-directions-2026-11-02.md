@@ -131,3 +131,11 @@ The upstream tracker gained issues after the original backlog audit. Status in t
 | #329/#328/#327/#326/#325/#323/#322 | duplicate of #327 | same rc.5 compatibility rejection |
 | #324 GUI team-size config / delegation skill | out of scope | changes the product surface and needs its own design review; the underlying `maxMembers` setting already exists in config |
 | #319 claim_task assignee and host depth messaging | duplicate of the #96/#244 line | already addressed by the optional-parameter and tool-policy work in this fork |
+
+### #335 follow-up: which fix is verifiable here
+
+The report's error string comes from `@deepseek-ai/cordis` `registry.resolve`: a plugin is rejected when `typeof plugin !== 'function'` and `plugin.apply` is not callable. The fork now exports both named bindings and a default `{ name, inject, Config, apply }` object, and a fresh `ctx.plugin()` against the real rc.5 Cordis accepts all three shapes (namespace, default, named-only). What this cannot prove is the Windows desktop packaging path itself: macOS cannot reproduce a Windows `prepare`/`allowBuilds` install. The claim is therefore "export shape is now applicable under both unwrapping rules", not "the Windows report is closed".
+
+### #331: forked session cannot create its own team
+
+The report is a screenshot with no host version, profile composition, or error text. The code intentionally treats a *top-level fork descendant of the captain* as the same lead (`teamLeadMatch`), so "fork the conversation, then create a second team" hits the one-team-per-captain rule by design. A fork whose ancestry includes a member is rejected as a member, not promoted to lead. Making forks independently own teams needs a product decision (does a fork split team ownership?) plus a durable captain-identity migration; it is not implemented here.
