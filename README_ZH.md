@@ -231,6 +231,16 @@ dsh-agent-teams-memory-trace --pid <dsh-pid> --samples 60 --interval-ms 1000 --o
 
 命令以 JSONL 输出时间、PID、RSS、运行时间和采样耗时。设置 `--max-rss-mb` 可在超过阈值时返回非零。需要判断 V8 内部对象归属时，仍应在复核宿主上采集 heap snapshot。
 
+## 安装预检
+
+升级前可先只读检查实际安装状态：
+
+```sh
+dsh-agent-teams-install-preflight --profile-root ~/.dsh/profiles/desktop --host-root <仓库或 dsh CLI 根目录> --json
+```
+
+输出声明范围、已安装版本、本地 artifact 的 SHA-256、宿主精确闭包是否齐全，以及升级是否需要访问 registry。该命令不运行包管理器，也不读取凭据。
+
 ## 使用边界
 
 - 一个队长同一时间只能带一个活动团队。
