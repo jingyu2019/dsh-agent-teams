@@ -117,3 +117,17 @@ Updated 2026-11-03 after implementation:
 - rc.5 full matrix re-run on the optimized artifact: 11/11 scenarios, 296-package cohort, `docs/harness-0.2.1-rc.5/optimization-2026-11-03/`.
 
 Still requiring another machine/registry path: Ubuntu and Windows rc.5 archive evidence, and an exact-cohort install preflight that distinguishes cached from registry fetch.
+
+## Upstream deltas after 2026-10-30
+
+The upstream tracker gained issues after the original backlog audit. Status in this fork:
+
+| Issue | Decision | Evidence |
+|---|---|---|
+| #330 `/state` resends full snapshots every second | fixed | ETag/304, session scoping, workspace-root dedupe, hidden-page cadence, trimmed payloads; `scripts/issue-330.test.mjs`, `scripts/activity-etag.test.mjs`, `scripts/snapshot-payload.test.mjs` |
+| #333 deleting a team leaves member host sessions | fixed, opt-in | `agent_teams_delete({ archive_member_sessions: true })` archives each durable member session through `workspaceRegistry.archiveSession`; default unchanged; `scripts/issue-333.test.mjs` |
+| #335 Windows desktop reports "invalid plugin ... received object" | fixed | the package now exports an applicable default plugin object in addition to named exports; `scripts/issue-335.test.mjs` |
+| #331 a forked session cannot create its own team | needs evidence | no host version, profile composition, or error trace in the report; the plugin resolves the captain by session lineage, so a fork of a captain may legitimately be treated as the same team |
+| #329/#328/#327/#326/#325/#323/#322 | duplicate of #327 | same rc.5 compatibility rejection |
+| #324 GUI team-size config / delegation skill | out of scope | changes the product surface and needs its own design review; the underlying `maxMembers` setting already exists in config |
+| #319 claim_task assignee and host depth messaging | duplicate of the #96/#244 line | already addressed by the optional-parameter and tool-policy work in this fork |
