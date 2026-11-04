@@ -1388,3 +1388,7 @@ The final validation command and results are recorded below after the design doc
 - security terms and boundaries for #70/#121/#287: canonical path containment, local-only default, authenticated delivery, SSRF denial, cleanup preservation
 - `git status --short -- src scripts lib docs package.json pnpm-lock.yaml`: empty
 - design file: `.agent-teams/inputs/design/issue-backlog-design.md`
+
+## 4.5 2026-11-04 status addendum
+
+The dated implementation/status addendum in `docs/issue-backlog-2026-10-30.md` supersedes the historical evidence-queue entries for #314 and #317 and admits #331/#324 as implemented work on `codex/331-324-integration`. This is not a claim that the branch is merged, released, or verified in a live desktop. #317 remains gated: current schema measurements are recorded in `docs/optimization-directions-2026-11-02.md`, but prompt bytes and call counts are missing, so no token-neutral optimization has been accepted. #314 remains unresolved pending external installation logs and an exact-version clean retry. The subagent compaction proposal remains design-only pending host API support.

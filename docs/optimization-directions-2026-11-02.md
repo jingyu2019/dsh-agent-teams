@@ -139,3 +139,14 @@ The report's error string comes from `@deepseek-ai/cordis` `registry.resolve`: a
 ### #331: forked session cannot create its own team
 
 The report is a screenshot with no host version, profile composition, or error text. The code intentionally treats a *top-level fork descendant of the captain* as the same lead (`teamLeadMatch`), so "fork the conversation, then create a second team" hits the one-team-per-captain rule by design. A fork whose ancestry includes a member is rejected as a member, not promoted to lead. Making forks independently own teams needs a product decision (does a fork split team ownership?) plus a durable captain-identity migration; it is not implemented here.
+
+## 2026-11-04 integration status (supersedes the earlier #331/#324 rows)
+
+| Issue | Current decision and status | Evidence / remaining boundary |
+|---|---|---|
+| #331 forked session cannot create its own team | Implemented on `codex/331-324-integration` | Exact captain identity and nearest captain-fork lineage select the owning team; same-rank ambiguity still errors. Top-level captain forks can create independent teams while member sessions remain ineligible. `scripts/issue-331.test.mjs` (5 cases) and capability selection tests cover this. Runtime GUI/host scenario is not claimed. |
+| #324 GUI team-size config / delegation skill | Implemented on `codex/331-324-integration` | Adds a `maxMembers` settings form through rc.5 `configForms`, validates positive safe integers, and adds the delegation skill with project mirrors. Parser and wiring checks pass; a live desktop settings interaction has not been verified. |
+| #317 token-neutral optimization | No optimization accepted | Current captain surface is 19 tools / 20,356 bytes / estimated 5,089 schema tokens; core captain is 11 / 16,298 / 4,075; member is 4 / 5,551 / 1,388. Relative to the current recorded baseline (20,003 / 15,945 / 5,551 bytes), the 353-byte delta is attributable to #333's `archive_member_sessions` parameter. Prompt bytes and call counts have not been measured, so token neutrality is unproven. |
+| #314 install failure | TODO; unresolved | The upstream report lacks the resolved plugin version and complete installer logs/clean retry needed to distinguish compatibility rejection from registry/network failure. The `engines.dsh` hypothesis is not treated as a verified fix. |
+
+The implementation branch is based on the latest fork `origin/main` as fetched on 2026-11-04. “Implemented” means source and focused automated checks exist; it does not claim merged, released, or live-desktop verified status.
