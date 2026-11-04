@@ -224,8 +224,8 @@ This dated addendum supersedes the earlier #314/#317/#331 rows above; the origin
 
 | Issue | Updated status | Evidence / boundary |
 |---|---|---|
-| #331 | Implemented on `codex/331-324-integration`; not merged or released | `scripts/issue-331.test.mjs` covers independent top-level captain forks, nearest owning team, ambiguity, and member exclusion. No live desktop scenario is claimed. |
-| #324 | Implemented on `codex/331-324-integration`; not merged or released | rc.5 config form, positive safe-integer parser, delegation skill and mirrors; focused checks pass. Live GUI interaction remains unverified. |
+| #331 | Implemented on `codex/331-324-integration`; not merged or released | `scripts/issue-331.test.mjs` covers independent top-level captain forks, nearest owning team, ambiguity, and member exclusion. The rc.5 product-entry/package-install smoke is recorded at `docs/harness-0.2.1-rc.5/issue-331-324-integration/`; it does not test fork lineage in a real host. |
+| #324 | Implemented on `codex/331-324-integration`; not merged or released | rc.5 config form, positive safe-integer parser, delegation skill and mirrors; focused checks and packaged plugin-manager/product-entry smoke pass. Browser-rendered settings interaction remains unverified. |
 | #317 | No optimization accepted | Current measured schemas: captain 19 tools / 20,356 B / 5,089 estimated tokens; core captain 11 / 16,298 B / 4,075; member 4 / 5,551 B / 1,388. The 353 B increase from the prior recorded baseline comes from #333 `archive_member_sessions`. Prompt size and call counts remain unmeasured, so neutrality is not established. |
 | #314 | TODO, unresolved | Need the resolved plugin version, full installer and `pnpm.log`, plus a clean exact-version retry. The `engines.dsh` explanation remains a hypothesis until reproduced. |
 
