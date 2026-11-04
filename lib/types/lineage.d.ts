@@ -72,6 +72,8 @@ export interface LeadScopedTeam {
         readonly status?: string;
     }[];
 }
+/** Exact ownership is distance zero; inherited captains rank by nearest ancestor. */
+export declare function teamLeadDistance(team: LeadScopedTeam, lead: LeadIdentity): number | undefined;
 /** Whether one identity leads (or inherits the lead of) a team's recorded captain. */
 export declare function teamLeadMatch(team: LeadScopedTeam, lead: LeadIdentity): boolean;
 /**

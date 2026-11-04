@@ -81,6 +81,8 @@
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-client-ui-model-selection",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-client-ui-session",
         "@deepseek-ai/dsh-client-ui-chat"
@@ -95,7 +97,7 @@
     "update:skills": "node scripts/update-skills.mjs",
     "test:skills-updater": "node --test scripts/update-skills.test.mjs",
     "verify:skill": "node scripts/sync-skill.mjs --check",
-    "verify": "node scripts/verify.mjs && node scripts/fallback-tdd.mjs && pnpm verify:availability && node scripts/member-failure-tdd.mjs && pnpm verify:issue-regressions && pnpm verify:lifecycle-issues && pnpm verify:quality-gates && node scripts/lifecycle-verify.mjs && node scripts/stress-verify.mjs && node --test scripts/issue-159.test.mjs && pnpm verify:issue-203 && pnpm verify:corrupt-state && pnpm verify:web-routes && pnpm verify:activity-etag && pnpm verify:issue-330 && pnpm verify:issue-333 && pnpm verify:issue-335 && pnpm verify:archive-cache && pnpm verify:snapshot-payload && pnpm verify:tool-surface-budget && pnpm verify:test-cleanup && pnpm verify:install-preflight && pnpm verify:mailbox-compaction && pnpm verify:memory-trace && pnpm verify:release && pnpm verify:manifest && pnpm verify:ui-status && pnpm verify:evaluation && pnpm verify:readme && pnpm verify:skill && pnpm verify:harness-contract && pnpm verify:http-body && pnpm verify:compatibility && pnpm verify:capabilities && pnpm verify:tool-policies && pnpm verify:member-spawn-recovery && pnpm test:git-install && pnpm verify:source-runner && pnpm verify:lineage-identity && pnpm verify:legacy-session-repair && pnpm verify:issue-w5w7 && pnpm verify:git-artifact",
+    "verify": "node scripts/verify.mjs && node scripts/fallback-tdd.mjs && pnpm verify:availability && node scripts/member-failure-tdd.mjs && pnpm verify:issue-regressions && pnpm verify:lifecycle-issues && pnpm verify:quality-gates && node scripts/lifecycle-verify.mjs && node scripts/stress-verify.mjs && node --test scripts/issue-159.test.mjs && pnpm verify:issue-203 && pnpm verify:corrupt-state && pnpm verify:web-routes && pnpm verify:activity-etag && pnpm verify:issue-324-config && pnpm verify:issue-330 && pnpm verify:issue-331 && pnpm verify:issue-333 && pnpm verify:issue-335 && pnpm verify:archive-cache && pnpm verify:snapshot-payload && pnpm verify:tool-surface-budget && pnpm verify:test-cleanup && pnpm verify:install-preflight && pnpm verify:mailbox-compaction && pnpm verify:memory-trace && pnpm verify:release && pnpm verify:manifest && pnpm verify:ui-status && pnpm verify:evaluation && pnpm verify:readme && pnpm verify:skill && pnpm verify:harness-contract && pnpm verify:http-body && pnpm verify:compatibility && pnpm verify:capabilities && pnpm verify:tool-policies && pnpm verify:member-spawn-recovery && pnpm test:git-install && pnpm verify:source-runner && pnpm verify:lineage-identity && pnpm verify:legacy-session-repair && pnpm verify:issue-w5w7 && pnpm verify:git-artifact",
     "prepublishOnly": "pnpm build && pnpm verify",
     "verify:quality-gates": "node scripts/quality-gates-tdd.mjs && node --test scripts/quality-gates-repair-scope.test.mjs scripts/quality-gates-amend.test.mjs scripts/quality-gates-content-bound.test.mjs scripts/quality-gates-work-order.test.mjs scripts/quality-gates-repair-wiring.test.mjs scripts/quality-gates-excluded-scope.test.mjs scripts/quality-gates-cross-binding.test.mjs",
     "verify:availability": "node --test scripts/issue-97.test.mjs scripts/issue-76.test.mjs scripts/issue-62.test.mjs scripts/issue-62-probe.test.mjs",
@@ -134,7 +136,9 @@
     "verify:install-preflight": "node --test scripts/install-preflight.test.mjs",
     "verify:issue-330": "node --test scripts/issue-330.test.mjs",
     "verify:issue-333": "node --test scripts/issue-333.test.mjs",
-    "verify:issue-335": "node --test scripts/issue-335.test.mjs"
+    "verify:issue-335": "node --test scripts/issue-335.test.mjs",
+    "verify:issue-331": "node --test scripts/issue-331.test.mjs",
+    "verify:issue-324-config": "node --test scripts/issue-324-config.test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
@@ -147,9 +151,11 @@
     "@deepseek-ai/dsh-client-ui-conversation": "*",
     "@deepseek-ai/dsh-client-ui-layout": "*",
     "@deepseek-ai/dsh-client-ui-model-selection": "*",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "*",
     "@deepseek-ai/dsh-client-ui-primitives": "*",
     "@deepseek-ai/dsh-client-ui-renderer": "*",
     "@deepseek-ai/dsh-client-ui-session": "*",
+    "@deepseek-ai/dsh-client-ui-settings": "*",
     "@deepseek-ai/dsh-client-ui-slots": "*",
     "@deepseek-ai/dsh-commands": "*",
     "@deepseek-ai/dsh-llm": "*",
@@ -193,6 +199,9 @@
     "@deepseek-ai/dsh-client-ui-model-selection": {
       "optional": true
     },
+    "@deepseek-ai/dsh-client-ui-plugin-manager": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-client-ui-primitives": {
       "optional": true
     },
@@ -200,6 +209,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-client-ui-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-settings": {
       "optional": true
     },
     "@deepseek-ai/dsh-client-ui-slots": {
@@ -248,9 +260,11 @@
     "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-rc.5",
     "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.5",
     "@deepseek-ai/dsh-client-ui-model-selection": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.2.1-rc.5",
     "@deepseek-ai/dsh-client-ui-primitives": "0.2.1-rc.5",
     "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.5",
     "@deepseek-ai/dsh-client-ui-session": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.1-rc.5",
     "@deepseek-ai/dsh-client-ui-sidebar-right": "0.2.1-rc.5",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.5",
     "@deepseek-ai/dsh-commands": "0.2.1-rc.5",

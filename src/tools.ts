@@ -1029,7 +1029,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     const teamId = sanitizeKey(teamName)
     return withTeamLock(captainLockKey(stateRoot, captain.id), async () => {
       const current = await findTeamByParticipant(stateRoot, captain.id, await leadIdentityOfAsync(ctx, captain.session))
-      if (current !== undefined) throw new Error(`you already belong to team "${current.name}"; archive it before creating another`)
+      if (current !== undefined && (current.captainSessionId === captain.id
+        || current.members.some(member => member.id === captain.id && member.status !== 'removed'))) {
+        throw new Error(`you already belong to team "${current.name}"; archive it before creating another`)
+      }
       return withTeamLock(teamLockKey(stateRoot, teamId), async () => {
         if (await readTeam(stateRoot, teamId) !== undefined) throw new Error(`team id "${teamId}" is taken`)
         const created = await initializeProfileTeam({
@@ -1278,7 +1281,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       if (profileName !== undefined && inlinePlan !== undefined) throw new Error('choose either a configured profile or an inline plan')
       const created = await withTeamLock(captainLockKey(stateRoot, captain.id), async () => {
         const current = await findTeamByParticipant(stateRoot, captain.id, await leadIdentityOfAsync(ctx, captain.session))
-        if (current !== undefined) {
+        if (current !== undefined && (current.captainSessionId === captain.id
+          || current.members.some(member => member.id === captain.id && member.status !== 'removed'))) {
           const leads = await sessionLeadsTeamAsync(ctx, current, captain.id)
           const relationship = leads ? 'lead' : 'belong to'
           const guidance = leads

@@ -127,7 +127,7 @@ The upstream tracker gained issues after the original backlog audit. Status in t
 | #330 `/state` resends full snapshots every second | fixed | ETag/304, session scoping, workspace-root dedupe, hidden-page cadence, trimmed payloads; `scripts/issue-330.test.mjs`, `scripts/activity-etag.test.mjs`, `scripts/snapshot-payload.test.mjs` |
 | #333 deleting a team leaves member host sessions | fixed, opt-in | `agent_teams_delete({ archive_member_sessions: true })` archives each durable member session through `workspaceRegistry.archiveSession`; default unchanged; `scripts/issue-333.test.mjs` |
 | #335 Windows desktop reports "invalid plugin ... received object" | fixed | the package now exports an applicable default plugin object in addition to named exports; `scripts/issue-335.test.mjs` |
-| #331 a forked session cannot create its own team | accepted for this fork batch; status tracked in the final integration report | the report resolves as a product decision plus captain-identity migration rather than the earlier evidence-gate framing; see the #331 section below |
+| #331 a forked session cannot create its own team | implemented in this fork | exact-owned teams win; descendants inherit the nearest ancestor team; same-priority collisions still fail; `scripts/issue-331.test.mjs` covers persistence and creation |
 | #329/#328/#327/#326/#325/#323/#322 | duplicate of #327 | same rc.5 compatibility rejection |
 | #324 GUI team-size config / delegation skill | accepted for this fork batch; status tracked in the final integration report | inclusion decision changed on 2026-11-04; changes the product surface, so it is batched with independent design review |
 | #319 claim_task assignee and host depth messaging | duplicate of the #96/#244 line | already addressed by the optional-parameter and tool-policy work in this fork |
@@ -138,7 +138,7 @@ The report's error string comes from `@deepseek-ai/cordis` `registry.resolve`: a
 
 ### #331: forked session cannot create its own team
 
-The report is a screenshot with no host version, profile composition, or error text. The code intentionally treats a *top-level fork descendant of the captain* as the same lead (`teamLeadMatch`), so "fork the conversation, then create a second team" hits the one-team-per-captain rule by design. A fork whose ancestry includes a member is rejected as a member, not promoted to lead. Making forks independently own teams needs a product decision (does a fork split team ownership?) plus a durable captain-identity migration. This decision is **accepted for this fork batch; status is tracked in the final integration report** — it is not claimed as implemented in this triage note.
+The report is a screenshot with no host version, profile composition, or error text. The accepted product decision is that a top-level captain fork may own an independent team. Resolvers now rank exact ownership ahead of inherited ownership, then choose the nearest ancestor captain; same-rank collisions remain errors. Member sessions and member forks remain ineligible to create teams. Regression coverage is in `scripts/issue-331.test.mjs`; the report's original environment-specific failure is not claimed as reproduced.
 
 ## Token-neutral gate (2026-11-04)
 
