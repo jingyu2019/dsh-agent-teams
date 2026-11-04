@@ -8,6 +8,12 @@ export declare const zh: {
     'config.maxMembers': string;
     'config.maxMembersHint': string;
     'config.save': string;
+    'config.readOnly': string;
+    'config.saveFailed': string;
+    'config.saving': string;
+    'config.overridden': string;
+    'config.reset': string;
+    'config.invalid': string;
     'workspace.dependencies': string;
     'workspace.title': string;
     'workspace.guide': string;
@@ -291,6 +297,12 @@ export declare const en: {
     'config.maxMembers': string;
     'config.maxMembersHint': string;
     'config.save': string;
+    'config.readOnly': string;
+    'config.saveFailed': string;
+    'config.saving': string;
+    'config.overridden': string;
+    'config.reset': string;
+    'config.invalid': string;
     'workspace.dependencies': string;
     'workspace.title': string;
     'workspace.guide': string;

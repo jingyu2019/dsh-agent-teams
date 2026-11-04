@@ -30,7 +30,7 @@ import {
   AGENT_TEAMS_LOCALE_NAMESPACE, en, zh, type AgentTeamsLocaleKey,
 } from './locales.ts'
 import { openAgentTeamMember, type AgentTeamsLayoutNavigator, type AgentTeamsWorkspaceNavigator } from './session-navigation.ts'
-import { AgentTeamsConfig } from './AgentTeamsConfig.tsx'
+import { installAgentTeamsConfigPage } from './AgentTeamsConfig.tsx'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -59,14 +59,7 @@ function HiddenAgentTeamsCommand(): null {
  * monitor via a window event — the recovery path for an old session.
  */
 export function apply(ctx: ClientContext): void {
-  ctx.effect(
-    () => ctx.configForms.whileServed(['agent-teams'], () => ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
-      name: 'plugins.bundle.config',
-      key: '@nanmicoder/dsh-agent-teams',
-      locale: AGENT_TEAMS_LOCALE_NAMESPACE,
-    }, AgentTeamsConfig))),
-    'agent-teams: bundle config',
-  )
+  installAgentTeamsConfigPage(ctx)
   const bridge = createWorkspaceBridge()
   const state = createWorkspaceState()
   ctx.effect(
