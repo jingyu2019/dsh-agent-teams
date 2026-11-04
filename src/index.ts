@@ -19,7 +19,7 @@
  * @module dsh-agent-teams
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 // Declaration merges make ctx.subagents and ctx.systemPrompt visible.
@@ -97,7 +97,7 @@ export interface Config {
   /** Member delegation depth cap (default `0`; `0` forbids delegation entirely). */
   memberMaxDepth?: number
   /** Team size cap in members (default `8`). */
-  maxMembers?: number
+  maxMembers?: Volatile<number>
   /** Global cap on simultaneous member activations (defaults to `maxMembers`). */
   maxConcurrentWorkers?: number
   /**
@@ -222,14 +222,14 @@ export const Config: z<Config> = z.object({
   agentLibrary: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
   worktrees: z.object({ enabled: z.boolean().default(false), root: z.string(), baseRef: z.string() }).default({ enabled: false }),
   memberMaxDepth: z.natural().default(0),
-  maxMembers: z.natural().min(1).default(8),
+  maxMembers: z.natural().min(1).default(8).volatile(),
   maxConcurrentWorkers: z.natural().min(1),
   probeIntervalMs: z.natural().default(0),
   parallelToolCalls: z.boolean().default(false),
   toolSurface: z.union([z.const('full'), z.const('core')]).default('full'),
   promptSectionOrder: z.natural().default(117),
   slashCommand: z.boolean().default(true),
-})
+}) as unknown as z<Config>
 
 /** The model-facing usage policy: when and how to drive AgentTeams. */
 export function usageSectionText(toolNames: string, profilesText = '', parallelToolCalls = false): string {
@@ -261,8 +261,8 @@ export function resolveToolsConfig(config: Config): ToolsConfig {
     fallback: config.fallback,
     fallbacks: config.fallbacks,
     memberMaxDepth: config.memberMaxDepth ?? 0,
-    maxMembers: config.maxMembers ?? 8,
-    maxConcurrentWorkers: config.maxConcurrentWorkers ?? config.maxMembers ?? 8,
+    get maxMembers() { return config.maxMembers?.get() ?? 8 },
+    get maxConcurrentWorkers() { return config.maxConcurrentWorkers ?? this.maxMembers },
     probeIntervalMs: config.probeIntervalMs ?? 0,
     parallelToolCalls: config.parallelToolCalls ?? false,
     toolSurface: config.toolSurface ?? 'full',

@@ -18,7 +18,7 @@
  *
  * @module dsh-agent-teams
  */
-import type { Context } from '@deepseek-ai/cordis';
+import type { Context, Volatile } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { type ToolsConfig } from './tools.ts';
 import { type SkillBindingConfig, type TeamProfileConfig } from './profiles.ts';
@@ -60,7 +60,7 @@ export interface Config {
     /** Member delegation depth cap (default `0`; `0` forbids delegation entirely). */
     memberMaxDepth?: number;
     /** Team size cap in members (default `8`). */
-    maxMembers?: number;
+    maxMembers?: Volatile<number>;
     /** Global cap on simultaneous member activations (defaults to `maxMembers`). */
     maxConcurrentWorkers?: number;
     /**
