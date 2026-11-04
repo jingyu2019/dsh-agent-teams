@@ -1,8 +1,8 @@
 {
   "captain": {
     "tools": 19,
-    "bytes": 20003,
-    "estimatedTokens": 5001,
+    "bytes": 20356,
+    "estimatedTokens": 5089,
     "rows": [
       {
         "name": "agent_teams_create",
@@ -54,7 +54,7 @@
       },
       {
         "name": "agent_teams_delete",
-        "bytes": 327
+        "bytes": 680
       },
       {
         "name": "agent_teams_list_agent_presets",
@@ -84,8 +84,8 @@
   },
   "coreCaptain": {
     "tools": 11,
-    "bytes": 15945,
-    "estimatedTokens": 3987,
+    "bytes": 16298,
+    "estimatedTokens": 4075,
     "rows": [
       {
         "name": "agent_teams_create",
@@ -129,7 +129,7 @@
       },
       {
         "name": "agent_teams_delete",
-        "bytes": 327
+        "bytes": 680
       }
     ]
   },
@@ -159,6 +159,6 @@
   "savings": {
     "tools": 8,
     "bytes": 4058,
-    "percent": 20.3
+    "percent": 19.9
   }
 }
