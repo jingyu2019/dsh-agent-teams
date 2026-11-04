@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { SystemPrompt, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
-import { installTeamCapabilities, TEAM_MEMBER_PROMPT } from '../lib/capabilities.js'
+import { installTeamCapabilities, selectCapabilityTeam, TEAM_MEMBER_PROMPT } from '../lib/capabilities.js'
 import { TEAM_TOOL_NAMES, MEMBER_TOOL_NAMES } from '../lib/tool-names.js'
 import { usageSectionText } from '../lib/index.js'
 import { formatProfilesForPrompt } from '../lib/profiles.js'
@@ -49,6 +49,17 @@ const { createScope } = await import(pathToFileURL(requireTools.resolve('@deepse
 function assertCaptainProtocol(system) {
   for (const rule of [/the user's goal as description/, /attempt_id/, /never approve in that planning turn/i, /Never approve your own implementation/, /depend on a failed task/, /Resume only on a later explicit user request/]) assert.match(system, rule)
 }
+
+test('capability team lookup prefers exact ownership and nearest inheritance', () => {
+  const parent = { id: 'parent', name: 'Parent', captainSessionId: 'C', createdAt: 1, members: [], tasks: [], taskSeq: 0 }
+  const fork = { id: 'fork', name: 'Fork', captainSessionId: 'F', createdAt: 1, members: [], tasks: [], taskSeq: 0 }
+  const identity = (sessionId, ancestry, inheritsLead = true) => ({ sessionId, ancestry, inheritsLead })
+  assert.equal(selectCapabilityTeam([parent, fork], 'F', identity('F', ['C']))?.id, 'fork')
+  assert.equal(selectCapabilityTeam([parent, fork], 'G', identity('G', ['F', 'C']))?.id, 'fork')
+  const memberTeam = { ...fork, members: [{ id: 'M', name: 'worker', status: 'working', joinedAt: 1 }] }
+  assert.equal(selectCapabilityTeam([parent, memberTeam], 'M', identity('M', ['F', 'C'], false))?.id, 'fork')
+  assert.throws(() => selectCapabilityTeam([parent, { ...parent, id: 'duplicate' }], 'G', identity('G', ['C'])), /ambiguous AgentTeams membership/)
+})
 
 test('stable tool presentation uses real scoped registry and prompt assembly', async t => {
   const workspace = await mkdtemp(join(tmpdir(), 'agent-teams-capabilities-'))

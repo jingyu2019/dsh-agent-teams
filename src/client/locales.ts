@@ -5,6 +5,17 @@ export const AGENT_TEAMS_LOCALE_NAMESPACE = 'agentTeams'
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
+  'config.summary': '团队人数上限：{count}',
+  'config.unavailable': '团队配置暂不可用。',
+  'config.maxMembers': '团队成员人数上限',
+  'config.maxMembersHint': '每个团队最多可添加的成员数。最小值为 1。',
+  'config.save': '保存',
+  'config.readOnly': '当前配置为只读。',
+  'config.saveFailed': '保存失败，请重试。',
+  'config.saving': '正在保存…',
+  'config.overridden': '已覆盖默认值',
+  'config.reset': '恢复默认值',
+  'config.invalid': '请输入不小于 1 的安全整数。',
   'workspace.dependencies': '从左到右：完成前置后解锁 · 点击查看详情',
   'workspace.title': '团队协作',
   'workspace.guide': '查看成员分工、任务依赖与执行进度',
@@ -286,6 +297,17 @@ export type AgentTeamsLocaleKey = keyof typeof zh
 
 /** English dictionary, checked complete against the Chinese source key set. */
 export const en = {
+  'config.summary': 'Team member limit: {count}',
+  'config.unavailable': 'Team configuration is unavailable.',
+  'config.maxMembers': 'Maximum team members',
+  'config.maxMembersHint': 'Maximum members that can be added to each team. Minimum: 1.',
+  'config.save': 'Save',
+  'config.readOnly': 'This configuration is read-only.',
+  'config.saveFailed': 'Save failed. Try again.',
+  'config.saving': 'Saving…',
+  'config.overridden': 'Overridden',
+  'config.reset': 'Reset to default',
+  'config.invalid': 'Enter a safe whole number of at least 1.',
   'workspace.dependencies': 'Left to right: prerequisites unlock tasks · Select for details',
   'workspace.title': 'Team workspace',
   'workspace.guide': 'Members, task dependencies, and execution progress',

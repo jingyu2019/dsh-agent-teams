@@ -193,20 +193,26 @@ export interface LeadScopedTeam {
   readonly members?: readonly { readonly id: string; readonly status?: string }[]
 }
 
-/** Whether one identity leads (or inherits the lead of) a team's recorded captain. */
-export function teamLeadMatch(team: LeadScopedTeam, lead: LeadIdentity): boolean {
+/** Exact ownership is distance zero; inherited captains rank by nearest ancestor. */
+export function teamLeadDistance(team: LeadScopedTeam, lead: LeadIdentity): number | undefined {
   const members = team.members ?? []
   // A listed member is never a lead, retired or not: a member session is a
   // subagent child of its captain, so its parent chain contains the captain id
   // too, and membership revocation must never hand that session lead authority.
   // Member participation itself stays governed by the removed filter in the
   // team lookups.
-  if (members.some(member => member.id === lead.sessionId)) return false
-  if (team.captainSessionId === lead.sessionId) return true
-  if (!lead.inheritsLead) return false
+  if (members.some(member => member.id === lead.sessionId)) return undefined
+  if (team.captainSessionId === lead.sessionId) return 0
+  if (!lead.inheritsLead) return undefined
   // Descending from a member (a fork of one) is not lead identity either.
-  if (members.some(member => lead.ancestry.includes(member.id))) return false
-  return lead.ancestry.includes(team.captainSessionId)
+  if (members.some(member => lead.ancestry.includes(member.id))) return undefined
+  const distance = lead.ancestry.indexOf(team.captainSessionId)
+  return distance < 0 ? undefined : distance + 1
+}
+
+/** Whether one identity leads (or inherits the lead of) a team's recorded captain. */
+export function teamLeadMatch(team: LeadScopedTeam, lead: LeadIdentity): boolean {
+  return teamLeadDistance(team, lead) !== undefined
 }
 
 /**

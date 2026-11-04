@@ -5,7 +5,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { readTeamSync, readRetiredMemberIdsSync } from './state.ts'
-import { leadIdentityOf, teamLeadMatch } from './lineage.ts'
+import { leadIdentityOf, teamLeadDistance, teamLeadMatch } from './lineage.ts'
 import type { TeamState } from './types.ts'
 import { CORE_CAPTAIN_TOOL_NAMES, CORE_MEMBER_TOOL_NAMES, MEMBER_TOOL_NAMES, TEAM_TOOL_NAMES } from './tool-names.ts'
 
@@ -31,6 +31,25 @@ function stateRoot(agent: Agent, config: CapabilityConfig): string {
 }
 
 /** Synchronous startup/HMR hydration must finish before the first assembly. */
+export function selectCapabilityTeam(teams: readonly TeamState[], agentId: string, lead: ReturnType<typeof leadIdentityOf>): TeamState | undefined {
+  let found: TeamState | undefined
+  let foundDistance = Number.POSITIVE_INFINITY
+  for (const team of teams) {
+    const leadDistance = teamLeadDistance(team, lead)
+    const isActiveMember = team.members.some(member => member.id === agentId && member.status !== 'removed')
+    const distance = leadDistance === 0 || isActiveMember ? 0 : leadDistance
+    if (distance === undefined) continue
+    if (distance < foundDistance) {
+      found = team
+      foundDistance = distance
+    } else if (distance === foundDistance && found !== undefined && found.id !== team.id) {
+      throw new Error('ambiguous AgentTeams membership')
+    }
+  }
+  return found
+}
+
+/** Synchronous startup/HMR hydration must finish before the first assembly. */
 function currentTeam(ctx: Context, agent: Agent, config: CapabilityConfig): TeamState | undefined {
   const lead = leadIdentityOf(ctx, agent.session)
   const root = stateRoot(agent, config)
@@ -39,16 +58,13 @@ function currentTeam(ctx: Context, agent: Agent, config: CapabilityConfig): Team
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
     throw error
   }
-  let found: TeamState | undefined
+  const teams: TeamState[] = []
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name === 'archive') continue
     const team = readTeamSync(root, entry.name)
-    if (team === undefined || (!teamLeadMatch(team, lead)
-      && !team.members.some(member => member.id === agent.id))) continue
-    if (found !== undefined) throw new Error('ambiguous AgentTeams membership')
-    found = team
+    if (team !== undefined) teams.push(team)
   }
-  return found
+  return selectCapabilityTeam(teams, agent.id, lead)
 }
 
 /** Call once, after all business definitions have registered. Never per member. */

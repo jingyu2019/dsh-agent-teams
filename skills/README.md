@@ -32,6 +32,8 @@ pnpm test:skills-updater
 
 ## 使用入口
 
+| 派活与项目归属 | [agent-teams-delegation](agent-teams-delegation/SKILL.md) | 非平凡任务派工、项目专员归属、团队名额已满时的处理顺序 |
+
 | 任务 | 项目内 skill | 用法 |
 | --- | --- | --- |
 | 统一编排 | [plugin-workflow](plugin-workflow/SKILL.md) | 组织阶段、验收项和状态；不凭空推定阶段已通过 |

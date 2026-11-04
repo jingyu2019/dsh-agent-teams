@@ -20,7 +20,7 @@ import { join } from 'node:path'
 import type { MemberToolFilter } from './tool-policies.ts'
 import { FINDING_SEVERITIES, REVIEW_VERDICTS, TASK_KINDS, TERMINAL_TASK_STATUSES, type AvatarRef, type ContextLifecycleCapability, type MessageAttachment, type ReviewFinding, type TaskProbe, type TaskStatus, type TeamMember, type TeamMessage, type TeamProfileSnapshot, type TeamState, type TeamTask, type TimelineAction, type TimelineEntry, type WorktreeLane } from './types.ts'
 import { hasValidQualityTaskFields, isReviewPolicy, isValidFindingLine, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
-import { teamLeadMatch, type LeadIdentity } from './lineage.ts'
+import { teamLeadDistance, type LeadIdentity } from './lineage.ts'
 
 export {
   amendTaskContract,
@@ -518,15 +518,21 @@ export async function findTeamByCaptain(
     throw error
   }
   let found: TeamState | undefined
+  let foundDistance = Number.POSITIVE_INFINITY
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     const team = await readTeam(stateRoot, entry.name)
-    if (team !== undefined && (team.captainSessionId === captainSessionId
-      || (lead !== undefined && teamLeadMatch(team, lead)))) {
-      if (found !== undefined && found.id !== team.id) {
+    if (team === undefined) continue
+    const distance = team.captainSessionId === captainSessionId
+      ? 0
+      : lead === undefined ? undefined : teamLeadDistance(team, lead)
+    if (distance !== undefined) {
+      if (distance < foundDistance) {
+        found = team
+        foundDistance = distance
+      } else if (distance === foundDistance && found !== undefined && found.id !== team.id) {
         throw new Error(`captain session leads multiple active teams ("${found.id}", "${team.id}"); archive one before continuing`)
       }
-      found = team
     }
   }
   return found
@@ -557,17 +563,23 @@ export async function findTeamByParticipant(
     throw error
   }
   let found: TeamState | undefined
+  let foundDistance = Number.POSITIVE_INFINITY
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     const team = await readTeam(stateRoot, entry.name)
-    const participates = team !== undefined && (team.captainSessionId === agentSessionId
-      || (lead !== undefined && teamLeadMatch(team, lead))
-      || team.members.some((member) => member.id === agentSessionId && member.status !== 'removed'))
-    if (participates && team !== undefined) {
-      if (found !== undefined && found.id !== team.id) {
+    if (team === undefined) continue
+    const leadDistance = team.captainSessionId === agentSessionId
+      ? 0
+      : lead === undefined ? undefined : teamLeadDistance(team, lead)
+    const isActiveMember = team.members.some((member) => member.id === agentSessionId && member.status !== 'removed')
+    const distance = leadDistance === 0 || isActiveMember ? 0 : leadDistance
+    if (distance !== undefined) {
+      if (distance < foundDistance) {
+        found = team
+        foundDistance = distance
+      } else if (distance === foundDistance && found !== undefined && found.id !== team.id) {
         throw new Error(`agent session belongs to multiple active teams ("${found.id}", "${team.id}"); the target team is ambiguous`)
       }
-      found = team
     }
   }
   return found

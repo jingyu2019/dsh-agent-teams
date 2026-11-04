@@ -3,6 +3,17 @@
 export declare const AGENT_TEAMS_LOCALE_NAMESPACE = "agentTeams";
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export declare const zh: {
+    'config.summary': string;
+    'config.unavailable': string;
+    'config.maxMembers': string;
+    'config.maxMembersHint': string;
+    'config.save': string;
+    'config.readOnly': string;
+    'config.saveFailed': string;
+    'config.saving': string;
+    'config.overridden': string;
+    'config.reset': string;
+    'config.invalid': string;
     'workspace.dependencies': string;
     'workspace.title': string;
     'workspace.guide': string;
@@ -281,6 +292,17 @@ export declare const zh: {
 export type AgentTeamsLocaleKey = keyof typeof zh;
 /** English dictionary, checked complete against the Chinese source key set. */
 export declare const en: {
+    'config.summary': string;
+    'config.unavailable': string;
+    'config.maxMembers': string;
+    'config.maxMembersHint': string;
+    'config.save': string;
+    'config.readOnly': string;
+    'config.saveFailed': string;
+    'config.saving': string;
+    'config.overridden': string;
+    'config.reset': string;
+    'config.invalid': string;
     'workspace.dependencies': string;
     'workspace.title': string;
     'workspace.guide': string;
