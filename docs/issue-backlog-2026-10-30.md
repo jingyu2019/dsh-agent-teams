@@ -17,7 +17,7 @@ Two new installation reports arrived after the original audit:
 
 Additional items resolved after the original audit:
 
-- **#314** remains an open TODO follow-up despite upstream CLOSED status (decision 2026-11-04). The upstream fix candidate is the 0.1.28 `engines.dsh` minimum-version declaration, but it is not reproduced or fixed in this fork. Required evidence is listed in the TODO section below.
+- **#314** remains an open TODO follow-up despite upstream CLOSED status (decision 2026-11-04). The report names DSH `0.2.1-rc.3`, Plugin Hub `1.5.2`, Node `24.21.0`, Windows 10 x64 build `26200`, and Git `2.54.0.windows.1`; pnpm/npm versions and the contents of both diagnostic logs are absent. The upstream 0.1.28 `engines.dsh` minimum-version declaration is a candidate fix, not a reproduced cause or a fix verified in this fork.
 - **#223** resolved: preset picker, next-turn model routing and confirmed archived-team deletion.
 - **#96** resolved with opt-in `toolSurface: core`, which keeps a stable compact captain surface.
 - **#117** plugin-side lock-table growth was fixed in the 0.1.16 line; the remaining host-side memory question still needs RSS/heapUsed samples.
@@ -36,7 +36,7 @@ Current open non-PR state (2026-10-31): **48 issues** — 30 accepted/fixed in t
 
 - **#317** moved off the evidence gate to an accepted zero-cost investigation: token-neutral only.
 - **#314** recorded as an open TODO despite upstream CLOSED; see the TODO section below.
-- **#331 / #324** accepted for this fork batch; status tracked in the final integration report (parallel work in this branch).
+- **#331 / #324** implemented on `codex/feature-batch-2026-11-04`; `pnpm verify` and focused mutation checks passed. Real DSH GUI behavior for #324 remains unverified.
 
 ## Baseline
 
@@ -72,7 +72,7 @@ All 42 open non-PR issues appear exactly once below.
 | 317 | accepted, zero-cost investigation | Allowed only when token-neutral: no measured increase in token/tool/schema footprint; compare exact captain/member ledgers before/after | EVAL-TOKEN | P2 | #48 historical only |
 | 316 | accepted | 0.1.27 peers stop at rc.3; clean rc.4 install is rejected | W0-COMPAT | P0 | #318 |
 | 315 | accepted, design split | Reusable global agent presets vs live cross-team sessions are different products | W7-AGENT-LIBRARY | P3 | none |
-| 314 | TODO / open follow-up (upstream CLOSED) | Not reproduced or fixed in this fork; requires installed version, host/pnpm version, exact `pnpm.log`, clean retry, and mirror-timeout vs compatibility-rejection classification | EVAL-INSTALL | P2 | none |
+| 314 | TODO / open follow-up (upstream CLOSED) | Report identifies DSH 0.2.1-rc.3, Hub 1.5.2, Node 24.21.0, Windows 10 x64 build 26200 and Git 2.54.0.windows.1; pnpm/npm versions and diagnostic log contents are missing; cause remains unclassified | EVAL-INSTALL | P2 | none |
 | 313 | already-fixed | 0.1.27 declares rc.3 support; bare `@latest` can lag 24h | W0-COMPAT | P3 | #294 stale |
 | 312 | duplicate | Same rc.3/0.1.26 compatibility rejection as #313/#311 | W0-COMPAT | P3 | #294 stale |
 | 311 | duplicate | Same rc.3/0.1.26 compatibility rejection as #313/#312 | W0-COMPAT | P3 | #294 stale |
@@ -201,7 +201,7 @@ Acceptance:
 
 ## Evidence Queue
 
-- **314 (TODO):** exact installed version, host/pnpm version, full `pnpm.log`, clean retry, and whether the failure is a mirror timeout vs a compatibility rejection.
+- **314 (TODO):** obtain the resolved plugin version, pnpm version, full `pnpm.log` and `hub.log`, and a clean retry; classify mirror timeout vs compatibility rejection.
 - **317 (token-neutral gate):** compare exact captain/member ledgers before/after; reject/defer any optimization whose measured added prompt/tool/schema/call footprint exceeds zero.
 - **117:** 20+ cycles with RSS/heapUsed/external/handles and heap ownership diff.
 - **151:** package identity, host version, request/tool trace, spend cap.
@@ -210,7 +210,7 @@ Acceptance:
 
 ## TODO — open follow-ups
 
-- **#314 (installer failure; upstream CLOSED):** remains an explicit TODO in this fork. Not reproduced and not fixed here. Required evidence before any claim: exact installed version, host and pnpm versions, the exact `pnpm.log`, a clean retry, and a classification of whether the failure was a mirror timeout or a compatibility rejection.
+- **#314 (installer failure; upstream CLOSED):** remains an explicit TODO in this fork. The issue body reports command `dsh plugin --profile desktop add @nanmicoder/dsh-agent-teams`; DSH `0.2.1-rc.3`; Plugin Hub `1.5.2`; Node `24.21.0`; Windows `10.0.26200` x64; Git `2.54.0.windows.1`; and says npm/pnpm versions are unknown. It gives paths for `hub.log` and `pnpm.log` but includes neither file's contents, and does not identify the resolved plugin version or a clean retry. Not reproduced and not fixed here. Next evidence needed: resolved plugin version, pnpm version, both complete logs, a clean retry, and a mirror-timeout vs compatibility-rejection classification.
 
 ## Out-of-scope / duplicate handling
 

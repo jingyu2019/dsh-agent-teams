@@ -113,4 +113,3 @@ test('a member session remains unable to create an independent team', async t =>
 
   await assert.rejects(execute({ name: 'Forbidden Team', description: 'Must not be created' }), /already belong to team/)
 })
-

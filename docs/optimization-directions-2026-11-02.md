@@ -129,7 +129,7 @@ The upstream tracker gained issues after the original backlog audit. Status in t
 | #335 Windows desktop reports "invalid plugin ... received object" | fixed | the package now exports an applicable default plugin object in addition to named exports; `scripts/issue-335.test.mjs` |
 | #331 a forked session cannot create its own team | implemented in this fork | exact-owned teams win; descendants inherit the nearest ancestor team; same-priority collisions still fail; `scripts/issue-331.test.mjs` covers persistence and creation |
 | #329/#328/#327/#326/#325/#323/#322 | duplicate of #327 | same rc.5 compatibility rejection |
-| #324 GUI team-size config / delegation skill | accepted for this fork batch; status tracked in the final integration report | inclusion decision changed on 2026-11-04; changes the product surface, so it is batched with independent design review |
+| #324 GUI team-size config / delegation skill | implemented in this fork | `maxMembers` now has a staged Plugins-page form with validation, reset/save/discard and localized copy; delegation guidance is installed as a mirrored skill; `scripts/issue-324-config.test.mjs` checks registration and form contracts |
 | #319 claim_task assignee and host depth messaging | duplicate of the #96/#244 line | already addressed by the optional-parameter and tool-policy work in this fork |
 
 ### #335 follow-up: which fix is verifiable here
@@ -151,4 +151,8 @@ Applies to #317 and to every optimization in this document:
 
 ### #324: GUI team-size config / delegation skill
 
-**Decision (2026-11-04):** inclusion changed. It is **accepted for this fork batch; status is tracked in the final integration report**, because it changes the product surface and needs independent design review. The underlying `maxMembers` setting already exists in config; no implementation evidence is claimed in this triage note.
+**Decision and delivery (2026-11-04):** the request was accepted and implemented in `codex/feature-batch-2026-11-04`. The Plugins page now exposes a staged `maxMembers` form using the official settings primitives; the integer must be a safe value of at least 1, and the form supports reset, save, discard and read-only state. The delegation skill is mirrored under `skills/`, `.dsh/skills/`, and `.agents/skills/`. Contract checks are in `scripts/issue-324-config.test.mjs`. The source suite passes; a live DSH GUI session was not available, so the rendered page has not been verified in the product.
+
+### Focused acceptance evidence
+
+`pnpm verify` passed on the feature branch. The regression tests also detect deliberate mutations: reversing nearest-ancestor ranking makes 2/5 #331 cases fail; allowing `maxMembers = 0` makes the #324 configuration contract test fail. Both mutations were restored byte-for-byte before verification. These are source-level checks and do not replace a live GUI check.
