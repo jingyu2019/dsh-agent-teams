@@ -3,7 +3,11 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { linkDirectory } from './harness-runtime-scenarios.mjs';
+import { linkDirectory, runtimeScenarios } from './harness-runtime-scenarios.mjs';
+
+test('runtime scenarios include a real fork-owned team product-entry case', () => {
+    assert.ok(runtimeScenarios.includes('fork-owned-team'));
+});
 
 test('fixture package links work without Windows symlink privileges and replace stale links', t => {
     const root = mkdtempSync(join(tmpdir(), 'runtime link test '));

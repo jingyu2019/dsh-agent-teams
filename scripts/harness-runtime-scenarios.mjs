@@ -21,7 +21,7 @@ export const linkDirectory = (target, path) => {
     symlinkSync(target, path, process.platform === 'win32' ? 'junction' : 'dir');
 };
 
-export const runtimeScenarios = ['lifecycle', 'fallback', 'failure', 'captain-idle-wakeup', 'progressive-entry', 'web-approval', 'protocol-compatibility', 'stability'];
+export const runtimeScenarios = ['lifecycle', 'fallback', 'failure', 'captain-idle-wakeup', 'progressive-entry', 'fork-owned-team', 'web-approval', 'protocol-compatibility', 'stability'];
 
 /** The direct fixture link cannot prove that a user's plugin install is accepted. */
 export async function runPluginInstallation({ version, pluginVersion, artifact, runtime, report, command, environment }) {
@@ -158,9 +158,35 @@ for (const scenario of selectedScenarios) {
       name: ./fixture-stability.mjs
 `);
     }
+    if (scenario === 'fork-owned-team') {
+        copyFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures/harness-runtime-fork-team.mjs'), join(profile, 'fixture-fork-team.mjs'));
+        writeFileSync(join(profile, 'cordis.patch.yml'), readFileSync(join(profile, 'cordis.patch.yml'), 'utf8') + [
+            '- id: headless-startup\n  disabled: true\n',
+            '- id: headless-runner\n  disabled: true\n',
+            '- insert:\n    - id: runtime-lab-fork-owned-team\n      name: ./fixture-fork-team.mjs\n',
+        ].join(''));
+    }
     const tracePath = join(report, scenario, 'trace.jsonl');
     const result = await command([process.execPath, join(runtime, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), '--profile', 'headless', 'Run the authorized deterministic AgentTeams fixture immediately.'], workspace, environment({ DSH_HOME: home, DSH_PERMISSION_MODE: 'danger-full-access', DSH_TELEMETRY_DISABLED: '1', LAB_TRACE: tracePath, LAB_TEAMS: '1', LAB_SCENARIO: scenario }), scenario, 90000);
     const trace = existsSync(tracePath) ? readFileSync(tracePath, 'utf8').trim().split('\n').filter(Boolean).map(s => JSON.parse(s)) : [];
+    if (scenario === 'fork-owned-team') {
+        const parentPath = join(workspace, '.agent-teams/runtime-lab-parent/team.json');
+        const forkPath = join(workspace, '.agent-teams/runtime-lab-fork/team.json');
+        const parent = existsSync(parentPath) ? JSON.parse(readFileSync(parentPath, 'utf8')) : undefined;
+        const fork = existsSync(forkPath) ? JSON.parse(readFileSync(forkPath, 'utf8')) : undefined;
+        const event = trace.find(x => x.event === 'fork-owned-team-product-passed');
+        const assertions = {
+            exit0: result.code === 0 && !result.timedOut,
+            productMarker: result.stdout.includes('FORK_OWNED_TEAM_OK'),
+            bothTeamsPersisted: Boolean(parent && fork),
+            parentOwnsFirstTeam: Boolean(parent && event && parent.captainSessionId === event.parentSessionId),
+            forkOwnsSecondTeam: Boolean(fork && event && fork.captainSessionId === event.forkSessionId),
+            forkStatusResolvesOwnTeam: trace.some(x => x.event === 'fork-owned-team-status-passed' && x.sessionId === event?.forkSessionId),
+            distinctCaptains: Boolean(parent && fork && parent.captainSessionId !== fork.captainSessionId),
+        };
+        runs.push({ scenario, passed: Object.values(assertions).every(Boolean), assertions, teamIds: [parent?.id, fork?.id], exit: { code: result.code, signal: result.signal, timedOut: result.timedOut } });
+        continue;
+    }
     if (scenario === 'stability') {
         const checks = ['hmr', 'lazy-start', 'running-plan-correction', 'steering', 'read-receipt-continuation', 'reassign', 'archive', 'batch-plan', 'terminal-evidence', 'report-retry', 'settlement-dedup'];
         const assertions = { exit0: result.code === 0 && !result.timedOut, productMarker: result.stdout.includes('STABILITY_OK'), ...Object.fromEntries(checks.map(check => [check, trace.some(x => x.event === `stability-${check}-passed`)])) };

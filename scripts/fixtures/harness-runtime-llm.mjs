@@ -52,6 +52,25 @@ class FixtureAdapter extends LlmAdapter {
             chunks = textChunks('HARNESS_PRODUCT_TURN_OK');
         else if (process.env.LAB_SCENARIO === 'progressive-entry' && lastUserText.includes('ENTRY_NO_ACTIVATION'))
             chunks = textChunks('ORDINARY_ENTRY_OK');
+        else if (process.env.LAB_SCENARIO === 'fork-owned-team' && options.sessionId === process.env.LAB_PARENT_SESSION_ID)
+            chunks = currentNames.includes('agent_teams_create')
+                ? textChunks('PARENT_OWNED_TEAM_CREATED')
+                : call('agent_teams_create', { name: 'runtime-lab-parent', description: 'Parent-owned team', approval: 'automatic' });
+        else if (process.env.LAB_SCENARIO === 'fork-owned-team') {
+            if (!currentNames.includes('agent_teams_create'))
+                chunks = call('agent_teams_create', { name: 'runtime-lab-fork', description: 'Fork-owned team', approval: 'automatic' });
+            else if (!currentNames.includes('agent_teams_status'))
+                chunks = call('agent_teams_status', {});
+            else {
+                const statusCall = tools.filter(t => t.name === 'agent_teams_status').at(-1);
+                const statusResult = blocks.find(b => b.type === 'tool-result' && b.toolCallId === statusCall?.id);
+                const serialized = JSON.stringify(statusResult);
+                if (!statusResult || statusResult.isError || !serialized.includes('runtime-lab-fork') || serialized.includes('runtime-lab-parent'))
+                    throw Error('Fork status must resolve its own team, not the inherited parent team: ' + serialized);
+                record({ event: 'fork-owned-team-status-passed', sessionId: options.sessionId });
+                chunks = textChunks('FORK_TEAM_STATUS_OK');
+            }
+        }
         else if (isMember) {
             if (userText.includes('COLD_WAKE_FIXTURE')) {
                 for (const chunk of textChunks('COLD_MEMBER_OK'))
