@@ -14,6 +14,15 @@ export const REMOVE_TEST_TREE_CODES = new Set(['ENOTEMPTY', 'EBUSY', 'EPERM', 'E
 
 /**
  * Remove a temporary fixture tree, retrying only transient filesystem races.
+ *
+ * Windows holds a directory handle briefly after the last writer closes it, so
+ * a scheduler that publishes a final write just after a test returns can keep
+ * re-creating entries for noticeably longer than the POSIX case. The delay
+ * therefore grows linearly from `delayMs`. With the defaults (20 attempts of
+ * 25ms..475ms) the total wait is about 4.7s: long enough for the Windows
+ * handle-release tail, short enough that a genuine permission problem still
+ * fails fast.
+ *
  * @param {string} path - absolute fixture directory.
  * @param {{ attempts?: number, delayMs?: number, primitives?: { rm: typeof rm } }} [options]
  */
@@ -29,7 +38,7 @@ export async function removeTestTree(path, options = {}) {
     } catch (error) {
       lastError = error
       if (!REMOVE_TEST_TREE_CODES.has(error?.code)) throw error
-      if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, delayMs))
+      if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, delayMs + attempt * delayMs))
     }
   }
   throw lastError

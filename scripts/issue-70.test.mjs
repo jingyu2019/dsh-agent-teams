@@ -83,6 +83,14 @@ test('#70 attachment scope rejects traversal, secrets, symlinks, hardlinks and m
     await mkdir(join(workspace, dir), { recursive: true })
     await writeFile(join(workspace, dir, file), 'protected')
   }
+  // The protected-segment check is case-insensitive, so a differently-cased
+  // `.git` must be excluded like the canonical one. Create it explicitly: on a
+  // case-insensitive volume `artifacts/.GIT` silently aliases `artifacts/.git`,
+  // while on a case-sensitive one (Linux CI) the directory would otherwise not
+  // exist and the assertion below would fail for the wrong reason -- a missing
+  // artifact root instead of the exclusion rule.
+  await mkdir(join(workspace, 'artifacts/.GIT'), { recursive: true })
+  await writeFile(join(workspace, 'artifacts/.GIT', 'config.txt'), 'protected')
   await symlink(join(workspace, '.env'), join(workspace, 'out', 'link.txt'))
   await link(join(workspace, '.env'), join(workspace, 'out', 'hard.txt'))
   const base = { workspace, stateRoot, teamId: 't', allowedScopes: ['out/'] }
