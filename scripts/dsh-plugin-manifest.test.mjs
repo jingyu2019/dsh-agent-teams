@@ -35,10 +35,17 @@ test('manifest name, version, license, entry and source cannot drift from packag
 })
 
 test('packed package includes the root manifest', () => {
+  // Windows cannot spawn `npm` directly: it is a `.cmd` shim, not an
+  // executable, so a bare spawnSync('npm', ...) resolves to status: null with
+  // no output instead of running the packer. A command shell resolves the shim.
+  // npm_execpath is deliberately not used here: under `pnpm run` it points at
+  // pnpm, whose `pack` rejects npm's --ignore-scripts flag.
   const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
     cwd: root,
     encoding: 'utf8',
+    shell: process.platform === 'win32',
   })
+  assert.equal(packed.error, undefined)
   assert.equal(packed.status, 0, packed.stderr)
   const inventory = JSON.parse(packed.stdout)
   const files = inventory.flatMap(entry => entry.files ?? []).map(entry => entry.path)
