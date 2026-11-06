@@ -66,14 +66,12 @@ Cross-slice dependencies:
 
 ## 4. Explicitly excluded from implementation
 
-### 4.1 Needs evidence: 9 issues
+### 4.1 Needs evidence: 7 issues
 
-These are **not immediate implementation items**. They remain in an evidence queue and may be reopened only after their gate is satisfied.
+These are **not immediate implementation items**. They remain in an evidence queue and may be reopened only after their gate is satisfied. (#317 and #314 were revised on 2026-11-04 — see §4.5.)
 
 | Issue | Evidence gate | Implementation status |
 |---:|---|---|
-| #317 | Matched 3-5 run token/tool/schema ledger, split captain/member, same model and task set | Excluded; no optimization code until measured. |
-| #314 | Exact installed versions, full installer/`pnpm.log`, clean exact-version retry | Excluded; may be support/config, not code. |
 | #162 | Long-context trace with turn/token/compaction evidence on a supported host | Excluded; overlaps #114. |
 | #117 | 20+ cycle RSS/heapUsed/external/handles trace and heap ownership diff | Excluded; cannot infer a plugin leak from the issue. |
 | #151 | Package identity, host version, attributable request/tool trace, spend cap | Excluded; screenshots alone are insufficient. |
@@ -101,6 +99,22 @@ No code is scheduled for these numbers.
 - #71 — requires a newer host multi-command registry/localization contract.
 - #268 — references an external memory plugin; no AgentTeams contract.
 - #269 — external awesome-list submission, not this repository.
+
+### 4.5 Decisions revised 2026-11-04
+
+These replace the earlier exclusion language for #317 and #314, and admit #331/#324 into the fork batch scope. No implementation evidence is claimed here; parallel work owns the code and the final integration report owns its status.
+
+- **#317 — accepted zero-cost investigation (token-neutral).** Moved off the evidence gate: an optimization is permitted only when it is **token-neutral**, i.e. it does not raise the measured token/tool/schema footprint. Compare exact captain/member ledgers before and after; reject or defer any change with added prompt/tool/schema/call footprint > 0.
+- **#314 — TODO / open follow-up despite upstream CLOSED status.** Not reproduced and not fixed in this fork.
+- **#331 / #324 — accepted for this fork batch; status tracked in the final integration report.** This is a scope decision only; this design document does not assert that the code is implemented.
+
+#### TODO — #314 remaining work
+
+- Capture the exact installed version and host/pnpm version.
+- Capture the exact `pnpm.log` from the failing install.
+- Run a clean retry.
+- Classify the failure as a mirror timeout vs a compatibility rejection.
+- Do not claim #314 reproduced or fixed in this fork until the evidence above exists.
 
 No upstream issue or PR will be edited by this delivery.
 
@@ -1349,7 +1363,7 @@ Reviewer acceptance mapping:
 - RESERVE3-001 is blocked no longer: the first new-child `subagent/start` has a pre-existing child id and pending lease.
 - CRASH3-001 cannot silently release: every restart branch commits a task/route/parking decision or a ledger notice before permit release.
 - DIAG3-001 cannot turn ordinary completed runs into failures because diagnostic is no longer a success predicate.
-- 24/24 accepted coverage and 9/9 evidence-gated exclusions remain unchanged.
+- 24/24 accepted coverage and 7/7 evidence-gated exclusions remain; §4.5 revises #317/#314 and admits #331/#324 to the fork batch.
 
 ### 17.4 t12 finding
 
@@ -1370,7 +1384,7 @@ Closure rationale:
 The final validation command and results are recorded below after the design document is written. The design intentionally contains no product-file modifications and no GitHub mutation.
 
 - accepted primary-slice coverage: **24/24**, exact set, no duplicate primary slice
-- needs-evidence exclusion: **9/9** present under the excluded evidence queue and not scheduled
+- needs-evidence exclusion: **7/7** present under the excluded evidence queue and not scheduled (§4.5 revises #317/#314; #331/#324 accepted for the fork batch)
 - duplicate: **3/3**; already-fixed: **3/3**; out-of-scope: **3/3**
 - W0/W1 signatures, state invariants, compatibility notes, TDD matrices, and mutation checks: present
 - t6 carry-forward: **10/10** re-opened findings addressed in Revision 3

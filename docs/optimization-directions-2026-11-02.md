@@ -127,9 +127,9 @@ The upstream tracker gained issues after the original backlog audit. Status in t
 | #330 `/state` resends full snapshots every second | fixed | ETag/304, session scoping, workspace-root dedupe, hidden-page cadence, trimmed payloads; `scripts/issue-330.test.mjs`, `scripts/activity-etag.test.mjs`, `scripts/snapshot-payload.test.mjs` |
 | #333 deleting a team leaves member host sessions | fixed, opt-in | `agent_teams_delete({ archive_member_sessions: true })` archives each durable member session through `workspaceRegistry.archiveSession`; default unchanged; `scripts/issue-333.test.mjs` |
 | #335 Windows desktop reports "invalid plugin ... received object" | fixed | the package now exports an applicable default plugin object in addition to named exports; `scripts/issue-335.test.mjs` |
-| #331 a forked session cannot create its own team | needs evidence | no host version, profile composition, or error trace in the report; the plugin resolves the captain by session lineage, so a fork of a captain may legitimately be treated as the same team |
+| #331 a forked session cannot create its own team | accepted for this fork batch; status tracked in the final integration report | the report resolves as a product decision plus captain-identity migration rather than the earlier evidence-gate framing; see the #331 section below |
 | #329/#328/#327/#326/#325/#323/#322 | duplicate of #327 | same rc.5 compatibility rejection |
-| #324 GUI team-size config / delegation skill | out of scope | changes the product surface and needs its own design review; the underlying `maxMembers` setting already exists in config |
+| #324 GUI team-size config / delegation skill | accepted for this fork batch; status tracked in the final integration report | inclusion decision changed on 2026-11-04; changes the product surface, so it is batched with independent design review |
 | #319 claim_task assignee and host depth messaging | duplicate of the #96/#244 line | already addressed by the optional-parameter and tool-policy work in this fork |
 
 ### #335 follow-up: which fix is verifiable here
@@ -138,4 +138,17 @@ The report's error string comes from `@deepseek-ai/cordis` `registry.resolve`: a
 
 ### #331: forked session cannot create its own team
 
-The report is a screenshot with no host version, profile composition, or error text. The code intentionally treats a *top-level fork descendant of the captain* as the same lead (`teamLeadMatch`), so "fork the conversation, then create a second team" hits the one-team-per-captain rule by design. A fork whose ancestry includes a member is rejected as a member, not promoted to lead. Making forks independently own teams needs a product decision (does a fork split team ownership?) plus a durable captain-identity migration; it is not implemented here.
+The report is a screenshot with no host version, profile composition, or error text. The code intentionally treats a *top-level fork descendant of the captain* as the same lead (`teamLeadMatch`), so "fork the conversation, then create a second team" hits the one-team-per-captain rule by design. A fork whose ancestry includes a member is rejected as a member, not promoted to lead. Making forks independently own teams needs a product decision (does a fork split team ownership?) plus a durable captain-identity migration. This decision is **accepted for this fork batch; status is tracked in the final integration report** — it is not claimed as implemented in this triage note.
+
+## Token-neutral gate (2026-11-04)
+
+Applies to #317 and to every optimization in this document:
+
+- **Reject any change whose measured added prompt/tool/schema/call footprint exceeds zero.** Token-neutral means the before/after captain/member ledgers are compared and no dimension grows.
+- Compare **exact captain and member ledgers** before and after; a rough aggregate is not sufficient evidence.
+- **Prefer lazy / on-demand loading** and **deterministic no-LLM checks** so an optimization adds no standing prompt or tool tokens.
+- If an optimization needs extra captain/member tokens, reject or defer it rather than trading cost for speed.
+
+### #324: GUI team-size config / delegation skill
+
+**Decision (2026-11-04):** inclusion changed. It is **accepted for this fork batch; status is tracked in the final integration report**, because it changes the product surface and needs independent design review. The underlying `maxMembers` setting already exists in config; no implementation evidence is claimed in this triage note.

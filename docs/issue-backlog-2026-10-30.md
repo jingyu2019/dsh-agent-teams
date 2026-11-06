@@ -17,12 +17,12 @@ Two new installation reports arrived after the original audit:
 
 Additional items resolved after the original audit:
 
-- **#314** already fixed by the 0.1.28 `engines.dsh` minimum-version declaration.
+- **#314** remains an open TODO follow-up despite upstream CLOSED status (decision 2026-11-04). The upstream fix candidate is the 0.1.28 `engines.dsh` minimum-version declaration, but it is not reproduced or fixed in this fork. Required evidence is listed in the TODO section below.
 - **#223** resolved: preset picker, next-turn model routing and confirmed archived-team deletion.
 - **#96** resolved with opt-in `toolSurface: core`, which keeps a stable compact captain surface.
 - **#117** plugin-side lock-table growth was fixed in the 0.1.16 line; the remaining host-side memory question still needs RSS/heapUsed samples.
 - **#162 / #241** provide an explicit context reset for idle members; host-driven automatic compaction remains a separate host capability.
-- **#317** is a duplicate token-complaint root cause addressed by #96, per-member model routing, and the lighter invoke-profile path.
+- **#317** is an accepted zero-cost investigation (decision 2026-11-04), not an evidence-blocked closed item. Hard constraint: an optimization is allowed only when it is **token-neutral** — it must not raise the measured token/tool/schema footprint. Compare exact captain/member ledgers before and after.
 
 Current open non-PR state (2026-10-31): **48 issues** — 30 accepted/fixed in this fork, 9 duplicate, 4 already fixed, 4 out of scope, and 1 still evidence-gated (`#117`).
 
@@ -31,6 +31,12 @@ Current open non-PR state (2026-10-31): **48 issues** — 30 accepted/fixed in t
 - **#190 / #241** now use the host `ctx.compaction.compactNow` service through `agent_teams_compact_member`; the plugin still does not own automatic host policy.
 
 `compatibility.json` now includes exact rc.4 and rc.5 targets. The real `plugin-manager-install` and `progressive-entry` checks pass on rc.5; evidence is in [`docs/harness-0.2.1-rc.5/`](./harness-0.2.1-rc.5/README.md).
+
+## 2026-11-04 decision delta
+
+- **#317** moved off the evidence gate to an accepted zero-cost investigation: token-neutral only.
+- **#314** recorded as an open TODO despite upstream CLOSED; see the TODO section below.
+- **#331 / #324** accepted for this fork batch; status tracked in the final integration report (parallel work in this branch).
 
 ## Baseline
 
@@ -50,7 +56,9 @@ Current open non-PR state (2026-10-31): **48 issues** — 30 accepted/fixed in t
 | Decision | Count | Issues |
 |---|---:|---|
 | Accepted into development backlog | 24 | 316, 305, 260, 259, 308, 272, 103, 97, 76, 114, 62, 165, 121, 58, 70, 263, 244, 243, 238, 211, 195, 279, 315, 287 |
-| Needs evidence / design decision before coding | 9 | 317, 314, 162, 117, 151, 96, 223, 241, 190 |
+| Accepted zero-cost investigation (token-neutral only) | 1 | 317 |
+| TODO / open follow-up despite upstream CLOSED | 1 | 314 |
+| Needs evidence / design decision before coding | 7 | 162, 117, 151, 96, 223, 241, 190 |
 | Duplicate | 3 | 311, 312, 237 |
 | Already fixed on audited main | 3 | 313, 270, 208 |
 | Out of scope for this fork | 3 | 71, 268, 269 |
@@ -61,10 +69,10 @@ All 42 open non-PR issues appear exactly once below.
 
 | # | Decision | Evidence / reason | Slice | Priority | Related PR |
 |---:|---|---|---|---|---|
-| 317 | needs-evidence | No version/workload/token ledger; broad optimization is unverifiable | EVAL-TOKEN | P2 | #48 historical only |
+| 317 | accepted, zero-cost investigation | Allowed only when token-neutral: no measured increase in token/tool/schema footprint; compare exact captain/member ledgers before/after | EVAL-TOKEN | P2 | #48 historical only |
 | 316 | accepted | 0.1.27 peers stop at rc.3; clean rc.4 install is rejected | W0-COMPAT | P0 | #318 |
 | 315 | accepted, design split | Reusable global agent presets vs live cross-team sessions are different products | W7-AGENT-LIBRARY | P3 | none |
-| 314 | needs-evidence | Installer failure lacks version and `pnpm.log`; cannot distinguish network/mirror/version issue | EVAL-INSTALL | P2 | none |
+| 314 | TODO / open follow-up (upstream CLOSED) | Not reproduced or fixed in this fork; requires installed version, host/pnpm version, exact `pnpm.log`, clean retry, and mirror-timeout vs compatibility-rejection classification | EVAL-INSTALL | P2 | none |
 | 313 | already-fixed | 0.1.27 declares rc.3 support; bare `@latest` can lag 24h | W0-COMPAT | P3 | #294 stale |
 | 312 | duplicate | Same rc.3/0.1.26 compatibility rejection as #313/#311 | W0-COMPAT | P3 | #294 stale |
 | 311 | duplicate | Same rc.3/0.1.26 compatibility rejection as #313/#312 | W0-COMPAT | P3 | #294 stale |
@@ -141,7 +149,7 @@ Acceptance:
 
 ### W3-CONTEXT — Context lifecycle and sparse probes
 
-Issues: **114, 62 (probe half)**; evidence gates: **162, 190, 241, 117, 96, 317**.
+Issues: **114, 62 (probe half)**; evidence gates: **162, 190, 241, 117, 96**.
 
 Acceptance:
 - Host compaction is exercised on a durable member and preserves member identity, task, attempt, mailbox, and cold restore.
@@ -174,12 +182,13 @@ Acceptance:
 
 ### W6-EVIDENCE — Controlled efficiency and reliability evaluation
 
-Issues: **211**; framework for **317/96**.
+Issues: **211, 317**; framework for **96**.
 
 Acceptance:
 - Same task suite is run under single-agent, ordinary-subagent, and AgentTeams modes with identical model/tool/time/retry budgets.
 - Raw trials, failures, timeouts, paired IDs, pass rate, wall time, token/cost, and judge criteria are retained.
 - Validation recomputes metrics and rejects cherry-picked or incomplete summaries.
+- #317 is token-neutral: an optimization is rejected or deferred unless comparing exact captain/member ledgers before/after shows zero added token/tool/schema footprint.
 
 ### W7-PLATFORM — Reusable agent library and worktree isolation
 
@@ -192,12 +201,16 @@ Acceptance:
 
 ## Evidence Queue
 
-- **314:** exact installed version + `pnpm.log` + clean rc.3 exact-0.1.27 retry.
-- **317:** matched token/tool/schema baseline across 3–5 runs; split captain/member cost.
+- **314 (TODO):** exact installed version, host/pnpm version, full `pnpm.log`, clean retry, and whether the failure is a mirror timeout vs a compatibility rejection.
+- **317 (token-neutral gate):** compare exact captain/member ledgers before/after; reject/defer any optimization whose measured added prompt/tool/schema/call footprint exceeds zero.
 - **117:** 20+ cycles with RSS/heapUsed/external/handles and heap ownership diff.
 - **151:** package identity, host version, request/tool trace, spend cap.
 - **162/190/241:** supported-host long-context trace; compaction event presence/absence; intended host vs plugin behavior.
 - **314/others:** installer logs must distinguish mirror timeout from compatibility rejection.
+
+## TODO — open follow-ups
+
+- **#314 (installer failure; upstream CLOSED):** remains an explicit TODO in this fork. Not reproduced and not fixed here. Required evidence before any claim: exact installed version, host and pnpm versions, the exact `pnpm.log`, a clean retry, and a classification of whether the failure was a mirror timeout or a compatibility rejection.
 
 ## Out-of-scope / duplicate handling
 
