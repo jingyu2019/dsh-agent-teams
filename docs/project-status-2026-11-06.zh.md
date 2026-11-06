@@ -12,10 +12,10 @@
 |---|---|
 | 项目目标 | fork 上游 `NanmiCoder/dsh-agent-teams`，逐个评估上游 issue，采纳的自留地实现 + 验证，代码只进自己的 fork |
 | 当前版本 | `@nanmicoder/dsh-agent-teams@0.1.29`，目标宿主 `@deepseek-ai/dsh@0.2.1-rc.5` |
-| 主线状态 | 功能实现都在集成分支 `codex/331-324-integration`（`ad763c1`，领先 `origin/main` 9 个提交，**已推送、未合并、无 PR**） |
-| 已交付 | rc.5 基线（11/11 运行时场景、296 包精确 cohort）、7 项性能/体积优化、#330/#333/#335 修复、#331/#324 实现并真机验证 |
-| 未闭环 | #314（缺外部日志）、#317（缺 captain/member 配对 token 账本）、压缩预算方案（缺宿主钩子）、跨平台证据、分支合并与发布 |
-| 最大风险 | 本地 `main` 与 `origin/main` 已分叉（代码一致、仅 docs 差异）+ 6 个 worktree 并存，容易在错误分支上继续开发 |
+| 主线状态 | `main` 已与 `origin/main` 对齐（`0b4469d`，2026-11-06）；功能实现在集成分支 `codex/331-324-integration`（`ad763c1`，已推送、**未合并、无 PR**），另新增 `codex/317-usage-ledger`（`128e29d`） |
+| 已交付 | rc.5 基线（11/11 运行时场景、296 包精确 cohort）、7 项性能/体积优化、#330/#333/#335 修复、#331/#324 实现并真机验证、#317 的 captain/member 账本拆分（`metrics.byRole`） |
+| 未闭环 | #314（缺外部日志）、#317（账本已拆、缺配对测量）、压缩预算方案（已定性：rc.5 不可表达，封存 design-only）、跨平台证据、分支合并与发布 |
+| 最大风险 | 五条改动线（含 #331/#324）全在未合并的分支上，一旦丢分支就是丢交付；另 5 个 worktree 需清理（本会话沙箱删不掉） |
 
 ---
 
@@ -30,14 +30,14 @@
 
 | 位置 | 分支 | 提交 | 与 `origin/main` 关系 |
 |---|---|---|---|
-| `agent-team`（主工作树） | `main` | `26d71b1` | 分叉：本地 +44 / 远端 +34（**代码零差异**，仅 4 个 docs 差异） |
-| `agent-team-wt/feature-batch-2026-11-04` | `codex/331-324-integration` | `ad763c1` | +9 / -0，已推送，未合并 |
-| `agent-team-wt/317-314-triage` | `codex/317-314-triage` | `b93eaf0` | 已并入本地 `main` |
-| `agent-team-wt/compaction-policy-design` | `codex/compaction-policy-design` | `2de1198` | 已并入本地 `main`（`26d71b1` 是它的 merge commit） |
-| `agent-team-wt/324-delegation-config` | `codex/324-delegation-config` | `4f569f2` | 早期方案，已被集成分支取代 |
-| `agent-team-wt/331-independent-fork-team` | `codex/331-independent-fork-team` | `80077b2` | 早期方案，已被集成分支取代 |
+| `agent-team`（主工作树） | `main` | `0b4469d` | 已对齐（docs 重放后 +1，已推送） |
+| `agent-team-wt/feature-batch-2026-11-04` | `codex/331-324-integration` | `ad763c1` | 9 commits ahead，已推送，未合并（工作树仍有一份未提交实验，见 5.4） |
+| `agent-team-wt/317-314-triage` | `codex/317-314-triage` | `b93eaf0` | 内容已在 `main`，worktree 待清理 |
+| `agent-team-wt/compaction-policy-design` | `codex/compaction-policy-design` | `2de1198` | 内容已在 `main`，worktree 待清理 |
+| `agent-team-wt/324-delegation-config` | `codex/324-delegation-config` | `4f569f2` | 早期方案，已被集成分支取代，worktree 待清理 |
+| `agent-team-wt/331-independent-fork-team` | `codex/331-independent-fork-team` | `80077b2` | 早期方案，已被集成分支取代，worktree 待清理 |
 
-> 分叉原因：远端 `main` 上出现过历史重写（`perf: bound polling, mailbox and snapshot payloads` 同名提交重复 9 次）；`git diff main origin/main -- src lib scripts package.json compatibility.json` **为空**，所以是历史卫生问题，不是代码分叉。
+> 分叉原因：远端 `main` 上出现过历史重写（`perf: bound polling, mailbox and snapshot payloads` 同名提交重复 9 次）；重建前 `git diff main origin/main -- src lib scripts package.json compatibility.json` **为空**，所以是历史卫生问题，不是代码分叉。2026-11-06 已用「`origin/main` + docs 重放」重建，原 `main` 保留为 `backup/main-26d71b1`。
 
 ---
 
@@ -125,34 +125,83 @@
 
 ---
 
-## 5. 未闭环清单（含缺什么证据、怎么闭环）
+## 5. 未闭环清单与本次执行记录
 
 | # | 事项 | 缺什么 | 闭环动作 |
 |---|---|---|---|
 | 1 | **#314** 安装失败 | 报告者的确切版本、宿主/pnpm 版本、完整 `pnpm.log`、干净精确版本重试，以及「镜像超时 vs 兼容性拒绝」的归类 | 等外部证据；不要用推断代替复现 |
-| 2 | **#317** token-neutral | 当前分支的 captain/member **实际 usage** 与配对运行的工具调用数；缺「只改一项优化」的公平配对 | 先把 captain/member 账本拆分做实（见下方风险），再做配对测量；否则不接受任何优化 |
-| 3 | **压缩预算方案** | 宿主是否提供 team/member 级策略覆盖或可介入 hook | 现状：`compactNow` 仅 idle 可用，`compactRegion` 要插件自选区间；无宿主支持则方案封存为 design-only |
-| 4 | **集成分支未合并** | PR / 合并 / 版本号与 release notes | 合并到 `origin/main`，再决定 0.1.30 发布 |
-| 5 | **跨平台证据** | Ubuntu / Windows 上的 rc.5 矩阵与插件管理器安装 | 需要另一台机器或 CI 路径；现在只有 darwin/arm64 |
+| 2 | **#317** token-neutral | 账本已拆（见 5.1），但**还没有配对运行**：缺同一场景下「改一项优化」前后的 captain/member 实际 usage 对照 | 跑配对运行，两轮只差一项改动；差异落在哪一侧由 `metrics.byRole` 直接读出 |
+| 3 | **压缩预算方案** | ~~宿主是否提供 team/member 级策略覆盖~~ → **已定性**（见 5.3）：rc.5 无 per-agent 策略入口，只有加载期 `provider/model` 键控配置 | 封存为 design-only；除非宿主新增 per-agent 策略 API，或改走「只触发不控阈值」路线 |
+| 4 | **集成分支未合并** | PR（本机无 `gh`，见 5.4） | `origin/main` 已是 `ad763c1` 的祖先，合并无需 rebase；开 PR 后再决定 0.1.30 |
+| 5 | **跨平台证据** | Ubuntu / Windows 上的 rc.5 矩阵与插件管理器安装 | 需要另一台机器或 CI 路径；本机只有 darwin/arm64 |
 | 6 | **#324 桌面复验** | 用户真实桌面 profile 的交互确认 | 目前只在隔离 web profile 验过；桌面 profile 未被改动 |
-| 7 | **仓库卫生** | 分支/历史整理 | ①本地 `main` 与 `origin/main` 分叉（代码一致、docs 差 4 个）需一次性对齐；②`origin/main` 有 9 个同名重复提交；③6 个 worktree 中 4 个已过时；④`feature-batch` worktree 有**未提交**改动（见下） |
+| 7 | **worktree 清理** | 5 个 worktree 中 5 个都要处理；本会话沙箱**不能写工作区外路径**，删不掉 | 见 5.4 的手动命令 |
 | 8 | **A Team 初始化门槛** | `INIT.md` / `.agent-sync/TEAM.md` / `roster.py` | 会话 `01a1a6b0` 曾因此标 blocked；后续改为直接实现绕过，流程债仍在 |
 
-### 本次实测发现（会话里没有记录的新事实）
+### 5.1 已执行（2026-11-06，本次）
 
-- `agent-team-wt/feature-batch-2026-11-04` 工作树**不干净**：`scripts/fixtures/harness-model-case.test.mjs` 有 14 行未提交新增，测试名为 `metrics split captain and member usage, schemas, and native tool calls`。
-- 该测试**当前失败**：`TypeError: Cannot read properties of undefined (reading 'captain')`，因为 `metrics.byRole` 尚未实现。
-- 结论：#317 的「captain/member 账本拆分」已经开工但只有测试骨架，是接下来最直接可推进的一步；该文件不在 `pnpm verify` 链路里（`verify` 是手写 smoke + 显式 `node --test` 列表），所以它失败了也不会被主校验拦住。
+| 动作 | 结果 | 证据 |
+|---|---|---|
+| 对齐本地 `main` | 重建在 `origin/main` 之上，仅重放本地独有 docs；推送成功 | `0b4469d`；`git rev-list --left-right --count main...origin/main` = `0 0` |
+| 保留回滚点 | 老 `main` 留 ref | 分支 `backup/main-26d71b1`、tag `backup-26d71b1`（均指向 `26d71b1`） |
+| #317 账本 | `metrics.byRole.{captain,member}` 实现：requests / 每请求 system 与 tool-schema 字节 / 工具数 / 工具调用（总/成功）/ 分角色 usage（缺失字段保持 null） | 分支 `codex/317-usage-ledger`（`128e29d`，已推送） |
+| 堵住测试腐烂 | 该测试此前只被 `.github/workflows/verify.yml` 直接调用，`pnpm verify` 链里没有 → 新增 `verify:model-case` 并挂进 `verify` | `package.json` 改动 3 行 |
+| 回归 | `harness-model-case` 4/4、`harness-complex-case`+`benchmark-scope` 5/5、`issue-211` 13/13、`scripts/verify.mjs` all checks passed | 见 5.5 |
+
+### 5.2 未执行（受环境限制，不是没做）
+
+| 项 | 原因 | 需要的动作 |
+|---|---|---|
+| worktree 清理 | 沙箱只允许写会话工作区，`/Users/openclaw/agent-team-wt/` 下所有写操作（含 `git checkout --`、`touch`）返回 `Operation not permitted` | 在普通终端执行 5.4 的命令 |
+| 开 PR | 本机 `gh` 未安装；`npx`/`npm` 因 `~/.npm` 不可写而失败 | 用 compare URL 手动开，或安装 `gh` |
+| 全局反馈记录 | `~/.pua` 不可写 | 已把一行 JSON 暂存到 `/tmp/pua-feedback-2026-11-06.jsonl`，可自行 `cat >> ~/.pua/feedback.jsonl` |
+
+### 5.3 压缩方案的定性依据（详见设计文档 §9）
+
+`ctx.compaction: CompactionEngine` 只有三个入口：`compactIfNeeded(agent, trigger, signal)`、`compactRegion(start, end, agent, signal?)`、`compactNow(agent, signal, sourceCommandId?)`。阈值来自 `BasicCompactionConfig`（`thresholdRatio` 默认 0.8、`headroomTokens` 65536、`retainRatio` 0.16），键是 **provider + model**（`modelPolicies`），配置在加载期冻结为 `readonly config: ResolvedConfig`，**没有 session / agent / team 维度，也没有运行期 setter**。
+
+结论：「主 agent 控制子 agent 压缩阈值」在 rc.5 不可表达。可用的是「主 agent 触发压缩」（`compactNow` 已实现；`compactRegion` 需自选区间）。
+
+### 5.4 手动待办命令
+
+```bash
+# 1) 清理 4 个已并入 main 的 worktree（分支保留，只删目录）
+cd /Users/openclaw/Documents/ChatGPT/agent-team
+git worktree remove --force /Users/openclaw/agent-team-wt/317-314-triage
+git worktree remove --force /Users/openclaw/agent-team-wt/324-delegation-config
+git worktree remove --force /Users/openclaw/agent-team-wt/331-independent-fork-team
+git worktree remove --force /Users/openclaw/agent-team-wt/compaction-policy-design
+
+# 2) 清掉 feature-batch 工作树里那份未提交的实验（内容已进入 128e29d）
+cd /Users/openclaw/agent-team-wt/feature-batch-2026-11-04
+git checkout -- scripts/fixtures/harness-model-case.test.mjs
+
+# 3) 开 PR（或装 gh 后 gh pr create）
+open "https://github.com/jingyu2019/dsh-agent-teams/compare/main...codex/331-324-integration"
+open "https://github.com/jingyu2019/dsh-agent-teams/compare/main...codex/317-usage-ledger"
+```
+
+### 5.5 本次验证输出
+
+```text
+node --test scripts/fixtures/harness-model-case.test.mjs   → pass 4 / fail 0
+node --test scripts/fixtures/harness-complex-case.test.mjs \
+           scripts/fixtures/harness-benchmark-scope.test.mjs → pass 5 / fail 0
+node --test scripts/issue-211.test.mjs                      → pass 13 / fail 0
+node scripts/verify.mjs                                     → all checks passed
+```
+
+`pnpm verify` 全链**未跑**：本机 `pnpm` 不在 PATH，`npx pnpm` 因 `~/.npm` 不可写而失败。
 
 ---
 
 ## 6. 建议的下一步（按依赖顺序）
 
-1. **先收拾卫生**（半天）：对齐本地 `main` 与 `origin/main`（采纳远端历史、本地 docs 增量重放）；清理 4 个过时 worktree；给集成分支开 PR。否则下一次开发很可能落在错误分支上。
-2. **把 #317 账本做实**（1–2 天）：补 `metrics.byRole`（captain/member 的 requests / systemBytes / toolSchemaBytes / toolCounts / toolCalls / usage），让上面那条失败测试转绿，再跑一次配对运行拿真实 usage。
-3. **压缩方案定性**（半天确认）：向宿主确认是否存在 team/member 级策略入口；没有就在文档里明确「封存为 design-only」，不再占开发带宽。
-4. **#314 保持 TODO**：只等外部证据，不自证、不猜。
-5. **跨平台与发布**（后续）：Ubuntu/Windows rc.5 证据 → 合并 → 0.1.30 release notes。
+1. **配对测量 #317**（现在就能做）：用 `metrics.byRole` 跑同场景两轮，只差一项优化，读 captain / member 两侧差值。这是「不许多耗 token」唯一的判定依据。
+2. **合并集成分支**：开 PR → 合入 → 0.1.30 release notes（跨平台证据不足时明确标注为未验证项）。
+3. **压缩方案归档**：设计文档 §9 已定性，等宿主 API 变化再启；不要继续投工时。
+4. **#314 保持 TODO**：只等外部证据。
+5. **跨平台**：Ubuntu / Windows rc.5 矩阵补完后，前面几条结论才谈得上「通用」。
 
 ---
 

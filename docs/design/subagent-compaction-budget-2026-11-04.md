@@ -589,3 +589,56 @@ compactor."
   become measured.
 - Steady-state extra captain LLM calls: **0**. Steady-state extra captain tool
   calls: **0**. One-time captain config cost: **bounded to one write/turn**.
+
+---
+
+## 9. Host API verification, 2026-11-06
+
+This section replaces the earlier "ask the host team" hand-wave with what the
+pinned `0.2.1-rc.5` artifacts actually declare. Read from
+`node_modules/.pnpm/@deepseek-ai+dsh-compaction@0.2.1-rc.5*/lib/types/index.d.ts`
+and `.../dsh-compaction-basic@0.2.1-rc.5*/lib/types/{index,types}.d.ts`.
+
+### 9.1 What the service exposes
+
+`ctx.compaction: CompactionEngine` — three entry points, all per-agent:
+
+| API | Shape | Constraint |
+|---|---|---|
+| `compactIfNeeded(agent, trigger, signal)` | `trigger: 'pressure' \| 'context-overflow'` | 由 provider 在 step 边界/溢出时调用 |
+| `compactRegion(start, end, agent, signal?)` | inclusive `SessionSeq` range | **调用方必须自己选区间**（本设计里的 seam 问题，未变） |
+| `compactNow(agent, signal, sourceCommandId?)` | 强制一次低于阈值的压缩 | 仅 idle agent，占用下一轮 admission |
+
+### 9.2 阈值是「加载期配置」，不是运行期策略
+
+`BasicCompactionConfig`（`BasicCompactionEngine.static Config`）字段：
+
+- `thresholdRatio?` 默认 `0.8`
+- `headroomTokens?` 默认 `65536`
+- `retainRatio?` 默认 `0.16`（与 `retainTokens` 二选一）
+- `summarizationProvider/Model`、`maxTokens`、`compactionRetries`（默认 1）、`maxOverflowRetries`（默认 1）
+- `auto?` 默认 `true`
+- `modelPolicies?: ModelCompactPolicyConfig[]` — **按 `provider` + 精确 `model` 匹配**的覆盖表
+
+关键结论：策略键是 **provider/model**，不是 session、agent、team。配置在插件加载时 validate 并冻结（`readonly config: ResolvedConfig`），没有运行期 setter。
+
+### 9.3 对「阈值由主 agent 控制」的裁决
+
+| 目标 | rc.5 是否可行 | 依据 |
+|---|---|---|
+| 主 agent 在运行期给某个成员设定阈值 | ❌ 不可行 | 无 per-agent 策略入口；config 只读且按 provider/model 键控 |
+| 主 agent 触发某个成员立即压缩 | ⚠️ 部分可行 | `compactNow`（仅 idle，已实现）与 `compactRegion`（需自选区间） |
+| 给成员单独一套阈值 | ⚠️ 仅静态 | 成员路由到不同 `provider/model` 时命中 `modelPolicies` 行，但这是部署配置，不是队长决策 |
+| 团队级共享预算 | ❌ 不可行 | 服务无 team 概念 |
+
+**因此 Phase 1–5 仍为 design-only。** 要继续，只有两条合规路径：
+
+1. **宿主侧新增** per-agent 或 per-session 的策略覆盖 API（并在 `ResolvedConfig` 之外暴露可变的 effective policy）；
+2. **队长侧只做「触发」不做「阈值」**：用 `compactRegion` + 插件自选区间实现「按需压缩到目标水位」，阈值仍由宿主 `thresholdRatio` 决定，插件只决定何时动手。
+
+第 2 条不违反「不造竞品压缩器」的既有约束，但需要先解决区间选择与 `assertNoActiveCompaction` 的并发契约，仍属未验证设计。
+
+### 9.4 仍未验证
+
+- 上面结论来自**类型声明**，未在真实宿主运行时验证行为（例如 `modelPolicies` 对子 agent 是否真的生效）。
+- `dsh-compaction-image-offload` / `dsh-compaction-tool-result-pruner` 两个 companion 插件未纳入本设计。
