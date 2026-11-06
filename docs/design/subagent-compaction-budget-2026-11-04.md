@@ -577,7 +577,11 @@ compactor."
 
 ## 8. Status and traceability
 
-- **Status: design accepted for review; implementation not started.**
+- **Status: ABANDONED (2026-11-06).** User decision: drop the sub-agent
+  compaction-budget feature entirely — the rc.5 host has no per-agent policy
+  surface (§9), so the feature cannot be delivered without a host change, and
+  it is no longer worth the bandwidth. Keep the document as the evidence
+  trail; do not implement Phases 1–5.
 - No source, tests, skills, package, or dependency file is modified by this
   task.
 - The only artifact is `docs/design/subagent-compaction-budget-2026-11-04.md`.
