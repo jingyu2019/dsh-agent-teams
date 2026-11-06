@@ -35,3 +35,17 @@ test('metrics keep missing usage explicit and exclude purpose requests from head
     assert.equal(metrics.usage.uncachedInputTokens,12);
     assert.equal(metrics.usage.cacheWriteTokens,null);
 });
+
+test('metrics split captain and member usage, schemas, and native tool calls',()=>{
+    const metrics=modelMetrics([
+        {event:'model-request',request:1,sessionId:'captain',systemSha256:'c',toolsSha256:'c',systemBytes:40,toolsBytes:900,toolCount:11},
+        {event:'model-request',request:2,sessionId:'member-1',systemSha256:'m',toolsSha256:'m',systemBytes:20,toolsBytes:500,toolCount:4},
+        {event:'model-usage',request:1,usage:{inputTokens:100,outputTokens:30}},
+        {event:'model-usage',request:2,usage:{inputTokens:60,outputTokens:10}},
+        {event:'tool-result',sessionId:'captain',name:'agent_teams_create',isError:false},
+        {event:'tool-result',sessionId:'member-1',name:'agent_teams_update_task',isError:false},
+        {event:'tool-result',sessionId:'member-1',name:'agent_teams_update_task',isError:true},
+    ],'captain');
+    assert.deepEqual(metrics.byRole.captain,{requests:1,systemBytes:[40],toolSchemaBytes:[900],toolCounts:[11],toolCalls:1,successfulToolCalls:1,usage:{uncachedInputTokens:100,cacheReadTokens:null,cacheWriteTokens:null,outputTokens:30,reasoningTokens:null}});
+    assert.deepEqual(metrics.byRole.member,{requests:1,systemBytes:[20],toolSchemaBytes:[500],toolCounts:[4],toolCalls:2,successfulToolCalls:1,usage:{uncachedInputTokens:60,cacheReadTokens:null,cacheWriteTokens:null,outputTokens:10,reasoningTokens:null}});
+});

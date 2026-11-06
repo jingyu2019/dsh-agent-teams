@@ -66,7 +66,18 @@ export function modelMetrics(events,captainId) {
     const latestUsage=new Map(events.filter(event=>event.event==='model-usage').map(event=>[event.request,event.usage]));
     const usage=[...latestUsage.values()];
     const sum=key=>usage.some(value=>typeof value[key]==='number')?usage.reduce((total,value)=>total+(typeof value[key]==='number'?value[key]:0),0):null;
-    return {sessionHeaders,stableSessionHeaders:sessionHeaders.length>0&&sessionHeaders.every(row=>row.systemHashes.length===1&&row.toolsHashes.length===1),openCalls:events.filter(event=>event.event==='tool-result'&&event.name==='agent_teams_open').length,usageRequests:usage.length,requestsWithoutUsage:requests.filter(event=>!latestUsage.has(event.request)).map(event=>event.request),usage:{uncachedInputTokens:sum('inputTokens'),cacheReadTokens:sum('cacheReadTokens'),cacheWriteTokens:sum('cacheWriteTokens'),outputTokens:sum('outputTokens'),reasoningTokens:sum('reasoningTokens')},usageSemantics:'Harness Usage counts inputTokens as uncached input; cacheRead/cacheWrite are separate. Last usage per request; unavailable fields remain null. Requests without usage are listed and excluded from sums. No price inference.'};
+    // Captain and member are separate cost centres: the captain pays for the
+    // delegation prompt and the shared tool surface once, each member pays for
+    // its own system prompt and tool surface on every request. Summing them
+    // together hides which side a change moved, so keep the split explicit.
+    const scopedSum=(list,key)=>list.some(value=>typeof value[key]==='number')?list.reduce((total,value)=>total+(typeof value[key]==='number'?value[key]:0),0):null;
+    const roleMetrics=role=>{
+        const roleRequests=requests.filter(event=>(event.sessionId===captainId?'captain':'member')===role);
+        const roleCalls=events.filter(event=>event.event==='tool-result'&&(event.sessionId===captainId?'captain':'member')===role);
+        const roleUsage=roleRequests.map(event=>latestUsage.get(event.request)).filter(Boolean);
+        return {requests:roleRequests.length,systemBytes:roleRequests.map(event=>event.systemBytes),toolSchemaBytes:roleRequests.map(event=>event.toolsBytes),toolCounts:roleRequests.map(event=>event.toolCount),toolCalls:roleCalls.length,successfulToolCalls:roleCalls.filter(event=>!event.isError).length,usage:{uncachedInputTokens:scopedSum(roleUsage,'inputTokens'),cacheReadTokens:scopedSum(roleUsage,'cacheReadTokens'),cacheWriteTokens:scopedSum(roleUsage,'cacheWriteTokens'),outputTokens:scopedSum(roleUsage,'outputTokens'),reasoningTokens:scopedSum(roleUsage,'reasoningTokens')}};
+    };
+    return {byRole:{captain:roleMetrics('captain'),member:roleMetrics('member')},sessionHeaders,stableSessionHeaders:sessionHeaders.length>0&&sessionHeaders.every(row=>row.systemHashes.length===1&&row.toolsHashes.length===1),openCalls:events.filter(event=>event.event==='tool-result'&&event.name==='agent_teams_open').length,usageRequests:usage.length,requestsWithoutUsage:requests.filter(event=>!latestUsage.has(event.request)).map(event=>event.request),usage:{uncachedInputTokens:sum('inputTokens'),cacheReadTokens:sum('cacheReadTokens'),cacheWriteTokens:sum('cacheWriteTokens'),outputTokens:sum('outputTokens'),reasoningTokens:sum('reasoningTokens')},usageSemantics:'Harness Usage counts inputTokens as uncached input; cacheRead/cacheWrite are separate. Last usage per request; unavailable fields remain null. Requests without usage are listed and excluded from sums. No price inference.'};
 }
 function groundedFinding(report, reviewer) {
     if (report?.reviewer !== reviewer || !Array.isArray(report.findings)) return false;
