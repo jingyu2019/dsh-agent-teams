@@ -13,13 +13,13 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { installModelSelection, type Agent, type ModelSelection } from '@deepseek-ai/dsh-agent'
+import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
 // Declaration merge only: makes ctx.subagents visible.
 import { foldSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
 import { createUserMessage, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { join } from 'node:path'
-import { agentTeamsSource, boundAgentRun, recordBoundAgentDiagnostic, observedSessionFormatVersion, type MemberStartResult, type SessionFormatBearer, guardSubagentCreation, startMember, usesManagedActivations, guardSubagentDelivery, installContinuableMemberSetup, memberToolFilter, queueMemberPrompt, restrictableToolNames, startMemberWithLenientFilter, steerMemberPrompt, sessionOwnEvents } from './harness-compat.ts'
+import { agentTeamsSource, boundAgentRun, recordBoundAgentDiagnostic, observedSessionFormatVersion, type MemberStartResult, type SessionFormatBearer, guardSubagentCreation, startMember, usesManagedActivations, guardSubagentDelivery, installContinuableMemberSetup, installMemberSelection, memberToolFilter, queueMemberPrompt, restrictableToolNames, startMemberWithLenientFilter, steerMemberPrompt, sessionOwnEvents, type MemberSelectionChannel } from './harness-compat.ts'
 import { markMailboxDelivered, appendMailbox, CAPTAIN_KEY, clearTaskProbe, createMessage, readRetiredMemberIds, readTeamSync, readTeam, releaseMailboxDelivery, withTeamLock, writeTeam } from './state.ts'
 import { mailboxPrompt } from './mailbox.ts'
 import { nearestLiveLead } from './lineage.ts'
@@ -502,9 +502,22 @@ export async function failMemberOpenAttempt(
     const settledRecord = disposition === 'noted_settled'
       ? settledTaskRecord(observed.task, team.tasks)
       : undefined
+    // Provenance is what makes the note retirable: the mailbox generation
+    // filter and the scheduler's failure-reminder reconcile both key on the
+    // exact failed attempt, so a retried or superseded attempt cannot leave
+    // this reminder behind. The status marker distinguishes a failure reminder
+    // from a member report that happens to carry provenance.
+    const source = disposition === 'failed_attempt' && task !== undefined
+      ? {
+        sourceTaskId: task.id,
+        ...task.attemptId === undefined ? {} : { sourceAttemptId: task.attemptId },
+        sourceTaskStatus: 'failed' as const,
+      }
+      : {}
     const message = {
       ...createMessage(memberName, CAPTAIN_KEY, memberFailureMessage(memberName, summary, disposition, task, settledRecord)),
       deliveryClaimedAt: Date.now(),
+      ...source,
     }
     if (disposition === 'failed_attempt') await writeTeam(stateRoot, team)
     await appendMailbox(stateRoot, team.id, CAPTAIN_KEY, message)
@@ -561,14 +574,16 @@ export interface PersistedRouteFailure {
   readonly advanced: boolean
 }
 
-/** Apply one durable route to a resident child's live request selection. */
+/**
+ * Apply one durable route to a resident child's live request selection.
+ * The channel owns the host split: rc.5 writes the ref the host reads, 0.2.2+
+ * records the selection on the Agent (`agent.model.select`).
+ */
 export function applyRouteToSelection(
-  ref: { current: ModelSelection; assembled?: ModelSelection },
+  channel: MemberSelectionChannel,
   route: TeamModelFallback,
 ): void {
-  const next = { provider: route.provider, model: route.model }
-  ref.current = next
-  ref.assembled = next
+  channel.apply({ provider: route.provider, model: route.model })
 }
 
 /**
@@ -968,8 +983,7 @@ export function installMemberSelectionRuntime(
     })
     // Legacy teams still need failure reporting even without a saved route.
     if (selection === undefined) return () => { disposeFailure(); cleanupAdmission() }
-    const selectionRef = { current: modelSelection(selection), assembled: undefined as ModelSelection | undefined }
-    const disposeSelection = installModelSelection(childCtx, selectionRef)
+    const { channel, dispose: disposeSelection } = installMemberSelection(childCtx, child, modelSelection(selection))
     const fallback = selection.fallback
     let switched = false
     const disposeFallback = childCtx.on('agent/request-error', async (payload, next) => {
@@ -990,7 +1004,7 @@ export function installMemberSelectionRuntime(
             // Keep the resident child's next request on the durable route.
             // Cold resumes already derive this from member.activeProvider;
             // this is the live-child counterpart for the *next* activation.
-            applyRouteToSelection(selectionRef, routeFailure.route)
+            applyRouteToSelection(channel, routeFailure.route)
           }
         }
         // A route-owned AgentTeams activation records the failure and returns
@@ -1002,21 +1016,25 @@ export function installMemberSelectionRuntime(
         ctx.logger.warn(`agent-teams: ignored unbound managed agent/request-error for ${child.id}`)
         return undefined
       }
-      const transition = selectFallbackRoute(selectionRef.current ?? { provider: selection.provider, model: selection.model }, fallback, payload.failure.code, switched)
+      const transition = selectFallbackRoute(channel.route(), fallback, payload.failure.code, switched)
       // selectFallbackRoute only retries when a fallback route exists; the
       // explicit guard narrows that fact for the compiler.
       if (fallback !== undefined && transition.retry) {
         switched = transition.switched
-        selectionRef.current = transition.selection
-        // Request recovery repeats buildRequest inside the current step; it
-        // does not re-run prompt assembly. Override that captured route too,
-        // otherwise the authorized retry would hit the failed primary again.
-        selectionRef.assembled = transition.selection
+        // One call for both generations: the ref older hosts assemble from,
+        // and the Agent-owned selection 0.2.2 resumes from.
+        channel.apply(transition.selection)
         await updateFallbackState(stateRoot, teamId, memberName, fallback, ctx).catch((error: unknown) => {
           ctx.logger.warn(`agent-teams: failed to persist fallback route: ${String(error)}`)
         })
         ctx.logger.warn(`agent-teams: member ${child.id} switching to fallback ${fallback.provider}/${fallback.model} after ${payload.failure.code}`)
-        return { kind: 'retry' as const }
+        // rc.5 repeated buildRequest inside the step and re-read the ref, so an
+        // in-step retry landed on the fallback. 0.2.2 resolves the step's route
+        // during step preparation (dsh-agent-loop lib/index.js:671) and rejects
+        // an agent/request handler that proposes another (lib/index.js:1000),
+        // so repeating here would hit the failed primary again. The durable
+        // route above is what the next step and the next activation resume on.
+        return channel.redirectsInStepRetry ? { kind: 'retry' as const } : undefined
       }
       return next()
     })

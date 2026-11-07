@@ -34,7 +34,16 @@ export async function runPluginInstallation({ version, pluginVersion, artifact, 
     return [{ scenario: 'plugin-manager-install', passed: Object.values(assertions).every(Boolean), assertions }];
 }
 
-/** Run the same fixture and persisted-state assertions against an already prepared runtime. */
+/**
+ * Run the same fixture and persisted-state assertions against an already prepared runtime.
+ *
+ * Fixture profiles disable `headless-runner` only. `headless-startup` must stay
+ * enabled on every supported host: 0.2.2 `dsh-headless/cordis.patch.yml:28-29`
+ * adds `sandbox-policy: inject: [headlessStartup]` (0.2.1-rc.5 has no such
+ * inject), so disabling startup leaves sandbox-policy pending and cascades
+ * through fs -> workingDirectory -> subagents -> agent-teams: 21 entries stay
+ * inactive and every fixture loses the team tools. Verified on 0.2.2-rc.1.
+ */
 export async function runRuntimeScenarios({ report, runtime, command, environment, selectedScenarios = runtimeScenarios, linkWorkspacePackages = false }) {
 const runs = [];
 for (const scenario of selectedScenarios) {
@@ -59,13 +68,11 @@ for (const scenario of selectedScenarios) {
         writeFileSync(join(profile, 'cordis.patch.yml'), readFileSync(join(profile, 'cordis.patch.yml'), 'utf8') + '- id: agent-teams\n  config:\n    stateDir: .agent-teams\n    memberProvider: spawn\n    fallback:\n      provider: runtime-lab\n      model: fixture-fallback\n');
     if (scenario === 'captain-idle-wakeup') {
         copyFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures/harness-runtime-idle.mjs'), join(profile, 'fixture-idle.mjs'));
-        writeFileSync(join(profile, 'cordis.patch.yml'), readFileSync(join(profile, 'cordis.patch.yml'), 'utf8') + '- id: headless-startup\n  disabled: true\n- id: headless-runner\n  disabled: true\n- insert:\n    - id: runtime-lab-idle-captain\n      name: ./fixture-idle.mjs\n');
+        writeFileSync(join(profile, 'cordis.patch.yml'), readFileSync(join(profile, 'cordis.patch.yml'), 'utf8') + '- id: headless-runner\n  disabled: true\n- insert:\n    - id: runtime-lab-idle-captain\n      name: ./fixture-idle.mjs\n');
     }
     if (scenario === 'progressive-entry') {
         copyFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures/harness-runtime-entry.mjs'), join(profile, 'fixture-entry.mjs'));
-        writeFileSync(join(profile, 'cordis.patch.yml'), readFileSync(join(profile, 'cordis.patch.yml'), 'utf8') + `- id: headless-startup
-  disabled: true
-- id: headless-runner
+        writeFileSync(join(profile, 'cordis.patch.yml'), readFileSync(join(profile, 'cordis.patch.yml'), 'utf8') + `- id: headless-runner
   disabled: true
 - id: agent-teams
   config:
@@ -86,8 +93,6 @@ for (const scenario of selectedScenarios) {
     if (scenario === 'web-approval') {
         copyFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures/harness-runtime-web-approval.mjs'), join(profile, 'fixture-web-approval.mjs'));
         writeFileSync(join(profile, 'cordis.patch.yml'), readFileSync(join(profile, 'cordis.patch.yml'), 'utf8') + `- id: runtime-lab-fixture
-  disabled: true
-- id: headless-startup
   disabled: true
 - id: headless-runner
   disabled: true
@@ -110,8 +115,6 @@ for (const scenario of selectedScenarios) {
     if (scenario === 'protocol-compatibility') {
         copyFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures/harness-runtime-protocol.mjs'), join(profile, 'fixture-protocol.mjs'));
         writeFileSync(join(profile, 'cordis.patch.yml'), readFileSync(join(profile, 'cordis.patch.yml'), 'utf8') + `- id: runtime-lab-fixture
-  disabled: true
-- id: headless-startup
   disabled: true
 - id: headless-runner
   disabled: true
@@ -142,8 +145,6 @@ for (const scenario of selectedScenarios) {
     if (scenario === 'stability') {
         copyFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures/harness-runtime-stability.mjs'), join(profile, 'fixture-stability.mjs'));
         writeFileSync(join(profile, 'cordis.patch.yml'), readFileSync(join(profile, 'cordis.patch.yml'), 'utf8') + `- id: runtime-lab-fixture
-  disabled: true
-- id: headless-startup
   disabled: true
 - id: headless-runner
   disabled: true
@@ -222,7 +223,14 @@ for (const scenario of selectedScenarios) {
         json(join(report, scenario, 'team-evidence.json'), state);
     if (passed && !isFailure && scenario !== 'captain-idle-wakeup') {
         copyFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures/harness-runtime-resume.mjs'), join(profile, 'fixture-resume.mjs'));
-        writeFileSync(join(profile, 'cordis.patch.yml'), readFileSync(join(profile, 'cordis.patch.yml'), 'utf8') + '- id: headless-startup\n  disabled: true\n- id: headless-runner\n  disabled: true\n- insert:\n    - id: runtime-lab-cold-resume\n      name: ./fixture-resume.mjs\n');
+        // Only the runner is disabled: this cold pass resumes an existing session and
+        // must not run the task again, but the host still needs its startup provider.
+        // 0.2.2 `dsh-headless/cordis.patch.yml:28-29` adds `sandbox-policy: inject: [headlessStartup]`
+        // (0.2.1-rc.5 has no such inject), so disabling `headless-startup` leaves that
+        // plugin pending and cascades through fs -> workingDirectory -> subagents ->
+        // agent-teams: 21 entries stay inactive and the cold run loses the member's
+        // tools, session, route and reasoning. Verified on 0.2.2-rc.1.
+        writeFileSync(join(profile, 'cordis.patch.yml'), readFileSync(join(profile, 'cordis.patch.yml'), 'utf8') + '- id: headless-runner\n  disabled: true\n- insert:\n    - id: runtime-lab-cold-resume\n      name: ./fixture-resume.mjs\n');
         const coldTrace = join(report, scenario, 'cold-trace.jsonl');
         const cold = await command([process.execPath, join(runtime, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), '--profile', 'headless'], workspace, environment({ DSH_HOME: home, DSH_PERMISSION_MODE: 'danger-full-access', DSH_TELEMETRY_DISABLED: '1', LAB_TRACE: coldTrace, LAB_TEAMS: '1', LAB_COLD: '1', LAB_SCENARIO: scenario, LAB_PARENT_SESSION: state.captainSessionId }), scenario + '-cold', 90000);
         const coldEvents = existsSync(coldTrace) ? readFileSync(coldTrace, 'utf8').trim().split('\n').filter(Boolean).map(s => JSON.parse(s)) : [];

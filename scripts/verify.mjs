@@ -84,11 +84,13 @@ import { parseProfileInvocation, resolveTeamProfile, formatProfilesForPrompt } f
 import { memberPersona, memberWelcome } from '../lib/members.js'
 import { collectCompletedDependencyOutputs, formatDependencyOutputs, assignmentPrompt } from '../lib/scheduler.js'
 import {
+  applyRouteToSelection,
   installMemberSelectionRuntime,
   resolveMemberLlmSelection,
   spawnMember,
   validateMemberLlmSelections,
 } from '../lib/members.js'
+import { memberSelectionChannel } from '../lib/harness-compat.js'
 
 let failures = 0
 function check(label, condition, detail = '') {
@@ -1592,6 +1594,53 @@ try {
 } finally {
   await rm(restoreWorkspace, { recursive: true, force: true })
 }
+
+// 0.2.2-rc.1 moved a member's route off the mutable ref and onto the Agent
+// (`agent.model.select`). Both host generations must stay covered here: rc.5
+// assembles every request from the ref, 0.2.2 reads the session projection the
+// Agent owns. Detection is capability-based because bundlers strip parameter
+// lists, so the installer's arity is not a version signal.
+const legacySelectionRef = { current: { provider: 'legacy-provider', model: 'legacy-model' } }
+const legacyChannel = memberSelectionChannel(undefined, legacySelectionRef)
+applyRouteToSelection(legacyChannel, { provider: 'legacy-provider', model: 'legacy-fallback' })
+check(
+  'rc.5 host keeps the ref as the live route and can redirect the in-step retry',
+  legacyChannel.redirectsInStepRetry
+    && legacySelectionRef.current.model === 'legacy-fallback'
+    && legacySelectionRef.assembled?.model === 'legacy-fallback'
+    && legacyChannel.route().model === 'legacy-fallback',
+)
+const recordedSelections = []
+let projectedSelection
+const routeOwningAgent = {
+  model: {
+    current: () => projectedSelection,
+    select(selection) {
+      recordedSelections.push(selection)
+      projectedSelection = selection
+    },
+  },
+}
+const ownedSelectionRef = { current: { provider: 'owned-provider', model: 'owned-model' } }
+const ownedChannel = memberSelectionChannel(routeOwningAgent, ownedSelectionRef)
+check(
+  '0.2.2 host reads the Agent projection before the stale ref',
+  ownedChannel.route().model === 'owned-model',
+)
+applyRouteToSelection(ownedChannel, { provider: 'owned-provider', model: 'owned-fallback' })
+check(
+  '0.2.2 host records the route on the Agent instead of the ignored ref',
+  recordedSelections.length === 1
+    && recordedSelections[0].model === 'owned-fallback'
+    && ownedChannel.route().model === 'owned-fallback'
+    && !ownedChannel.redirectsInStepRetry,
+)
+const seamSource = await readFile(new URL('../lib/harness-compat.js', import.meta.url), 'utf8')
+check(
+  'model-selection fork probes agent.model.select, never the installer signature',
+  !/installModelSelection\s*\.\s*length/.test(seamSource)
+    && /select === 'function'/.test(seamSource),
+)
 
 console.log('8/8 state-file atomic write hardening (Windows EPERM fallback)')
 // The durable state files (team.json, mailboxes, retired index) are replaced

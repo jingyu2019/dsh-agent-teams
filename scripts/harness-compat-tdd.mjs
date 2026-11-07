@@ -43,7 +43,7 @@ function modernRuntime() {
   return { [deliverKey]() {}, sendMessage() {} }
 }
 
-function child({ workspace = process.cwd(), effort, inherited = false } = {}) {
+function child({ workspace = process.cwd(), effort, inherited = false, model } = {}) {
   const descriptor = { type: 'subagent/descriptor', data: {
     version: 3, mode: 'continuable', provider: 'spawn', label: 'agent-teams:team:worker',
     agentProvider: 'primary', agentModel: 'model',
@@ -53,6 +53,10 @@ function child({ workspace = process.cwd(), effort, inherited = false } = {}) {
     options: { provider: 'primary', model: 'model', reasoningEffort: effort },
     session: { header: { cwd: workspace, parentSession: 'captain' }, ownEvents: () => inherited ? [] : [descriptor] },
   }
+  // Hosts from 0.2.2 on own the member route on the Agent (`agent.model`).
+  // Passing a projection here selects the generation under test; without it
+  // the seam falls back to the pre-0.2.2 ref path.
+  if (model !== undefined) agent.model = model
   agent.ctx = scope() // Harness 0.1.5 no longer exposes Context.agent.
   return agent
 }
@@ -242,39 +246,81 @@ await test('a child inheriting another member descriptor does not acquire member
   ctx.dispose()
 })
 
-for (const fallbackActive of [false, true]) {
-  await test(`cold resume restores route and effort coherently (fallbackActive=${fallbackActive})`, async t => {
-    const workspace = await mkdtemp(join(tmpdir(), 'agent-teams-compat-'))
-    t.after(() => rm(workspace, { recursive: true, force: true }))
-    await createTeamDir(join(workspace, '.agent-teams'), {
-      id: 'team', name: 'Team', captainSessionId: 'captain', createdAt: 1, taskSeq: 0, tasks: [],
-      members: [{ id: 'member-id', name: 'worker', status: 'idle', joinedAt: 1,
-        provider: 'primary', model: 'model', reasoningEffort: 'high',
-        fallback: { provider: 'backup', model: 'backup-model' }, fallbackActive,
-        ...(fallbackActive ? { activeProvider: 'backup', activeModel: 'backup-model' } : {}),
-      }],
+// 0.2.2-rc.1 deleted the mutable selection ref: the route lives on the Agent
+// (`agent.model.select`), step preparation fixes the step's route once, and an
+// `agent/request` handler that proposes another route makes the host throw.
+// So the same fallback must answer differently per generation — rc.5 asks for
+// the in-step retry it can honour by re-reading the ref, 0.2.2 must NOT: a
+// retry there replays the failed primary and the host rejects the route change.
+const hostGenerations = [
+  { name: 'ref-owning', routeOwning: false },
+  { name: 'route-owning', routeOwning: true },
+]
+
+for (const generation of hostGenerations) {
+  for (const fallbackActive of [false, true]) {
+    await test(`cold resume restores route and effort coherently (${generation.name} host, fallbackActive=${fallbackActive})`, async t => {
+      const workspace = await mkdtemp(join(tmpdir(), 'agent-teams-compat-'))
+      t.after(() => rm(workspace, { recursive: true, force: true }))
+      await createTeamDir(join(workspace, '.agent-teams'), {
+        id: 'team', name: 'Team', captainSessionId: 'captain', createdAt: 1, taskSeq: 0, tasks: [],
+        members: [{ id: 'member-id', name: 'worker', status: 'idle', joinedAt: 1,
+          provider: 'primary', model: 'model', reasoningEffort: 'high',
+          fallback: { provider: 'backup', model: 'backup-model' }, fallbackActive,
+          ...(fallbackActive ? { activeProvider: 'backup', activeModel: 'backup-model' } : {}),
+        }],
+      })
+      const ctx = scope({ subagents: modernRuntime() })
+      t.after(() => ctx.dispose())
+      installMemberSelectionRuntime(ctx, '.agent-teams')
+      const selected = []
+      let projected
+      const agent = child({
+        workspace,
+        ...(generation.routeOwning ? { model: {
+          // Empty projection: no `model/selection` event exists yet, so the
+          // seam falls back to the durable ref exactly like a cold AgentModel.
+          current: () => projected,
+          select(selection) { selected.push(selection); projected = selection },
+        } } : {}),
+      })
+      ctx.emit('agent/session-start', { agent, source: 'resume' })
+      if (!generation.routeOwning) {
+        // rc.5 has no Agent-owned route: the restored route is observable only
+        // through the assemble/request hooks the installer owns.
+        assert.deepEqual(await selection(agent), fallbackActive
+          ? { provider: 'backup', model: 'backup-model' }
+          : { provider: 'primary', model: 'model', reasoningEffort: 'high' })
+      }
+      if (fallbackActive) {
+        let delegated = 0
+        const handler = [...agent.ctx.listeners.get('agent/request-error')][0]
+        assert.equal(await handler({ agent, signal, failure: { code: 'AUTH' } }, async () => { delegated++ }), undefined)
+        assert.equal(delegated, 1)
+        assert.deepEqual(selected, [], 'a member already on its fallback records no new route')
+      } else {
+        const handler = [...agent.ctx.listeners.get('agent/request-error')][0]
+        let delegated = 0
+        const outcome = await handler({ agent, signal, failure: { code: 'AUTH' } }, async () => { delegated++ })
+        if (generation.routeOwning) {
+          // Decisive for 0.2.2: the consumer must decline the in-step retry
+          // (returning `{kind:'retry'}` here would replay the failed primary
+          // and trip `use agent.model.select() before step preparation`).
+          assert.equal(outcome, undefined, '0.2.2 host must not claim an in-step retry')
+          assert.equal(delegated, 0, 'the host retry policy is not delegated to')
+          assert.deepEqual(selected, [{ provider: 'backup', model: 'backup-model' }],
+            'the fallback route is recorded on the Agent for the next step')
+          assert.deepEqual(projected, { provider: 'backup', model: 'backup-model' })
+        } else {
+          assert.deepEqual(outcome, { kind: 'retry' })
+          assert.equal(delegated, 0)
+          // Harness retries inside the SAME step, without assembling the prompt
+          // again. The accepted fallback must replace the captured request route.
+          assert.deepEqual(await requestSelection(agent), { provider: 'backup', model: 'backup-model' })
+        }
+      }
     })
-    const ctx = scope({ subagents: modernRuntime() })
-    t.after(() => ctx.dispose())
-    installMemberSelectionRuntime(ctx, '.agent-teams')
-    const agent = child({ workspace })
-    ctx.emit('agent/session-start', { agent, source: 'resume' })
-    assert.deepEqual(await selection(agent), fallbackActive
-      ? { provider: 'backup', model: 'backup-model' }
-      : { provider: 'primary', model: 'model', reasoningEffort: 'high' })
-    if (fallbackActive) {
-      let delegated = 0
-      const handler = [...agent.ctx.listeners.get('agent/request-error')][0]
-      assert.equal(await handler({ agent, signal, failure: { code: 'AUTH' } }, async () => { delegated++ }), undefined)
-      assert.equal(delegated, 1)
-    } else {
-      const handler = [...agent.ctx.listeners.get('agent/request-error')][0]
-      assert.deepEqual(await handler({ agent, signal, failure: { code: 'AUTH' } }, async () => undefined), { kind: 'retry' })
-      // Harness retries inside the SAME step, without assembling the prompt
-      // again. The accepted fallback must replace the captured request route.
-      assert.deepEqual(await requestSelection(agent), { provider: 'backup', model: 'backup-model' })
-    }
-  })
+  }
 }
 
 await test('spawn explicitly passes reasoning effort, preserving persona and tool filters', async () => {

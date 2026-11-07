@@ -8,7 +8,7 @@
  * sendMessage instead steers a running Agent and must never carry team jobs.
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent';
+import { type Agent, type AgentOptions, type ModelSelection } from '@deepseek-ai/dsh-agent';
 import type { ContentBlock, MessageId, MessageSource } from '@deepseek-ai/dsh-llm';
 import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session';
 import { type MemberToolFilter } from './tool-policies.ts';
@@ -199,4 +199,66 @@ export declare function memberToolFilter(maxDepth: number | undefined, knownTool
 export declare function startMemberWithLenientFilter<T>(start: (filter: MemberToolFilter) => Promise<T>, filter: MemberToolFilter, relaxableDeny?: readonly string[]): Promise<T>;
 /** Targeted recursive cancellation renamed with the unified activation manager. */
 export declare function drainMemberChildren(runtime: Context['subagents'], parent: Agent, ids: readonly SessionId[]): Promise<void>;
+/**
+ * The audited 0.2.1-rc.5 / 0.2.2-rc.1 model-selection boundary.
+ *
+ * rc.5 took a mutable ref — `installModelSelection(agentCtx, ref)` — and read
+ * it from `system-prompt/assemble`, `agent/request` and `agent/pre-step`
+ * (dsh-agent 0.2.1-rc.5 lib/index.js:166-205). Writing that ref therefore
+ * changed the request the host was already building, retry included.
+ *
+ * 0.2.2-rc.1 deleted `ModelSelectionRef` and the second parameter. Its
+ * `installModelSelection(agentCtx)` only appends the model-switch notice
+ * (lib/index.js:231-244): the route moved into the session projection
+ * `modelSelection` (stateVersion 3, `model/selection`), surfaced as
+ * `agent.model.select()` / `agent.model.current()` (lib/index.js:186-215).
+ * The step's route is resolved once during step preparation (dsh-agent-loop
+ * lib/index.js:671) and an `agent/request` handler that proposes another one
+ * throws (dsh-agent-loop lib/index.js:1000-1001), so a route change cannot
+ * redirect the retry already in flight — it lands on the next step.
+ *
+ * A capability fork is the only reliable split here: bundlers and transpilers
+ * strip parameter lists, so `installModelSelection.length` is not a version
+ * signal (audit: docs/upgrade/0.2.2-audit.md §III).
+ */
+/** Mutable selection older hosts read while assembling a request. */
+export interface LegacySelectionRef {
+    current: ModelSelection;
+    assembled?: ModelSelection;
+}
+/** One member child's live request route, independent of host generation. */
+export interface MemberSelectionChannel {
+    /** The route this child's next request will use. */
+    route(): ModelSelection;
+    /** Move the child's route; hosts that own it persist the choice. */
+    apply(route: ModelSelection): void;
+    /**
+     * Whether applying a route redirects a retry already in flight in the same
+     * step. rc.5 did (it rewrote `agent/request`); 0.2.2 fixed the step route
+     * before the request existed, so the change lands on the next step.
+     */
+    readonly redirectsInStepRetry: boolean;
+}
+/**
+ * Build the route channel for one child.
+ * @param agent - the child Agent; 0.2.2+ exposes `model.select`.
+ * @param ref - the selection ref older hosts read. Kept current on every host:
+ *   it is the authority on rc.5 and inert metadata on 0.2.2+.
+ */
+export declare function memberSelectionChannel(agent: unknown, ref: LegacySelectionRef): MemberSelectionChannel;
+/** The selection boundary one resident child owns. */
+export interface MemberSelection {
+    /** Ref the host reads on rc.5; kept current on 0.2.2 for our own routing. */
+    ref: LegacySelectionRef;
+    channel: MemberSelectionChannel;
+    /** Scoped listeners installed for this child. */
+    dispose(): void;
+}
+/**
+ * Install the model-selection boundary for one child on either host generation.
+ * @param agentCtx - the child's scoped context.
+ * @param agent - the child Agent.
+ * @param initial - the provider/model the child starts on.
+ */
+export declare function installMemberSelection(agentCtx: Context, agent: Agent, initial: ModelSelection): MemberSelection;
 export {};

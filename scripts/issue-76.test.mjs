@@ -10,6 +10,7 @@ import {
   routeCursorReady,
 } from '../lib/members.js'
 import { resolveTeamProfile } from '../lib/profiles.js'
+import { memberSelectionChannel } from '../lib/harness-compat.js'
 import { beginTaskAttempt, createTeamDir, readTeam, writeTeam } from '../lib/state.js'
 import { installTeamScheduler } from '../lib/scheduler.js'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -131,10 +132,23 @@ test('persisted AUTH failure binds the exact activation and advances the member 
 })
 
 test('resident selection updates to the persisted fallback route', () => {
+  // 0.2.1-rc.5: the host assembles requests from the ref, so the ref is live.
   const ref = { current: { provider: 'p', model: 'primary' } }
-  applyRouteToSelection(ref, second)
+  const legacy = memberSelectionChannel(undefined, ref)
+  assert.equal(legacy.redirectsInStepRetry, true)
+  applyRouteToSelection(legacy, second)
   assert.deepEqual(ref.current, { provider: 'p', model: 'second' })
   assert.deepEqual(ref.assembled, { provider: 'p', model: 'second' })
+
+  // 0.2.2-rc.1: the Agent owns the route; the projection is what it reads next.
+  const selected = []
+  let recorded
+  const agent = { model: { current: () => recorded, select(selection) { selected.push(selection); recorded = selection } } }
+  const channel = memberSelectionChannel(agent, ref)
+  assert.equal(channel.redirectsInStepRetry, false)
+  applyRouteToSelection(channel, second)
+  assert.deepEqual(selected, [{ provider: 'p', model: 'second' }])
+  assert.deepEqual(channel.route(), { provider: 'p', model: 'second' })
 })
 
 test('stale route failure cannot mask max-tokens terminal settlement', async () => {

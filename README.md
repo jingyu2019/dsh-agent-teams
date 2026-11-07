@@ -36,7 +36,7 @@ Ask in natural language. The plugin provides the team protocol, 14 coordination 
 
 ## Releases
 
-[Latest release](https://github.com/NanmiCoder/dsh-agent-teams/releases/latest) promotes Harness `0.2.1-rc.5` (npm `latest`) to the recommended and development baseline. AgentTeams `0.1.29` keeps the minimum install requirement `>=0.1.2-alpha.2` and `*` peers, so later hosts remain installable while rc.2, rc.3, rc.4 and older tested hosts stay supported. See the [tested matrix](./compatibility.json) and [release notes](./release-notes/v0.1.29.md).
+[Latest release](https://github.com/NanmiCoder/dsh-agent-teams/releases/latest) ships AgentTeams `0.1.30` and moves the recommended host to Harness `0.2.2-rc.1` (npm `latest`). The minimum install requirement stays `>=0.1.2-alpha.2` with `*` peers, so later hosts remain installable while rc.2, rc.3, rc.4, rc.5 and older tested hosts stay in the matrix. 0.2.2 support carries an explicit evidence boundary: the plugin loads, registers all 23 tools and typechecks against the published `0.2.2-rc.1` packages, while the archived end-to-end runtime suite still runs on `0.2.1-rc.5`. See the [tested matrix](./compatibility.json) and [0.1.30 release notes](./docs/upgrade/0.2.2-release-notes.md).
 
 ## Why AgentTeams?
 
@@ -55,20 +55,20 @@ The conversation card and activity panel use Harness's official locale service. 
 
 ## Install and choose versions
 
-**Recommended pair: DeepSeek Harness `0.2.1-rc.5` + AgentTeams `0.1.29`. The host remains an RC.**
+**Recommended pair: DeepSeek `0.2.2-rc.1` + AgentTeams `0.1.30`. The host remains an RC.**
 
 | Use case | DeepSeek Harness | AgentTeams plugin |
 | --- | --- | --- |
-| **Recommended** | **`0.2.1-rc.5`** | **`0.1.29`** |
-| Preview hosts | `0.2.1-rc.4`, `0.2.1-rc.3`, `0.2.1-rc.2` | `0.1.29` |
-| Previous recommended RC | `0.2.1-rc.1`, `0.2.0-rc.2`, `0.1.7-rc.2` | `0.1.29` |
-| Legacy RC | `0.1.5-rc.1`, `0.1.5-rc.2`, `0.1.5-rc.3` | `0.1.29` |
-| Retaining an older RC | `0.1.2-rc.1` | `0.1.29` |
-| Developer Alpha testing | `0.1.2-alpha.5` | `0.1.29` |
-| Retaining an older Alpha | `0.1.2-alpha.2` | `0.1.29` |
-| Newer hosts | `0.2.1-rc.6` and later | `0.1.29` |
+| **Recommended** | **`0.2.2-rc.1`** | **`0.1.30`** |
+| Preview hosts (archived end-to-end suite) | `0.2.1-rc.5`, `0.2.1-rc.4`, `0.2.1-rc.3`, `0.2.1-rc.2` | `0.1.30` |
+| Previous recommended RC | `0.2.1-rc.1`, `0.2.0-rc.2`, `0.1.7-rc.2` | `0.1.30` |
+| Legacy RC | `0.1.5-rc.1`, `0.1.5-rc.2`, `0.1.5-rc.3` | `0.1.30` |
+| Retaining an older RC | `0.1.2-rc.1` | `0.1.30` |
+| Developer Alpha testing | `0.1.2-alpha.5` | `0.1.30` |
+| Retaining an older Alpha | `0.1.2-alpha.2` | `0.1.30` |
+| Newer hosts | `0.2.2-rc.2` and later `0.2.x` | `0.1.30` |
 
-All rows except the last are the CI verification matrix. For rc.5, this fork has archived local darwin/arm64 evidence for the full runtime suite; its Ubuntu/Windows matrix jobs are configured but are not archived from this fork. The exact 0.1.29 artifact was installed byte-for-byte into the desktop profile. After the host was restarted and unlocked, a fresh GUI smoke test rendered the AgentTeams activity panel for a live six-member team.
+All rows except the last are the CI verification matrix. The rc.5 row carries the archived end-to-end evidence: this fork recorded local darwin/arm64 results for the full runtime suite, and its Ubuntu/Windows matrix jobs are configured but not archived here. The `0.2.2-rc.1` row is a deliberately bounded claim — artifact inspection of the published 0.2.2-rc.1 packages, a load/registration smoke of the built plugin against them, and a typecheck of the plugin source against their types. There is no real 0.2.2 CLI run, no Windows run and no Web GUI runtime assessment yet; the exact gaps are listed in the [release notes](./docs/upgrade/0.2.2-release-notes.md). The [v0.1.29 artifact](./release-notes/v0.1.29.md) was installed byte-for-byte into the desktop profile and a restarted GUI rendered the AgentTeams activity panel for a live six-member team; the `0.1.30` candidate has not been installed there yet.
 
 ### Desktop app
 
@@ -84,11 +84,11 @@ This installs from the default branch and is available immediately after release
 github:NanmiCoder/dsh-agent-teams
 ```
 
-For npm installation, enter the versioned spec `@nanmicoder/dsh-agent-teams@0.1.29`. Desktop's pnpm 11 defaults to a 24-hour minimum release age: for 24 hours after a release, a bare package name or `@latest` installs the previous version even when the preview shows the newest one, and the installation fails if that version is incompatible with your host. An exact version installs immediately. Changing registry mirrors does not remove this policy. GitHub access is required for the Git route; it may contain newer code than npm.
+For npm installation, enter the versioned spec `@nanmicoder/dsh-agent-teams@0.1.30`. Desktop's pnpm 11 defaults to a 24-hour minimum release age: for 24 hours after a release, a bare package name or `@latest` installs the previous version even when the preview shows the newest one, and the installation fails if that version is incompatible with your host. An exact version installs immediately. Changing registry mirrors does not remove this policy. GitHub access is required for the Git route; it may contain newer code than npm.
 
 Install it, then choose **Enable now**. If the host asks for a restart, restart the desktop app. Do not disable compatibility checks or the global release-age policy to install the plugin.
 
-The desktop app supplies its own Harness core and package manager. Upgrading the global CLI does not upgrade that core, and an ordinary standalone CLI cannot manage its desktop profile. The CLI carrier installed by the desktop app can manage that profile in `0.2.1-rc.5`. Check the embedded core against the compatibility list. Harness `0.2.1-rc.5` is the exact recommended target; its RC status is unchanged. Older tested hosts remain supported. See the [rc.5 compatibility evidence](./docs/harness-0.2.1-rc.5/README.md).
+The desktop app supplies its own Harness core and package manager. Upgrading the global CLI does not upgrade that core, and an ordinary standalone CLI cannot manage its desktop profile. The CLI carrier installed by the desktop app can manage that profile in `0.2.1-rc.5`. Check the embedded core against the compatibility list: `0.2.2-rc.1` is the recommended target for hosts you install yourself, and the `0.2.1-rc.5` core shipped with the current desktop build remains fully supported and keeps the archived runtime evidence. Older tested hosts remain supported. See the [rc.5 compatibility evidence](./docs/harness-0.2.1-rc.5/README.md).
 
 ### CLI / Web: 1. Install DeepSeek Harness
 
@@ -101,10 +101,10 @@ The command selects the host's npm `latest`; check `dsh --version` against the s
 
 ### CLI / Web: 2. Install the AgentTeams plugin
 
-Install or upgrade from npm with an exact version (currently `0.1.29`):
+Install or upgrade from npm with an exact version (currently `0.1.30`):
 
 ```sh
-dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.1.29
+dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.1.30
 ```
 
 For a CLI-managed installation, replace `web` with your active CLI profile. **Stop and restart that profile's Harness process, then refresh the browser.** Installing the plugin does not upgrade Harness; the host and plugin have independent `latest` channels.

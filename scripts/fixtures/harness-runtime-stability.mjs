@@ -57,6 +57,23 @@ export function apply(ctx) {
     const root = join(process.cwd(), '.agent-teams'), file = join(root, 'stability/team.json');
     const state = () => JSON.parse(readFileSync(file, 'utf8'));
     const mail = name => { const p = join(root, `stability/inbox/${name}.jsonl`); return existsSync(p) ? readFileSync(p, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : []; };
+    // Same generation split as scripts/fixtures/harness-runtime-entry.mjs: DSH
+    // 0.2.2 takes a raw call batch (`{ calls: [{ type:'tool-call', id, name,
+    // arguments:<raw JSON string> }], signal }` -> `{ results: [{ callId,
+    // result }] }`, dsh-tools 0.2.2 lib/types/executor.d.ts + lib/pipeline.js:27-33),
+    // while 0.2.1-rc.5 takes one call (`{ name, arguments, callId }`,
+    // ToolExecutionInput at lib/types/index.d.ts:216). `setExecutor` exists only
+    // on the batch-generation ToolsService, so probe that capability rather than
+    // an arity.
+    const batchExecutor = typeof ctx.tools.setExecutor === 'function';
+    const executeTool = async (agent, name, args, callId) => {
+      if (!batchExecutor) return ctx.tools.execute({ name, arguments: args, callId, agent, signal: new AbortController().signal });
+      const batch = await ctx.tools.execute({ calls: [{ type: 'tool-call', id: callId, name, arguments: JSON.stringify(args ?? {}) }],
+        agent, signal: new AbortController().signal });
+      const settled = batch.results.find(entry => entry.callId === callId);
+      assert.ok(settled, `0.2.2 batch returned no result for ${name}`);
+      return settled.result;
+    };
     async function run(...items) {
       commands.push(...items);
       captain.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Execute the authorized stability scenario commands.' }] }));
@@ -71,8 +88,8 @@ export function apply(ctx) {
     const workerId = state().members.find(m => m.name === 'worker').id;
     await until(() => gates.has(workerId), 'first actual assignment');
     const assertMemberDenied = async label => {
-      const result = await ctx.tools.execute({ name: 'agent_teams_create', arguments: { name: 'Forbidden nested team', description: 'Must be rejected', approval: 'required' },
-        callId: ToolCallId(`denied-${label}`), agent: ctx.agents.get(workerId), signal: new AbortController().signal });
+      const result = await executeTool(ctx.agents.get(workerId), 'agent_teams_create',
+        { name: 'Forbidden nested team', description: 'Must be rejected', approval: 'required' }, ToolCallId(`denied-${label}`));
       assert.equal(result.isError, true, 'captain-only tool must reject actual member execution');
       assert.match(JSON.stringify(result), /unknown tool|UNKNOWN_TOOL/, 'must fail at tool admission, not business validation');
       record({ event: 'stability-member-tool-denied', phase: label });
@@ -84,7 +101,7 @@ export function apply(ctx) {
       assert.equal(ctx.tools.get('lab_forbidden', live), undefined);
       const prompt = await ctx.systemPrompt.assemble({ agent: live, scope: live });
       assert.equal(prompt.sections.filter(section => section.text.includes('HMR_ROLE_MARKER')).length, 1);
-      const result = await ctx.tools.execute({ name: 'lab_forbidden', arguments: {}, callId: ToolCallId('hmr-denied'), agent: live, signal: new AbortController().signal });
+      const result = await executeTool(live, 'lab_forbidden', {}, ToolCallId('hmr-denied'));
       assert.equal(result.isError, true);
       assert.match(JSON.stringify(result), /unknown tool|UNKNOWN_TOOL/);
     };

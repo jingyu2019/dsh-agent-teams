@@ -33,6 +33,7 @@ import {
   findTeamByParticipant,
   invalidateTaskAttempt,
   readTeam,
+  readUnreadMailbox,
   readPendingMailbox,
   releaseMailboxDelivery,
   releaseActivationPermitsForDrainedMembers,
@@ -622,6 +623,25 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     return notice
   }
 
+  /**
+   * A failure reminder describes one exact failed attempt. It stays live only
+   * while that attempt is still the current failed attempt of its task; a retry
+   * (new attemptId), a handoff, or any later terminal outcome retires it, while
+   * a genuinely unresolved failure keeps the reminder.
+   */
+  const failureReminderIsCurrent = (team: TeamState, taskId: string | undefined, attemptId: string | undefined): boolean => {
+    if (taskId === undefined) return true
+    const task = team.tasks.find(candidate => candidate.id === taskId)
+    if (task === undefined) return false
+    if (task.status !== 'failed') return false
+    return attemptId === undefined || task.attemptId === attemptId
+  }
+
+  const staleFailureNotice = (team: TeamState, notice: NotificationLedgerEntry): boolean => (
+    (notice.kind === 'failed' || notice.kind === 'settlement_unknown')
+    && !failureReminderIsCurrent(team, notice.taskId, notice.attemptId)
+  )
+
   const flushNotice = async (workspace: string, stateRoot: string, teamId: string, noticeId: string): Promise<void> => {
     const prepared = await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
       const team = await readTeam(stateRoot, teamId)
@@ -629,7 +649,10 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       if (team === undefined || notice === undefined || notice.noticeDueAt > Date.now()
         || notice.state === 'delivered' || notice.state === 'read' || notice.state === 'superseded') return undefined
       const task = notice.taskId === undefined ? undefined : team.tasks.find(candidate => candidate.id === notice.taskId)
-      if (notice.kind === 'parked' && (task?.parking?.noticeKey !== notice.id || task.status !== 'claimed' && task.status !== 'in_progress')) {
+      const superseded = notice.kind === 'parked'
+        ? task?.parking?.noticeKey !== notice.id || task.status !== 'claimed' && task.status !== 'in_progress'
+        : staleFailureNotice(team, notice)
+      if (superseded) {
         notice.state = 'superseded'
         await writeTeam(stateRoot, team)
         return undefined
@@ -640,6 +663,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
         ts: notice.createdAt,
         ...notice.taskId === undefined ? {} : { sourceTaskId: notice.taskId },
         ...notice.attemptId === undefined ? {} : { sourceAttemptId: notice.attemptId },
+        ...notice.kind === 'parked' ? {} : { sourceTaskStatus: 'failed' as const },
       }
       await appendMailboxOnce(stateRoot, team.id, CAPTAIN_KEY, message)
       notice.state = 'appended'
@@ -666,7 +690,38 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     })
   }
 
+  /**
+   * Retire failure reminders whose exact failed attempt is gone. A terminal
+   * failure leaves two durable artifacts on the captain: the notification
+   * ledger entry and the mailbox note rendered by the panel inbox. Neither is
+   * revisited by the delivery path, so a recovery edge must clear both —
+   * without touching a reminder whose attempt is still the failed one.
+   */
+  const reconcileFailureReminders = async (stateRoot: string, teamId: string): Promise<void> => {
+    await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+      const team = await readTeam(stateRoot, teamId)
+      if (team === undefined) return
+      let changed = false
+      for (const notice of team.notifications ?? []) {
+        if (notice.state !== 'pending' && notice.state !== 'appended') continue
+        if (!staleFailureNotice(team, notice)) continue
+        notice.state = 'superseded'
+        changed = true
+      }
+      // Only failure reminders carry the failed-status marker, so member
+      // reports and ordinary guidance are never discarded here.
+      const retired = (await readUnreadMailbox(stateRoot, teamId, CAPTAIN_KEY))
+        .filter(message => message.reportKind === undefined
+          && message.sourceTaskStatus === 'failed'
+          && !failureReminderIsCurrent(team, message.sourceTaskId, message.sourceAttemptId))
+        .map(message => message.id)
+      if (changed) await writeTeam(stateRoot, team)
+      if (retired.length > 0) await discardMailboxMessages(stateRoot, teamId, CAPTAIN_KEY, retired)
+    })
+  }
+
   const flushDueNotices = async (workspace: string, stateRoot: string, teamId: string): Promise<void> => {
+    await reconcileFailureReminders(stateRoot, teamId)
     const team = await readTeam(stateRoot, teamId)
     if (team === undefined) return
     for (const notice of team.notifications ?? []) {

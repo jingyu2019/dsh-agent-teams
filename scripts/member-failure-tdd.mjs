@@ -10,7 +10,27 @@ import { apply as installRetry } from '@deepseek-ai/dsh-llm-retry'
 import { installMemberSelectionRuntime } from '../lib/members.js'
 import { bindAgentRun, recordBoundAgentDiagnostic } from '../lib/harness-compat.js'
 import { installTeamScheduler } from '../lib/scheduler.js'
-import { appendMailbox, createMessage, createTeamDir, readTeam, readMailbox, readUnreadMailbox, withTeamLock, writeTeam } from '../lib/state.js'
+import { appendMailbox, beginTaskAttempt, createMessage, createTeamDir, invalidateTaskAttempt, readTeam, readMailbox, readUnreadMailbox, withTeamLock, writeTeam } from '../lib/state.js'
+import { assembleTeamSnapshot } from '../lib/snapshot.js'
+import { registerHooks } from 'node:module'
+import React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { en, zh } from '../lib/client/locales.js'
+
+// Render the production client panel: only unrelated host UI and CSS imports are stubbed,
+// so the failure reminder assertions below run against the shipped component.
+const clientHook = registerHooks({ resolve(specifier, context, next) {
+  let source
+  if (specifier.endsWith('.module.css')) source = 'export default new Proxy({}, {get: (_, key) => key})'
+  if (context.parentURL?.endsWith('/client/ActivityPanel.js')) {
+    if (specifier === '@deepseek-ai/dsh-client-ui-primitives') source = 'export const Modal = () => null'
+    if (specifier === './AgentTeamsCard.js') source = 'export const OPEN_PANEL_EVENT = "test-open"'
+    if (specifier === './StagingPlanEditor.js') source = 'export const StagingPlanEditor = () => null'
+  }
+  return source === undefined ? next(specifier, context) : { url: `data:text/javascript,${encodeURIComponent(source)}`, shortCircuit: true }
+} })
+const { TeamSection } = await import('../lib/client/ActivityPanel.js')
+clientHook.deregister()
 
 const deliveryHarness = process.argv.includes('--delivery-harness')
 const modernHarness = deliveryHarness || process.argv.includes('--modern-harness')
@@ -147,7 +167,7 @@ async function fixture(t, { captainStatus = 'idle', fallback, captainOffline = f
   }
   settleOnCleanup = settleSilently
   return {
-    stateRoot, steers, deliveries, warnings, listeners, child, sessionEvents, memberError, payload, settleSilently,
+    scheduler, rootListeners, workspace, child, stateRoot, steers, deliveries, warnings, listeners, sessionEvents, memberError, payload, settleSilently,
     state: () => readTeam(stateRoot, 'team'),
     mailbox: () => readMailbox(stateRoot, 'team', 'captain'),
     unread: () => readUnreadMailbox(stateRoot, 'team', 'captain'),
@@ -161,6 +181,41 @@ async function fixture(t, { captainStatus = 'idle', fallback, captainOffline = f
 
 const normal = { mode: 'normal', maxRetries: 1, retryableCodes: ['STREAM_CLOSED'], initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 }
 const always = { mode: 'always', initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 }
+
+const translate = (dict = zh) => (key, values = {}) => (dict[key] ?? key).replace(/\{(\w+)\}/g, (_, name) => String(values[name]))
+const renderTeam = (team, dict = zh) => renderToStaticMarkup(React.createElement(TeamSection, {
+  team, workspace: true, onNavigate() {}, t: translate(dict),
+}))
+/** The exact snapshot the panel polls, so failure reminders are asserted end to end. */
+const snapshotOf = async (h, state) => assembleTeamSnapshot(
+  { agents: { get: () => undefined, list: () => [] }, logger: { warn() {} } },
+  h.stateRoot, h.workspace, state ?? await h.state(),
+)
+const panelOf = async (h, state) => renderTeam(await snapshotOf(h, state))
+
+/** The two steps agent_teams_reassign_task performs before a retried attempt can run. */
+const retryAttempt = async (h, next = 'worker') => {
+  await withTeamLock(`team:${h.stateRoot}:team`, async () => {
+    const team = await readTeam(h.stateRoot, 'team')
+    invalidateTaskAttempt(team.tasks[0], next, true)
+    await writeTeam(h.stateRoot, team)
+  })
+  await withTeamLock(`team:${h.stateRoot}:team`, async () => {
+    const team = await readTeam(h.stateRoot, 'team')
+    beginTaskAttempt(team.tasks[0], next)
+    team.tasks[0].status = 'in_progress'
+    await writeTeam(h.stateRoot, team)
+  })
+}
+
+/** The terminal write agent_teams_update_task performs, including optional verdict fields. */
+const settleTaskAs = async (h, status, extra = {}) => {
+  await withTeamLock(`team:${h.stateRoot}:team`, async () => {
+    const team = await readTeam(h.stateRoot, 'team')
+    Object.assign(team.tasks[0], { status, parking: undefined, updatedAt: Date.now(), ...extra })
+    await writeTeam(h.stateRoot, team)
+  })
+}
 
 await test('always retry keeps the owned task open and sends no false failure report', async t => {
   const h = await fixture(t)
@@ -317,4 +372,211 @@ await test('managed unbound agent/request-error does not call next or mutate the
   assert.equal(result, undefined)
   assert.equal(nextCalls, 0)
   assert.equal((await h.state()).tasks[0].status, 'in_progress')
+})
+
+// ---- The failure reminder must not outlive its own attempt -------------------
+// A member turn that dies is reported once, but the reminder is durable state on
+// the captain: a mailbox note plus (for scheduler-owned activations) a
+// notification-ledger entry. Both must retire as soon as the exact failed
+// attempt is retried or reaches a later outcome, and both must survive while
+// that attempt is still the failed one.
+
+await test('a retried attempt retires the member failure reminder end to end', async t => {
+  const h = await fixture(t)
+  h.terminal()
+  await eventually(async () => (await h.unread()).length === 1)
+
+  // Before recovery the reminder is real in every surface the captain reads.
+  const failed = await h.state()
+  assert.equal(failed.tasks[0].status, 'failed')
+  const before = await snapshotOf(h, failed)
+  assert.equal(before.captainInbox.length, 1)
+  assert.match(before.captainInbox[0].content, /was marked failed; reassign it or retry when ready/)
+  const failedHtml = renderTeam(before)
+  assert.ok(failedHtml.includes(zh['task.detail.failed']), 'the member row must report the open failure')
+  assert.match(failedHtml, /data-status="failed"/, 'the member badge must report the open failure')
+  assert.ok(failedHtml.includes(translate(zh)('task.summary.ended', { completed: 0, cancelled: 0, failed: 1 })), 'the summary must count the failure')
+  assert.match(failedHtml, /class="progressSummary" data-state="warning"/)
+
+  // Real retry path: invalidate (reassign), begin the new attempt, then finish it.
+  await retryAttempt(h)
+  await settleTaskAs(h, 'completed', { output: 'delivered' })
+  await h.scheduler.kickTeam(h.workspace, 'team')
+
+  const team = await h.state()
+  assert.equal(team.tasks[0].status, 'completed')
+  assert.equal(team.tasks[0].attempt, 2)
+  assert.deepEqual(await h.unread(), [], 'a recovered attempt must not keep the captain failure note')
+  const after = await snapshotOf(h, team)
+  assert.deepEqual(after.captainInbox, [])
+  const html = renderTeam(after)
+  assert.ok(!html.includes(zh['task.detail.failed']), 'the recovered task must not report a failure')
+  assert.doesNotMatch(html, /data-status="failed"/, 'the delivered member must not keep the failure badge')
+  assert.ok(html.includes(zh['member.status.delivered']), 'the member must read as delivered')
+  assert.ok(html.includes(translate(zh)('task.summary.allDelivered', { count: 1 })))
+  assert.ok(!html.includes(translate(zh)('task.summary.ended', { completed: 0, cancelled: 0, failed: 1 })))
+  assert.match(html, /data-completed="1" data-total="1"/)
+  assert.doesNotMatch(html, /class="progressSummary" data-state="warning"/)
+})
+
+await test('a recovered scheduler settlement failure leaves no reminder on the captain', async t => {
+  const h = await fixture(t)
+  // Arrange a dispatchable attempt so the scheduler owns the activation and its
+  // notification-ledger entry, not the member request-error path.
+  await withTeamLock(`team:${h.stateRoot}:team`, async () => {
+    const team = await readTeam(h.stateRoot, 'team')
+    const task = team.tasks[0]
+    task.status = 'pending'
+    task.attemptId = undefined
+    task.attempt = 0
+    team.members[0].status = 'idle'
+    await writeTeam(h.stateRoot, team)
+  })
+  h.settleSilently()
+  await h.scheduler.kickMember(h.workspace, 'team', 'worker')
+  const lease = (await h.state()).activations?.[0]
+  assert.notEqual(lease, undefined, 'the scheduler must own an activation for this path')
+  h.rootListeners.get('subagent/end')({
+    id: 'worker-session', runId: lease.hostRunId ?? 'run-1', provider: 'fake', local: true,
+    stopReason: 'error', lastAssistantMessage: [],
+  })
+  await eventually(async () => (await h.state()).tasks[0].status === 'failed')
+  assert.equal((await h.state()).notifications?.[0]?.kind, 'failed')
+  await eventually(async () => (await h.unread()).length === 1)
+
+  await retryAttempt(h)
+  await settleTaskAs(h, 'completed', { output: 'delivered' })
+  const steers = h.steers.length
+  await h.scheduler.kickTeam(h.workspace, 'team')
+  await new Promise(resolve => setTimeout(resolve, 60))
+
+  assert.equal(h.steers.length, steers, 'a recovered attempt must not steer the captain about the old failure')
+  assert.deepEqual(await h.unread(), [], 'the settlement failure note must be retired with its attempt')
+  assert.deepEqual((await snapshotOf(h)).captainInbox, [])
+  assert.deepEqual((await h.state()).notifications?.filter(notice => notice.kind !== 'parked' && notice.state === 'pending') ?? [], [])
+})
+
+await test('an unresolved failure keeps its reminder and its failed badges', async t => {
+  const h = await fixture(t)
+  h.terminal()
+  await eventually(async () => (await h.unread()).length === 1)
+  // Scheduler edges must never clear a reminder whose attempt is still failed.
+  await h.scheduler.kickTeam(h.workspace, 'team')
+  await h.scheduler.kickTeam(h.workspace, 'team')
+
+  const team = await h.state()
+  assert.equal(team.tasks[0].status, 'failed')
+  assert.equal((await h.unread()).length, 1)
+  const html = await panelOf(h, team)
+  assert.ok(html.includes(zh['task.detail.failed']))
+  assert.match(html, /data-status="failed"/)
+  assert.ok(html.includes(translate(zh)('task.summary.ended', { completed: 0, cancelled: 0, failed: 1 })))
+})
+
+for (const verdict of ['needs_revision', 'reject']) {
+  await test(`a failed ${verdict} verdict keeps its failure reminder`, async t => {
+    const h = await fixture(t)
+    h.terminal()
+    await eventually(async () => (await h.unread()).length === 1)
+    await settleTaskAs(h, 'failed', {
+      verdict,
+      findings: [{ id: 'f1', severity: 'high', problem: 'incomplete', requiredFix: 'finish it' }],
+    })
+    await h.scheduler.kickTeam(h.workspace, 'team')
+
+    const team = await h.state()
+    assert.equal(team.tasks[0].status, 'failed')
+    assert.equal(team.tasks[0].verdict, verdict)
+    assert.equal((await h.unread()).length, 1, 'a verdict failure is still an unresolved failure')
+    const html = await panelOf(h, team)
+    assert.ok(html.includes(zh['task.detail.failed']))
+    assert.match(html, /class="progressSummary" data-state="warning"/)
+  })
+}
+
+await test('a member report is never discarded as a failure reminder', async t => {
+  const h = await fixture(t)
+  h.terminal()
+  await eventually(async () => (await h.unread()).length === 1)
+  await appendMailbox(h.stateRoot, 'team', 'captain', {
+    ...createMessage('worker', 'captain', 'report: my attempt failed and I stopped'),
+    sourceTaskId: 't1',
+    sourceAttemptId: 'a1',
+    sourceTaskStatus: 'failed',
+    reportKind: 'final',
+  })
+  await retryAttempt(h)
+  await settleTaskAs(h, 'completed', { output: 'delivered' })
+  await h.scheduler.kickTeam(h.workspace, 'team')
+
+  const remaining = await h.unread()
+  assert.equal(remaining.length, 1, 'only the reminder is retired; a member report stays durable')
+  assert.match(remaining[0].content, /report: my attempt failed and I stopped/)
+})
+
+// The reminder is bound to one attempt generation, not to the task's failure bit.
+// A reassigned task keeps failing, but only the newest attempt may report it: the
+// reminder of the attempt that was replaced must be retired the moment the task
+// carries a newer attemptId, or the captain reads a failure that is already moot.
+await test('a re-failed attempt retires only the reminder of the attempt it replaced', async t => {
+  const h = await fixture(t)
+  // Arrange a dispatchable attempt so the scheduler owns the first failure and its
+  // notification-ledger entry; the ledger is where the generation is compared.
+  await withTeamLock(`team:${h.stateRoot}:team`, async () => {
+    const team = await readTeam(h.stateRoot, 'team')
+    const task = team.tasks[0]
+    task.status = 'pending'
+    task.attemptId = undefined
+    task.attempt = 0
+    team.members[0].status = 'idle'
+    await writeTeam(h.stateRoot, team)
+  })
+  h.settleSilently()
+  await h.scheduler.kickMember(h.workspace, 'team', 'worker')
+  const lease = (await h.state()).activations?.[0]
+  assert.notEqual(lease, undefined, 'the scheduler must own an activation for this path')
+  h.rootListeners.get('subagent/end')({
+    id: 'worker-session', runId: lease.hostRunId ?? 'run-1', provider: 'fake', local: true,
+    stopReason: 'error', lastAssistantMessage: [],
+  })
+  await eventually(async () => (await h.state()).tasks[0].status === 'failed')
+  const failed = await h.state()
+  const firstAttemptId = failed.tasks[0].attemptId
+  assert.equal(failed.tasks[0].attempt, 1)
+  const firstNotice = failed.notifications?.find(notice => notice.kind === 'failed')
+  assert.notEqual(firstNotice, undefined, 'the settlement failure must be recorded in the ledger')
+  assert.equal(firstNotice.attemptId, firstAttemptId)
+  await eventually(async () => (await h.unread()).length === 1)
+
+  // Reassign replaces the attempt generation, exactly as agent_teams_reassign_task does.
+  await retryAttempt(h)
+  const retried = await h.state()
+  const secondAttemptId = retried.tasks[0].attemptId
+  assert.equal(retried.tasks[0].attempt, 2)
+  assert.notEqual(secondAttemptId, firstAttemptId, 'the retried attempt must carry a new attemptId')
+
+  // The retried attempt dies too, so the task is failed again - for a newer attempt.
+  h.terminal({ turn: 2 })
+  await eventually(async () => (await h.state()).tasks[0].status === 'failed'
+    && (await h.unread()).some(message => message.sourceAttemptId === secondAttemptId))
+  const steers = h.steers.length
+  await h.scheduler.kickTeam(h.workspace, 'team')
+
+  const team = await h.state()
+  assert.equal(team.tasks[0].attemptId, secondAttemptId)
+  const unread = await h.unread()
+  assert.equal(unread.length, 1, 'only the newest failed attempt may keep a reminder')
+  assert.equal(unread[0].sourceAttemptId, secondAttemptId, 'the surviving reminder belongs to attempt 2')
+  const replaced = (await h.mailbox()).find(message => message.sourceAttemptId === firstAttemptId)
+  assert.notEqual(replaced, undefined, 'the replaced attempt reminder must stay durable, only retired')
+  assert.notEqual(replaced.discardedAt, undefined, 'the replaced attempt reminder must be retired, not left queued')
+  const retiredNotice = (await h.state()).notifications.find(notice => notice.id === firstNotice.id)
+  assert.ok(!['pending', 'appended'].includes(retiredNotice.state),
+    'the replaced attempt notice must never be flushed again')
+  assert.equal(h.steers.length, steers, 'a replaced attempt must not steer the captain')
+
+  // The live failure is still a real failure: retirement must not clear the current one.
+  const html = await panelOf(h, team)
+  assert.ok(html.includes(zh['task.detail.failed']))
+  assert.match(html, /data-status="failed"/)
 })

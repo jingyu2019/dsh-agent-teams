@@ -44,6 +44,79 @@ async function mountCodeRuntime(host, workspace) {
     return { dispose: async () => { for (const fiber of fibers.reverse()) await fiber.dispose() } }
   } catch (error) { for (const fiber of fibers.reverse()) await fiber.dispose(); throw error }
 }
+// Two host generations, keyed on capability rather than a version string:
+// 0.2.1 and earlier let ToolsService own `mode` and per-scope presentation
+// (`tools.presentAs`), and one call is a single ToolExecutionInput.
+// 0.2.2+ makes `mode`/`maxParallelSubCalls` unrepresentable (`z.never()`), moves
+// presentation and batch settlement into a per-scope ToolExecutor selected
+// through `tools.setExecutor()`, and takes a ToolBatchInput of `calls`.
+const executorOwnedTools = typeof ToolRuntime.prototype.setExecutor === 'function'
+
+async function mountToolRuntime(host) {
+  const runtime = host.plugin(ToolRuntime, executorOwnedTools ? {} : { mode: 'native' })
+  await runtime.await()
+  if (!executorOwnedTools) return runtime
+  const native = await import(pathToFileURL(requireBase.resolve('@deepseek-ai/dsh-tool-executor-native')).href)
+  const executor = host.plugin(native)
+  await executor.await()
+  return { dispose: async () => { await executor.dispose(); await runtime.dispose() } }
+}
+
+function toolCallBlock(name, args, callId) {
+  return { type: 'tool-call', id: callId, name, arguments: JSON.stringify(args ?? {}) }
+}
+
+async function runTool(host, { agent, name, args = {}, callId = name + '-test', signal = new AbortController().signal, parent }) {
+  if (!executorOwnedTools) return host.tools.execute({ name, arguments: args, callId, agent, signal, ...(parent === undefined ? {} : { parent }) })
+  const batch = await host.tools.execute({ calls: [toolCallBlock(name, args, callId)], agent, signal })
+  const settled = batch.results.find(entry => entry.callId === callId)
+  assert.ok(settled, 'the executor must settle every call in the batch')
+  return settled.result
+}
+
+// Present one scope through the PTC surface. 0.2.1 and earlier flip the scope's
+// presentation mode with `tools.presentAs('ptc')`; 0.2.2+ selects a per-scope PTC
+// ToolExecutor and proves the switch instead of assuming it.
+let deploymentRestore
+
+async function presentPtc(host, agent, assemble) {
+  const tools = agent.ctx.tools
+  if (typeof tools.presentAs === 'function') return tools.presentAs('ptc')
+  assert.equal(typeof tools.setExecutor, 'function', 'a host must expose either tools.presentAs or a per-scope ToolExecutor')
+  const ptc = await import(pathToFileURL(requireBase.resolve('@deepseek-ai/dsh-tool-executor-ptc')).href)
+  // The executor reads `ctx.tools` and `ctx.systemPrompt` in its constructor, so it
+  // has to be built from a context that declared those injects. Mounting the shipped
+  // plugin does exactly that (dsh-tool-executor-ptc lib/index.js:1764-1776:
+  // `inject = [tools, systemPrompt, ptcRuntime]`), whereas `new PtcExecutor(scope)`
+  // on a scope that declared nothing throws
+  // `cannot get property "systemPrompt" without inject` on 0.2.2.
+  let restore
+  const selector = {
+    name: 'agent-teams-test-ptc-selection',
+    inject: ptc.inject,
+    apply(ctx) { restore = ctx.tools.setExecutor(new ptc.PtcExecutor(ctx, {})) },
+  }
+  // Selecting on the Agent scope, not the deployment root: the root already holds the
+  // native executor mounted above, and `setExecutor` refuses a scope that holds one.
+  // A scoped record outlives its disposer, though — `selectExecutor` prefers the
+  // nearest record even when it holds `executor: void 0` (dsh-tools
+  // lib/index.js:617-628), so leaving it empty would starve every later call in this
+  // file with TOOL_EXECUTOR_UNAVAILABLE.
+  const previous = tools.selectExecutor(agent)
+  // A slot this helper filled during an earlier PTC case has to be freed before it can
+  // be filled again: `setExecutor` refuses a scope that already holds an executor
+  // (dsh-tools lib/index.js:600).
+  deploymentRestore?.()
+  deploymentRestore = undefined
+  const fiber = agent.ctx.plugin(selector)
+  await fiber.await()
+  assert.equal(typeof restore, 'function', 'selecting a PTC executor must return a restore handle')
+  assert.deepEqual((await assemble(agent)).tools.map(tool => tool.name), ['run_code'])
+  // `setExecutor` documents that unloading leaves the selection unavailable until it is
+  // replaced (dsh-tools lib/index.js:596-598), so the deployment executor goes back in.
+  return () => { restore(); deploymentRestore = tools.setExecutor(previous); void fiber.dispose() }
+}
+
 const { createScope } = await import(pathToFileURL(requireTools.resolve('@deepseek-ai/dsh-scope')).href)
 
 function assertCaptainProtocol(system) {
@@ -56,8 +129,7 @@ test('stable tool presentation uses real scoped registry and prompt assembly', a
   const host = new Context()
   const prompt = host.plugin(SystemPrompt, { includeHarnessIdentity: false })
   await prompt.await()
-  const tools = host.plugin(ToolRuntime, { mode: 'native' })
-  await tools.await()
+  const tools = await mountToolRuntime(host)
   const worker = await mountCodeRuntime(host, workspace)
   const agents = []
   const scopes = []
@@ -98,7 +170,7 @@ test('stable tool presentation uses real scoped registry and prompt assembly', a
   await fiber.await()
   const assemble = agent => host.systemPrompt.assemble({ agent, scope: agent })
   const names = async agent => (await assemble(agent)).tools.map(tool => tool.name)
-  const execute = (agent, name, args = {}, signal = new AbortController().signal) => host.tools.execute({ name, arguments: args, callId: name + '-test', agent, signal })
+  const execute = (agent, name, args = {}, signal = new AbortController().signal) => runTool(host, { agent, name, args, callId: name + '-test', signal })
   const captainNames = [...TEAM_TOOL_NAMES].sort()
   const header = async agent => { const assembled = await assemble(agent); return JSON.stringify({ system: renderPrompt(assembled), tools: assembled.tools }) }
   const initialHeader = await header(a)
@@ -142,7 +214,7 @@ test('stable tool presentation uses real scoped registry and prompt assembly', a
         assert.equal(host.tools.get('agent_teams_open', legacy), undefined)
         assertCaptainProtocol(renderPrompt(await assemble(legacy)))
         for (const name of ['agent_teams_create', 'agent_teams_delete']) {
-          const result = await host.tools.execute({ name, arguments: name === 'agent_teams_create' ? { name: 'Legacy', approval: 'required' } : {}, callId: name + '-legacy', agent: legacy, signal: new AbortController().signal })
+          const result = await runTool(host, { agent: legacy, name, args: name === 'agent_teams_create' ? { name: 'Legacy', approval: 'required' } : {}, callId: name + '-legacy' })
           assert.equal(result.isError, false, JSON.stringify(result))
         }
         assertCaptainProtocol(renderPrompt(await assemble(legacy)))
@@ -199,24 +271,27 @@ test('stable tool presentation uses real scoped registry and prompt assembly', a
       assert.deepEqual((await names(child)).sort(), [...MEMBER_TOOL_NAMES].sort())
     })
     await t.test('supported PTC presentation modes keep the operation SDK stable after status', async () => {
-      for (const mode of ['ptc', ...(!requireDsh('@deepseek-ai/dsh/package.json').version.startsWith('0.2.1') ? ['both'] : [])]) {
-        const restore = a.ctx.tools.presentAs(mode)
+      // `both` only exists where ToolsService still owns presentation; a host
+      // with a per-scope ToolExecutor exposes the PTC surface alone.
+      const legacyPresentation = typeof a.ctx.tools.presentAs === 'function'
+      for (const mode of legacyPresentation ? ['ptc', ...(!requireDsh('@deepseek-ai/dsh/package.json').version.startsWith('0.2.1') ? ['both'] : [])] : ['ptc']) {
+        const restore = legacyPresentation ? a.ctx.tools.presentAs(mode) : await presentPtc(host, a, assemble)
         const assembly = await assemble(a)
         const sdk = assembly.sections.find(section => section.name === 'tools:sdk').text
         assert.doesNotMatch(sdk, /agent_teams_open/)
         for (const name of TEAM_TOOL_NAMES) assert.ok(sdk.includes(name), name)
         const before = await header(a)
-        const result = await host.tools.execute({ name: 'run_code', arguments: { code: 'return await tools.agent_teams_status({});', description: 'Read current team state' }, callId: 'sdk-status-' + mode, agent: a, signal: new AbortController().signal })
+        const result = await runTool(host, { agent: a, name: 'run_code', args: { code: 'return await tools.agent_teams_status({});', description: 'Read current team state' }, callId: 'sdk-status-' + mode })
         assert.equal(result.isError, false, JSON.stringify(result))
         assert.equal(await header(a), before)
         restore()
       }
     })
     await t.test('real run_code may discard status output without losing operating rules', async () => {
-      const restore = a.ctx.tools.presentAs('ptc')
+      const restore = await presentPtc(host, a, assemble)
       try {
         const before = await header(a)
-        const result = await host.tools.execute({ name: 'run_code', arguments: { code: 'await tools.agent_teams_status({}); return "STATUS_OUTPUT_DISCARDED";', description: 'Inspect current team without returning the result' }, callId: 'discard-status-output', agent: a, signal: new AbortController().signal })
+        const result = await runTool(host, { agent: a, name: 'run_code', args: { code: 'await tools.agent_teams_status({}); return "STATUS_OUTPUT_DISCARDED";', description: 'Inspect current team without returning the result' }, callId: 'discard-status-output' })
         assert.equal(result.isError, false, JSON.stringify(result))
         assert.match(JSON.stringify(result.content), /STATUS_OUTPUT_DISCARDED/)
         assert.doesNotMatch(JSON.stringify(result.content), /attempt_id|captain protocol/)
@@ -248,7 +323,7 @@ test('stable tool presentation uses real scoped registry and prompt assembly', a
       // This new Agent has no historical tool calls. Persisted work is
       // still directly addressable through the original business tools.
       assert.equal(cold.session.events.length, 0)
-      const result = await host.tools.execute({ name: 'agent_teams_status', arguments: {}, callId: 'cold-direct-status', agent: cold, signal: new AbortController().signal })
+      const result = await runTool(host, { agent: cold, name: 'agent_teams_status', callId: 'cold-direct-status' })
       assert.equal(result.isError, false, JSON.stringify(result))
       assert.match(JSON.stringify(result.content), /Saved/)
       assertCaptainProtocol(renderPrompt(await assemble(cold)))
@@ -262,7 +337,10 @@ test('stable tool presentation uses real scoped registry and prompt assembly', a
     await t.test('create, status and archive preserve the prefix in native and nested dispatch', async () => {
       for (const nested of [false, true]) {
         assert.equal(await header(a), initialHeader)
-        const exec = name => host.tools.execute({ name, arguments: name === 'agent_teams_create' ? { name: 'Saved', description: 'Preserve the requested goal', approval: 'required' } : {}, callId: name + '-test', agent: a, signal: new AbortController().signal, ...(nested ? { parent: {} } : {}) })
+        // `parent` marks a nested dispatch where the host still models one; a
+        // batch-input host expresses nesting through the owning Agent's scope,
+        // so both iterations assert the same prefix contract there.
+        const exec = name => runTool(host, { agent: a, name, args: name === 'agent_teams_create' ? { name: 'Saved', description: 'Preserve the requested goal', approval: 'required' } : {}, callId: name + '-test', ...(nested ? { parent: {} } : {}) })
         for (const name of ['agent_teams_create', 'agent_teams_status', 'agent_teams_delete']) {
           const result = await exec(name)
           assert.equal(result.isError, false, JSON.stringify(result))

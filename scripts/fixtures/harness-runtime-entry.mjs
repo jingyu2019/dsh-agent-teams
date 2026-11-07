@@ -115,8 +115,27 @@ export function apply(ctx) {
         ];
         const optionalObservations = [];
         let callSeq = 0;
-        const execute = (agent, name, args) => ctx.tools.execute({ name: `agent_teams_${name}`, arguments: args,
-            callId: ToolCallId(`optional-member-${++callSeq}`), agent, signal: new AbortController().signal });
+        // DSH 0.2.2 replaced the single-call `tools.execute({ name, arguments,
+        // callId })` contract with a batch executor: `execute({ calls: [{ type:
+        // 'tool-call', id, name, arguments: <raw JSON string> }], signal })`
+        // settling into `{ results: [{ callId, result }] }` (dsh-tools 0.2.2
+        // lib/types/executor.d.ts ToolBatchInput/ToolBatchResult; dispatch in
+        // lib/pipeline.js:27-33). 0.2.1-rc.5 only accepts the single-call shape
+        // (ToolExecutionInput, lib/types/index.d.ts:216). Probe a capability
+        // instead of guessing an arity: the batch-generation ToolsService owns
+        // `setExecutor` (0.2.2 lib/types/index.d.ts:118 and 2 hits in its
+        // lib/index.js; 0 hits in 0.2.1-rc.5).
+        const batchExecutor = typeof ctx.tools.setExecutor === 'function';
+        const executeCall = async (agent, name, args, callId) => {
+            if (!batchExecutor) return ctx.tools.execute({ name, arguments: args, callId, agent, signal: new AbortController().signal });
+            const batch = await ctx.tools.execute({ calls: [{ type: 'tool-call', id: callId, name, arguments: JSON.stringify(args ?? {}) }],
+                agent, signal: new AbortController().signal });
+            const settled = batch.results.find(entry => entry.callId === callId);
+            assert.ok(settled, `0.2.2 batch returned no result for ${name}`);
+            return settled.result;
+        };
+        const execute = (agent, name, args) => executeCall(agent, `agent_teams_${name}`, args,
+            ToolCallId(`optional-member-${++callSeq}`));
         for (const [label, plan] of [
             ['empty-arrays', { members: [], tasks: [] }],
             ['blank-member', { members: [{ name: '', role: '', provider: '', model: '', reasoning_effort: '', tool_policy: '' }], tasks: [] }],
