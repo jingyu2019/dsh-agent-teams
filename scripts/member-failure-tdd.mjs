@@ -145,7 +145,21 @@ async function fixture(t, { captainStatus = 'idle', fallback, captainOffline = f
   const retryDisposers = []
   installRetry({
     logger: ctx.logger,
-    sessionProjections: { register(value) { projection = value }, stateOf() { return retryState } },
+    // 0.2.2-rc.1's `recover` short-circuits when the plugin fiber is gone:
+    // `if (signal.aborted || ctx.fiber.uid === null || lifetime.signal.aborted)`
+    // (dsh-llm-retry lib/index.js:162). A fake context without `fiber` makes
+    // that read throw `Cannot read properties of undefined (reading 'uid')`,
+    // which is a scaffold gap, not a plugin defect. A live fiber is `uid != null`.
+    fiber: { uid: 'agent-teams-test-fiber' },
+    // 0.2.2-rc.1 awaits what `register` returns and reads the retry counter from
+    // that handle (`const projectionReady = ctx.sessionProjections.register({...})`
+    // then `llmRetryProjectionHandle.stateOf(...)`, dsh-llm-retry lib/index.js:97、
+    // :161、:171), while rc.5 read `ctx.sessionProjections.stateOf` directly. Return
+    // a handle so both generations resolve; the extra value is inert on rc.5.
+    sessionProjections: {
+      register(value) { projection = value; return Promise.resolve({ stateOf: () => retryState }) },
+      stateOf() { return retryState },
+    },
     on(_name, listener) { retryHandler = listener; return () => {} },
     effect(setup) { retryDisposers.push(setup()) },
   })

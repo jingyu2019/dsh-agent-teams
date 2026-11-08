@@ -91,6 +91,7 @@ import {
   validateMemberLlmSelections,
 } from '../lib/members.js'
 import { memberSelectionChannel } from '../lib/harness-compat.js'
+import { installModelSelection } from '@deepseek-ai/dsh-agent'
 
 let failures = 0
 function check(label, condition, detail = '') {
@@ -1493,16 +1494,65 @@ function descriptorEvent(label, agentProvider = 'descriptor-provider', agentMode
   }
 }
 
-function fakeChildContext({ label, parentSessionId, cwd, agentProvider, agentModel }) {
+// 0.2.2 moved a member's route off the mutable selection ref and onto the
+// Agent: `installModelSelection(agentCtx)` only appends the model-switch
+// notice and the route lives in the session projection exposed as
+// `agent.model.select()` / `agent.model.current()` (dsh-agent 0.2.2-rc.1
+// lib/index.js:186-215). rc.5 read the ref inside `system-prompt/assemble`.
+//
+// Probe that split by *behaviour* instead of by package version or installer
+// arity (bundlers strip parameter lists, so `.length` is not a version signal —
+// see the harness-compat note). Install once against a throwaway context and
+// look at which event the host subscribes to.
+function hostOwnsRoute() {
+  const probe = new Map()
+  installModelSelection({ on(name, listener) { probe.set(name, listener); return () => probe.delete(name) } })
+  return !probe.has('system-prompt/assemble')
+}
+const hostOwnsMemberRoute = hostOwnsRoute()
+
+function fakeChildContext({ label, parentSessionId, cwd, agentProvider, agentModel, agentReasoningEffort }) {
   const listeners = new Map()
+  // 0.2.2 moved a member's route off the mutable selection ref and onto the
+  // Agent: `installModelSelection(agentCtx)` only appends the model-switch
+  // notice, and the route lives in the session projection exposed as
+  // `agent.model.select()` / `agent.model.current()` (dsh-agent 0.2.2-rc.1
+  // lib/index.js:186-215). A fake agent that exposes only `session` therefore
+  // forces the plugin onto its rc.5 branch on every host: the installer gets
+  // the ref, no `system-prompt/assemble` listener is registered, and
+  // routedConfig died with `assemble is not a function` on a real 0.2.2 tree.
+  // Model the controller so each generation exercises its own contract.
+  // A real activation is created with the member's full route (provider,
+  // model and reasoning effort), so the fake Agent starts on exactly that.
+  let route = {
+    provider: agentProvider,
+    model: agentModel,
+    ...(agentReasoningEffort === undefined ? {} : { reasoningEffort: agentReasoningEffort }),
+  }
   return {
     listeners,
+    route: () => route,
     context: {
       agent: {
         session: {
           header: { parentSession: parentSessionId, cwd, seedLength: 0 },
           events: [descriptorEvent(label, agentProvider, agentModel)],
         },
+        // Only the 0.2.2 host owns the route. Attaching the controller on rc.5
+        // would make the plugin take the 0.2.2 branch, skip the ref, and leave
+        // rc.5's `system-prompt/assemble` reader with an undefined selection.
+        ...(hostOwnsMemberRoute ? {
+          model: {
+            current: () => route,
+            select(selection) {
+              route = {
+                provider: selection.provider,
+                model: selection.model,
+                ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
+              }
+            },
+          },
+        } : {}),
       },
       on(name, listener) {
         listeners.set(name, listener)
@@ -1514,13 +1564,19 @@ function fakeChildContext({ label, parentSessionId, cwd, agentProvider, agentMod
 
 async function routedConfig(child) {
   const assemble = child.listeners.get('system-prompt/assemble')
-  const request = child.listeners.get('agent/request')
-  await assemble({}, {}, async () => ({ variables: {} }))
-  return request({}, async () => ({
-    provider: 'unselected-provider',
-    model: 'unselected-model',
-    reasoningEffort: 'low',
-  }))
+  if (typeof assemble === 'function') {
+    // rc.5: the host reads the mutable ref while assembling a request.
+    const request = child.listeners.get('agent/request')
+    await assemble({}, {}, async () => ({ variables: {} }))
+    return request({}, async () => ({
+      provider: 'unselected-provider',
+      model: 'unselected-model',
+      reasoningEffort: 'low',
+    }))
+  }
+  // 0.2.2: no assemble listener exists to read a ref from; the host owns the
+  // route and the request is built from the Agent's projection.
+  return child.context.agent.model.current()
 }
 
 let setupMemberSelection
@@ -1532,10 +1588,15 @@ const selectionRuntime = installMemberSelectionRuntime({
     },
   },
 }, '.agent-teams')
+// A real activation starts the subagent on the pending route, so the
+// descriptor carries the same provider/model the pending selection holds.
 const freshChild = fakeChildContext({
   label: 'agent-teams:fresh-team:backend',
   parentSessionId: 'captain-session',
   cwd: process.cwd(),
+  agentProvider: overriddenSelection.provider,
+  agentModel: overriddenSelection.model,
+  agentReasoningEffort: overriddenSelection.reasoningEffort,
 })
 let disposeFresh
 await selectionRuntime.withPending(
@@ -1581,6 +1642,7 @@ try {
     cwd: restoreWorkspace,
     agentProvider: 'cold-provider',
     agentModel: 'cold-model',
+    agentReasoningEffort: 'high',
   })
   const disposeCold = setupMemberSelection(coldChild.context)
   const coldRoute = await routedConfig(coldChild)

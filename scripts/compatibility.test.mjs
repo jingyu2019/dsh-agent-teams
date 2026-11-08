@@ -230,7 +230,11 @@ test('doctor follows profile peers and rejects duplicate runtime identities', t 
   write(join(profile, 'node_modules/@nanmicoder/dsh-agent-teams'), {
     name: '@nanmicoder/dsh-agent-teams', version: '0.1.16-rc.1', peerDependencies: { '@deepseek-ai/dsh-agent': '0.1.2-rc.1' },
   })
-  write(join(profile, 'node_modules/@deepseek-ai/dsh-agent'), { name: '@deepseek-ai/dsh-agent', version: '0.1.2-rc.1' })
+  // A different *version* behind the same name is the identity split doctor
+  // reports. The same version at two paths is what pnpm produces for two peer
+  // combinations (0.2.2-rc.1 does this across nearly the whole cohort), so it
+  // must not be reported; the `differ from host` check covers real drift.
+  write(join(profile, 'node_modules/@deepseek-ai/dsh-agent'), { name: '@deepseek-ai/dsh-agent', version: '0.1.2-alpha.2' })
   assert.match(inspectInstallation(root, profile).problems.join(), /Multiple resolved identities/)
 })
 

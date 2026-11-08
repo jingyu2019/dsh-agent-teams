@@ -40,7 +40,7 @@ export function inspectInstallation(hostRoot, profileRoot, support = policy) {
     if (pkg.name === '@deepseek-ai/dsh' || pkg.name?.startsWith('@deepseek-ai/dsh-')) {
       packages.push({ name: pkg.name, version: pkg.version, path: dirname(path) })
     }
-    if (pkg.name === '@deepseek-ai/cordis') sharedRuntimes.push({ name: pkg.name, path: dirname(path) })
+    if (pkg.name === '@deepseek-ai/cordis') sharedRuntimes.push({ name: pkg.name, version: pkg.version, path: dirname(path) })
     for (const name of Object.keys({ ...pkg.dependencies, ...pkg.optionalDependencies, ...pkg.peerDependencies })) {
       const dependency = locatePackage(name, dirname(path))
       if (dependency) walk(dependency)
@@ -82,13 +82,24 @@ export function inspectInstallation(hostRoot, profileRoot, support = policy) {
   else if (!installable) problems.push(`Unsupported host ${host.version}; requires >=${minimum}, recommended target is ${support.recommendedHost}`)
   if (mixed.length) problems.push(`${mixed.length} resolved DSH packages differ from host ${host.version}`)
   if (missing.length) problems.push(`Missing packages: ${[...new Set(missing)].join(', ')}`)
+  // pnpm keeps one physical directory per peer combination, so the same version
+  // legitimately resolves to several paths (0.2.2-rc.1 does this for nearly the
+  // whole cohort once the plugin's peer graph differs from the host's). That is
+  // not an identity split; a version split is, and `mixed` already reports it.
+  // `@deepseek-ai/cordis` is excluded from the identity check on purpose: from
+  // 0.2.2-rc.1 on the official cohort ships `@deepseek-ai/cordis-plugin-group@1.0.5`,
+  // whose own `~4.0.5` requirement pins a second cordis next to the host's 4.1.0.
+  // That pair is upstream composition, not this plugin mixing cohorts, and the
+  // `mixed` check above still reports any dsh-* package drifting off the host.
   const identities = new Map()
-  for (const pkg of [...packages, ...sharedRuntimes]) {
-    const paths = identities.get(pkg.name) ?? new Set()
-    paths.add(pkg.path)
+  for (const pkg of packages) {
+    const paths = identities.get(pkg.name) ?? new Map()
+    paths.set(pkg.path, pkg.version)
     identities.set(pkg.name, paths)
   }
-  const duplicates = [...identities].filter(([, paths]) => paths.size > 1).map(([name]) => name)
+  const duplicates = [...identities]
+    .filter(([, paths]) => new Set(paths.values()).size > 1)
+    .map(([name]) => name)
   if (duplicates.length) problems.push(`Multiple resolved identities: ${duplicates.join(', ')}`)
   return {
     ok: problems.length === 0,

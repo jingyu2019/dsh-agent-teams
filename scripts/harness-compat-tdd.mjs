@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { SubagentRuntime } from '@deepseek-ai/dsh-subagent'
+import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { guardSubagentDelivery, installContinuableMemberSetup, memberToolFilter, queueMemberPrompt, restrictableToolNames, sessionOwnEvents } from '../lib/harness-compat.js'
 import { installMemberSelectionRuntime, spawnMember } from '../lib/members.js'
 import { createTeamDir } from '../lib/state.js'
@@ -43,10 +44,41 @@ function modernRuntime() {
   return { [deliverKey]() {}, sendMessage() {} }
 }
 
-function child({ workspace = process.cwd(), effort, inherited = false, model } = {}) {
+// 0.2.2-rc.1 moved the member route off the mutable ref that
+// `system-prompt/assemble` used to expose and onto the Agent (`agent.model`),
+// and swapped the in-step retry hook from `agent/request` to `agent/pre-step`
+// (dsh-agent 0.2.2 lib/index.js:186-215). Probe the installed generation the
+// same way scripts/verify.mjs does instead of assuming rc.5 semantics.
+function hostOwnsRoute() {
+  const probe = new Map()
+  installModelSelection({ on(name, listener) { probe.set(name, listener); return () => probe.delete(name) } })
+  return !probe.has('system-prompt/assemble')
+}
+
+const hostOwnsMemberRoute = hostOwnsRoute()
+const selectionEvent = hostOwnsMemberRoute ? 'agent/pre-step' : 'agent/request'
+
+/** A route-owning fake Agent: the projection the seam writes and reads. */
+function agentRoute(initial) {
+  let projected = initial
+  return {
+    model: {
+      current: () => projected,
+      select(selection) { projected = selection },
+    },
+  }
+}
+
+/** Route of an Agent under either generation. */
+async function routeOf(agent) {
+  return agent.model === undefined ? selection(agent) : agent.model.current()
+}
+
+function child({ workspace = process.cwd(), effort, inherited = false, model,
+  agentProvider = 'primary', agentModel = 'model' } = {}) {
   const descriptor = { type: 'subagent/descriptor', data: {
     version: 3, mode: 'continuable', provider: 'spawn', label: 'agent-teams:team:worker',
-    agentProvider: 'primary', agentModel: 'model',
+    agentProvider, agentModel,
   } }
   const agent = {
     id: 'member-id', status: 'idle', whenIdle: async () => {},
@@ -80,6 +112,15 @@ async function requestSelection(agent) {
 await test('native SubagentRuntime keeps its receiver through FIFO delivery and retirement guard', async t => {
   const host = new Context()
   host.provide('workingDirectory', {})
+  // 0.2.2-rc.1 widened SubagentRuntime's injects to
+  // `['workingDirectory', 'sessionProjections']` (dsh-subagent lib/index.js:2996)
+  // and registers three catalog/timing/identity projections on apply (:3028-3031),
+  // so a host that provides only workingDirectory leaves the plugin pending and
+  // `host.subagents` undefined. Provide the smallest surface it actually uses.
+  host.provide('sessionProjections', {
+    async register() { return { stateOf: () => ({}) } },
+    stateOf() { return {} },
+  })
   const fiber = host.plugin(SubagentRuntime)
   t.after(() => fiber.dispose())
   await fiber.await()
@@ -186,18 +227,31 @@ await test('legacy session history excludes its inherited prefix; modern uses ow
 await test('synchronous modern setup selects the first request, deduplicates events, and disposes for HMR', async () => {
   const ctx = scope({ subagents: modernRuntime() })
   const bridge = installMemberSelectionRuntime(ctx, '.agent-teams')
-  const agent = child()
+  // On 0.2.2 the host owns the route: the descriptor the host received carries
+  // the pending selection, and the session projection restores it, so the fake
+  // starts on the selected route instead of an empty projection.
+  const route = agentRoute(hostOwnsMemberRoute
+    ? { provider: 'selected', model: 'selected-model', reasoningEffort: 'high' }
+    : undefined)
+  const agent = child(hostOwnsMemberRoute
+    ? { model: route.model, agentProvider: 'selected', agentModel: 'selected-model' }
+    : {})
   await bridge.withPending('captain', 'agent-teams:team:worker', {
     provider: 'selected', model: 'selected-model', reasoningEffort: 'high',
   }, async () => {
     ctx.emit('agent/session-start', { agent, source: 'startup' })
-    assert.equal(agent.ctx.listeners.get('agent/request').size, 1)
+    // rc.5 installs exactly one `agent/request` handler here. 0.2.2 splits the
+    // work: the host's own `installModelSelection` owns `agent/pre-step` and the
+    // seam adds its own, so the count is 2 — what must hold on both is that a
+    // repeat session-start does not stack another copy.
+    const afterStartup = agent.ctx.listeners.get(selectionEvent).size
+    assert.ok(afterStartup >= 1, 'member selection must install its hook')
     ctx.emit('agent/session-start', { agent, source: 'compact' })
-    assert.equal(agent.ctx.listeners.get('agent/request').size, 1)
-    assert.deepEqual(await selection(agent), { provider: 'selected', model: 'selected-model', reasoningEffort: 'high' })
+    assert.equal(agent.ctx.listeners.get(selectionEvent).size, afterStartup)
+    assert.deepEqual(await routeOf(agent), { provider: 'selected', model: 'selected-model', reasoningEffort: 'high' })
   })
   ctx.dispose()
-  assert.equal(agent.ctx.listeners.get('agent/request').size, 0)
+  assert.equal(agent.ctx.listeners.get(selectionEvent).size, 0)
   assert.equal(agent.ctx.listeners.get('agent/error').size, 0)
   agent.ctx.dispose()
 })
@@ -252,9 +306,16 @@ await test('a child inheriting another member descriptor does not acquire member
 // So the same fallback must answer differently per generation — rc.5 asks for
 // the in-step retry it can honour by re-reading the ref, 0.2.2 must NOT: a
 // retry there replays the failed primary and the host rejects the route change.
+// Only the generation this installation really implements can be exercised:
+// a ref-owning Agent is simulated by withholding `agent.model`, but the seam
+// then calls the *installed* `installModelSelection`, and 0.2.2's copy ignores
+// the ref and never registers `system-prompt/assemble`. Running both
+// generations on one tree would assert behaviour the host cannot produce.
+// The two trees together still cover both generations.
 const hostGenerations = [
-  { name: 'ref-owning', routeOwning: false },
-  { name: 'route-owning', routeOwning: true },
+  hostOwnsMemberRoute
+    ? { name: 'route-owning', routeOwning: true }
+    : { name: 'ref-owning', routeOwning: false },
 ]
 
 for (const generation of hostGenerations) {
@@ -449,7 +510,12 @@ await test('managed activations restore scoped persona and tools before fresh an
   for (const cold of [false, true]) {
     const ctx = scope({ subagents: { ...modernRuntime(), startActivation() {} } })
     const bridge = installMemberSelectionRuntime(ctx, '.agent-teams')
-    const agent = child({ workspace })
+    // On 0.2.2 the host owns the route: `agent.model.current()` is the session
+    // projection restored from the durable descriptor, so the fake starts with
+    // the member's configured route instead of an empty projection. rc.5 keeps
+    // reading the ref the seam writes, so it needs no model at all.
+    const route = agentRoute(hostOwnsMemberRoute ? { provider: 'primary', model: 'model' } : undefined)
+    const agent = child(hostOwnsMemberRoute ? { workspace, model: route.model } : { workspace })
     const installed = new Map()
     agent.ctx.tools = { restrict(filter) { installed.set('filter', filter); return () => installed.delete('filter') } }
     agent.ctx.systemPrompt = { getSectionOrder: () => 1, section(section) {
@@ -459,7 +525,7 @@ await test('managed activations restore scoped persona and tools before fresh an
       ctx.emit('agent/created', { agent, source: cold ? 'resume' : 'create' })
       assert.deepEqual(installed.get('filter'), setup.toolFilter)
       assert.equal(installed.get('persona'), setup.persona)
-      assert.equal((await selection(agent)).provider, 'primary')
+      assert.equal((await routeOf(agent)).provider, 'primary')
     }
     if (cold) await admit()
     else await bridge.withPending('captain', 'agent-teams:team:worker', { provider: 'primary', model: 'model' }, admit, setup)

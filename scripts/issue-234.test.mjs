@@ -65,8 +65,31 @@ async function mount() {
   const host = new Context()
   const prompt = host.plugin(SystemPrompt, { includeHarnessIdentity: false })
   await prompt.await()
-  const runtime = host.plugin(ToolRuntime, { mode: 'native' })
+  // 0.2.2 turned `ToolsService.Config.mode` into `z.never()` — 「已移除，请改挂
+  // native 或 PTC executor」(dsh-tools lib/index.js:407-408) — so passing
+  // `{ mode: 'native' }` fails validation before the runtime mounts. Probe the
+  // executor-owning surface (same discriminator as capabilities.test.mjs)
+  // instead of naming the option.
+  const executorOwnedTools = typeof ToolRuntime.prototype.setExecutor === 'function'
+  const runtime = host.plugin(ToolRuntime, executorOwnedTools ? {} : { mode: 'native' })
   await runtime.await()
+  if (executorOwnedTools) {
+    // Without `mode: 'native'` the composition has no executor at all and every
+    // `tools.execute` fails with TOOL_EXECUTOR_UNAVAILABLE (dsh-tools
+    // lib/index.js:632-642). 0.2.2 expects the composition to select one, so
+    // mount the shipped native executor. It is resolved through
+    // `@deepseek-ai/dsh` because pnpm keeps it out of the top-level tree.
+    const { createRequire } = await import('node:module')
+    const { pathToFileURL } = await import('node:url')
+    const requireDsh = createRequire(import.meta.resolve('@deepseek-ai/dsh/package.json'))
+    const native = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-tool-executor-native')).href)
+    // Mount the shipped plugin instead of hand-rolling the executor: its `apply`
+    // builds `new NativeToolExecutor(ctx)` with the default `() => 10` limit, while
+    // passing a config object as the second argument makes the batch pipeline throw
+    // `maxParallel is not a function` (dsh-tool-executor-native lib/index.js:5-8).
+    const executor = host.plugin(native)
+    await executor.await()
+  }
   const definitions = []
   const agents = []
   const noop = () => {}
@@ -113,21 +136,26 @@ async function mount() {
     agents.push(agent)
     return agent
   }
-  const execute = (agent, args) => host.tools.execute({
-    name: 'agent_teams_create',
-    arguments: args,
-    callId: `issue-234-${++seq}`,
-    agent,
-    signal: new AbortController().signal,
-  })
+  // 0.2.2 replaced the single-call execute shape with a batch
+  // (`{ calls: [{ type: 'tool-call', id, name, arguments }] }` settled into
+  // `results[].result`), so the same dispatch has two shapes; the harness helper
+  // in capabilities.test.mjs uses the same fork. A batch is also the only way to
+  // see per-call settlement, hence the explicit lookup instead of `results[0]`.
+  const runTool = async ({ agent, name, args, callId }) => {
+    const signal = new AbortController().signal
+    if (!executorOwnedTools) return host.tools.execute({ name, arguments: args, callId, agent, signal })
+    const batch = await host.tools.execute({
+      calls: [{ type: 'tool-call', id: callId, name, arguments: JSON.stringify(args ?? {}) }],
+      agent,
+      signal,
+    })
+    const settled = batch.results.find(entry => entry.callId === callId)
+    if (settled === undefined) throw new Error(`the executor settled no result for ${callId}`)
+    return settled.result
+  }
+  const execute = (agent, args) => runTool({ agent, name: 'agent_teams_create', args, callId: `issue-234-${++seq}` })
   /** Dispatch any registered tool through the same real runtime path. */
-  const executeTool = (agent, name, args) => host.tools.execute({
-    name,
-    arguments: args,
-    callId: `issue-234-${name}-${++seq}`,
-    agent,
-    signal: new AbortController().signal,
-  })
+  const executeTool = (agent, name, args) => runTool({ agent, name, args, callId: `issue-234-${name}-${++seq}` })
   const stateRoot = join(workspace, '.agent-teams')
   const loadTeam = teamId => readTeam(stateRoot, teamId)
   const saveTeam = team => writeTeam(stateRoot, team)
