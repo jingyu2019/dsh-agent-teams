@@ -661,5 +661,11 @@ export function installMemberSelection(agentCtx: Context, agent: Agent, initial:
   // hiding that the host owns the route now; the branch states which contract
   // we are calling instead of relying on that tolerance.
   const dispose = channel.redirectsInStepRetry ? install(agentCtx, ref) : install(agentCtx)
+  // On rc.5 the ref *is* the route record, so seeding it above already tells the
+  // host which route this activation starts on. On 0.2.2 the Agent's projection
+  // is the record, and seeding only the ref leaves the two generations
+  // disagreeing about who publishes the starting route: `ref.current` becomes
+  // inert metadata while the projection keeps whatever it had. Publish it too.
+  if (!channel.redirectsInStepRetry) channel.apply(initial)
   return { ref, channel, dispose }
 }

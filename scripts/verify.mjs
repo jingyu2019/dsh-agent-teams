@@ -1524,11 +1524,12 @@ function fakeChildContext({ label, parentSessionId, cwd, agentProvider, agentMod
   // Model the controller so each generation exercises its own contract.
   // A real activation is created with the member's full route (provider,
   // model and reasoning effort), so the fake Agent starts on exactly that.
-  let route = {
-    provider: agentProvider,
-    model: agentModel,
-    ...(agentReasoningEffort === undefined ? {} : { reasoningEffort: agentReasoningEffort }),
-  }
+  // Seed the projection with a route the member must NOT end up on. Seeding it
+  // with the expected value made both end-to-end checks below pass even after
+  // `select` was deleted from the channel (mutation test, t23 M1): `routedConfig`
+  // returned the seed. A stale seed forces the seam to publish the resolved
+  // route through `agent.model.select` before the request is assembled.
+  let route = { provider: 'stale-provider', model: 'stale-model', reasoningEffort: 'stale' }
   return {
     listeners,
     route: () => route,

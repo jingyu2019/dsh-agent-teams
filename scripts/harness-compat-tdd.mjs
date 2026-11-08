@@ -244,8 +244,13 @@ await test('synchronous modern setup selects the first request, deduplicates eve
     // work: the host's own `installModelSelection` owns `agent/pre-step` and the
     // seam adds its own, so the count is 2 — what must hold on both is that a
     // repeat session-start does not stack another copy.
+    // Exact per generation, not `>= 1`: rc.5 registers one `agent/request`
+    // handler, 0.2.2 registers the host's own `agent/pre-step` model-switch
+    // notice plus the seam's, so 2. A loose bound hid a second copy being
+    // installed twice (t23 L1).
+    const expectedHooks = hostOwnsMemberRoute ? 2 : 1
     const afterStartup = agent.ctx.listeners.get(selectionEvent).size
-    assert.ok(afterStartup >= 1, 'member selection must install its hook')
+    assert.equal(afterStartup, expectedHooks)
     ctx.emit('agent/session-start', { agent, source: 'compact' })
     assert.equal(agent.ctx.listeners.get(selectionEvent).size, afterStartup)
     assert.deepEqual(await routeOf(agent), { provider: 'selected', model: 'selected-model', reasoningEffort: 'high' })
@@ -346,6 +351,10 @@ for (const generation of hostGenerations) {
         } } : {}),
       })
       ctx.emit('agent/session-start', { agent, source: 'resume' })
+      // The activation publishes its own starting route through `select`
+      // (installMemberSelection), so drop that record: everything asserted
+      // below is about the *fallback* switch, not about installation.
+      selected.length = 0
       if (!generation.routeOwning) {
         // rc.5 has no Agent-owned route: the restored route is observable only
         // through the assemble/request hooks the installer owns.
