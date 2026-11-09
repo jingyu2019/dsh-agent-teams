@@ -101,26 +101,11 @@ class ProtocolAdapter extends LlmAdapter {
     }
 }
 
-/** Present one agent's tools in PTC mode on either host generation.
- * 0.2.1-rc.5 declares a per-scope presentation mode: tools.presentAs('ptc')
- * (dsh-tools lib/index.js:2911-2929) collapses that scope to `run_code`.
- * 0.2.2 removed the API — `presentAs` has zero occurrences in the 0.2.2 tree —
- * and moved model-facing schemas plus batch execution into the per-scope
- * ToolExecutor. dsh-base keeps '@deepseek-ai/dsh-tool-executor-ptc' disabled
- * (dsh-base/cordis.patch.yml:504-506); that plugin selects itself with
- * tools.setExecutor(new PtcExecutor(ctx, config)) in its mounting scope
- * (dsh-tool-executor-ptc lib/index.js:1774-1776, inject = tools/systemPrompt/ptcRuntime).
- * So the scoped opt-in is the same executor, selected directly on agent.ctx.
- */
-async function presentPtc(agent) {
-    const tools = agent.ctx.tools;
-    if (typeof tools.presentAs === 'function') return tools.presentAs('ptc');
-    assert.equal(typeof tools.setExecutor, 'function', 'Host exposes neither tools.presentAs nor tools.setExecutor: there is no PTC presentation path to test');
-    const { PtcExecutor } = await import('@deepseek-ai/dsh-tool-executor-ptc');
-    const restore = tools.setExecutor(new PtcExecutor(agent.ctx, {}));
-    const exposed = (await agent.ctx.systemPrompt.assemble({ agent, scope: agent })).tools.map(tool => tool.name);
-    assert.deepEqual(exposed, ['run_code'], 'A PTC selection must expose exactly the run_code transport, not the native schemas');
-    return restore;
+async function enablePtc(agent) {
+    if (typeof agent.ctx.tools.presentAs === 'function') return agent.ctx.tools.presentAs('ptc');
+    const ptc = await import('@deepseek-ai/dsh-tool-executor-ptc');
+    const fork = agent.ctx.plugin({ name: ptc.name, inject: ptc.inject, Config: ptc.Config, apply: ptc.apply });
+    return () => fork.dispose();
 }
 
 export const name = 'runtime-lab-protocol-compatibility';
@@ -141,7 +126,7 @@ export function apply(ctx) {
             ctx.effect(() => () => handle.dispose());
             let agent = handle.agent; await agent.whenIdle();
             const scenario = { label, ptc, phase: 'plan', step: 0 }; cases.set(agent.id, scenario);
-            let restore = ptc ? await presentPtc(agent) : agent.ctx.tools.restrict({ allow: businessNames });
+            let restore = ptc ? await enablePtc(agent) : agent.ctx.tools.restrict({ allow: businessNames });
             const beforeUsage = await usage(agent); assertProtocol(beforeUsage);
             if (!ptc) {
                 const exposed = (await ctx.systemPrompt.assemble({ agent, scope: agent })).tools.map(tool => tool.name);
@@ -167,7 +152,7 @@ export function apply(ctx) {
                 record({ event: 'protocol-pruned', label, result: pruned });
             } else {
                 const id = agent.id;
-                await ctx.sessions.flush(agent.session); restore(); await handle.dispose();
+                await ctx.sessions.flush(agent.session); await restore(); await handle.dispose();
                 handle = await ctx.agents.resume({ resumeSessionId: id, agentOptions: { provider: 'runtime-lab', model: 'fixture-model' } });
                 agent = handle.agent; await agent.whenIdle();
                 restore = agent.ctx.tools.restrict({ allow: businessNames });
@@ -194,7 +179,7 @@ export function apply(ctx) {
             assert.equal(new Set(captured.map(request => request.systemSha256)).size, 1, 'System prefix changed across planning, restore or compaction');
             assert.equal(new Set(captured.map(request => request.toolsSha256)).size, 1, 'Tools prefix changed across planning, restore or compaction');
             record({ event: 'protocol-case-passed', label, requests: captured.length, compactedHistory: true, persistedSubject: finalState.tasks[0].subject, archived: true, ...finalState.profile ? { profile: finalState.profile.name } : {} });
-            restore(); await ctx.sessions.flush(agent.session); await handle.dispose();
+            await restore(); await ctx.sessions.flush(agent.session); await handle.dispose();
         }
         process.stdout.write('PROTOCOL_COMPATIBILITY_OK\n');
         ctx.get('appExit')(0);

@@ -12,11 +12,14 @@ import { createTeamDir } from '../lib/state.js'
 
 const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
 
-test('#330 the state route deduplicates physical roots and scopes by sessionId', () => {
+test('#330 the state route deduplicates physical roots and scopes by session', () => {
   assert.match(source, /realpathSync\(stateRoot\)/u)
   assert.match(source, /seenRoots\.has\(identity\)/u)
-  assert.match(source, /sessionId= scopes collection/u)
-  assert.match(source, /snapshots\.filter\(team => team\.captainSessionId === sessionScope\)/u)
+  // The merged route reads `?session=` and hands it to the collector, so the
+  // filter runs while reading state instead of after serializing every team.
+  assert.match(source, /\?session= scopes collection/u)
+  assert.match(source, /url\.searchParams\.get\('session'\)/u)
+  assert.match(source, /collectTeamsActivity\(ctx, roots, captainSessionId, url\.searchParams\.get\('summary'\) === '1'\)/u)
 })
 
 test('#330 two registrations of one directory resolve to the same identity', async t => {
@@ -45,6 +48,7 @@ test('#330 the client scopes a single-session monitor and leaves mixed sessions 
     schedule: () => 1, cancel: () => {}, publishSnapshots: () => {}, settleTargets: () => {},
   })
   await poll.firstTick
-  assert.match(calls[0], /[?&]sessionId=s/u)
+  assert.match(calls[0], /[?&]session=s/u)
+  assert.match(calls[0], /[?&]summary=1/u)
   poll.stop()
 })

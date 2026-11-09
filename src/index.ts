@@ -53,7 +53,7 @@ import { CORE_CAPTAIN_TOOL_NAMES, TEAM_TOOL_NAMES } from './tool-names.ts'
 
 export { MEMBER_TOOL_NAMES, TEAM_TOOL_NAMES } from './tool-names.ts'
 
-import { activityEtag, authenticatedWebRoutes, readJsonRequest, requestMatchesEtag, RequestBodyError, type BrowserRequestGate, type WebRouteHost } from './web-routes.ts'
+import { authenticatedWebRoutes, readJsonRequest, RequestBodyError, writeJsonWithEtag, type BrowserRequestGate, type WebRouteHost } from './web-routes.ts'
 
 /** Web-server service key candidates, newest first. */
 const WEB_SERVER_KEYS = ['webServer', 'httpServer'] as const
@@ -362,27 +362,14 @@ export function apply(ctx: Context, config: Config): void {
           stateRoot,
         })
       }
-      // ?sessionId= scopes collection to the session that is asking, so an
+      // ?session= scopes collection to the session that is asking, so an
       // ordinary poll no longer serializes every workspace's history (#330).
-      const sessionScope = url.searchParams.get('sessionId')?.trim() ?? ''
+      const captainSessionId = url.searchParams.get('session')?.trim() || undefined
       // ?archived=1 serves teams moved to archive/ (post-delete review).
       const snapshots = url.searchParams.get('archived') === '1'
-        ? await collectArchivedTeamsActivity(ctx, roots)
-        : await collectTeamsActivity(ctx, roots)
-      const scoped = sessionScope === '' ? snapshots : snapshots.filter(team => team.captainSessionId === sessionScope)
-      const body = JSON.stringify({ teams: scoped })
-      const etag = activityEtag(body)
-      if (requestMatchesEtag(req.headers['if-none-match'], etag)) {
-        res.writeHead(304, { etag, 'cache-control': 'no-store' })
-        res.end()
-        return
-      }
-      res.writeHead(200, {
-        'content-type': 'application/json; charset=utf-8',
-        'cache-control': 'no-store',
-        etag,
-      })
-      res.end(body)
+        ? await collectArchivedTeamsActivity(ctx, roots, captainSessionId)
+        : await collectTeamsActivity(ctx, roots, captainSessionId, url.searchParams.get('summary') === '1')
+      writeJsonWithEtag(req, res, JSON.stringify({ teams: snapshots }))
     },
   }), 'agent-teams: activity route')
 

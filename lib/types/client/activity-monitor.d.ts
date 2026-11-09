@@ -8,7 +8,6 @@ export interface ActivityMember {
     readonly model?: string;
     readonly reasoningEffort?: string;
     readonly executionPrompt?: string;
-    readonly avatarUrl?: string;
     readonly status?: 'idle' | 'working' | 'removed';
     readonly activity: 'working' | 'idle' | 'unknown';
     readonly progress: number;
@@ -16,6 +15,8 @@ export interface ActivityMember {
     readonly total: number;
     readonly currentTask: string;
     readonly unread: number;
+    /** Authenticated local avatar URL, when the member has an override. */
+    readonly avatarUrl?: string;
 }
 /** One task row of a host snapshot. */
 export interface ActivityTask {
@@ -40,18 +41,7 @@ export interface ActivityTask {
     /** Durable last-write stamp; drives the finished-member ordering (issue #192). */
     readonly updatedAt?: number;
 }
-/** One captain-inbox preview row. */
-export interface ActivityMessage {
-    readonly from: string;
-    readonly content: string;
-    readonly attachments?: readonly {
-        readonly name: string;
-        readonly mime: string;
-        readonly bytes: number;
-        readonly url: string;
-    }[];
-}
-/** One durable activity entry exposed by the host snapshot. */
+/** One audit-timeline row rendered beside the board. */
 export interface ActivityTimelineEntry {
     readonly id: string;
     readonly at: number;
@@ -63,6 +53,17 @@ export interface ActivityTimelineEntry {
     readonly verdict?: string;
     readonly from?: string;
     readonly to?: string;
+}
+/** One captain-inbox preview row. */
+export interface ActivityMessage {
+    readonly from: string;
+    readonly content: string;
+    /** Files the sender attached; the host serves them through a signed URL. */
+    readonly attachments?: readonly {
+        readonly name: string;
+        readonly mime: string;
+        readonly url: string;
+    }[];
 }
 /** One team snapshot (mirrors the host TeamActivitySnapshot). */
 export interface ActivityTeam {
@@ -78,6 +79,7 @@ export interface ActivityTeam {
     readonly tasks: readonly ActivityTask[];
     readonly messageCount: number;
     readonly captainInbox: readonly ActivityMessage[];
+    /** Bounded audit trail of the team's last N state transitions. */
     readonly timeline?: readonly ActivityTimelineEntry[];
 }
 /** A successfully-created conversation card that currently needs updates. */
@@ -108,8 +110,10 @@ export declare function settleActivityMonitorTargets(keys: ReadonlySet<string>):
 export declare function subscribeActivitySnapshots(listener: () => void): () => void;
 /** Read the stable shared live/archive snapshot. */
 export declare function getActivitySnapshotsSnapshot(): ActivitySnapshots;
-/** Publish one or both successful state-route responses. */
-export declare function updateActivitySnapshots(update: Partial<ActivitySnapshots>): void;
+/** Read the rows owned by one route and optional scope for ETag comparison. */
+export declare function getPublishedActivityRows(field: keyof ActivitySnapshots, scope?: string): readonly ActivityTeam[] | undefined;
+/** Publish full state-route responses or replace the rows for just one captain. */
+export declare function updateActivitySnapshots(update: Partial<ActivitySnapshots>, scope?: string): void;
 /** Poll cadence for the live host snapshot route. */
 export declare const ACTIVITY_POLL_MS = 1000;
 /**
@@ -119,7 +123,11 @@ export declare const ACTIVITY_POLL_MS = 1000;
  * every ordinary session into a one-second filesystem scan.
  */
 export declare const ACTIVITY_PROBE_MS = 5000;
-/** Slow cadence while the document is hidden; live data resumes on visibility. */
+/**
+ * Interval while the page is hidden. A background tab still needs to notice new
+ * activity, but at a tenth of the visible cadence so hiding the panel does not
+ * keep a one-second filesystem poll running.
+ */
 export declare const ACTIVITY_HIDDEN_MS = 10000;
 /** Host route serving live and archived team snapshots. */
 export declare const ACTIVITY_STATE_URL = "/plugins/dsh-agent-teams/state";
@@ -149,12 +157,14 @@ export interface ActivityPollingRuntime {
     }) => Promise<ActivityFetchResponse>;
     readonly schedule?: (callback: () => void, intervalMs: number) => unknown;
     readonly cancel?: (timer: unknown) => void;
+    readonly publishSnapshots?: (update: Partial<ActivitySnapshots>, scope?: string) => void;
+    /** Read back the shared store when supplying a custom publisher for it. */
+    readonly getPublishedRows?: typeof getPublishedActivityRows;
+    readonly settleTargets?: (keys: ReadonlySet<string>) => void;
     /** Whether the page is currently visible; defaults to `document.hidden`. */
     readonly documentHidden?: () => boolean;
     /** Subscribe to visibility changes; returns an unsubscribe function. */
     readonly subscribeVisibility?: (listener: () => void) => () => void;
-    readonly publishSnapshots?: (update: Partial<ActivitySnapshots>) => void;
-    readonly settleTargets?: (keys: ReadonlySet<string>) => void;
 }
 /** Handle returned by one current-session polling loop. */
 export interface ActivityPollingController {

@@ -89,6 +89,13 @@ function child({ workspace = process.cwd(), effort, inherited = false, model,
   // Passing a projection here selects the generation under test; without it
   // the seam falls back to the pre-0.2.2 ref path.
   if (model !== undefined) agent.model = model
+  // 0.1.29's fallback switch does not return an in-step retry: it cancels the
+  // failed step and wakes the member with a continuation. Record both so a
+  // test can prove the switch happened once, on the member that owns it.
+  agent.cancelled = []
+  agent.followups = []
+  agent.cancel = (reason, options) => { agent.cancelled.push({ reason, options }) }
+  agent.followup = content => { agent.followups.push(content) }
   agent.ctx = scope() // Harness 0.1.5 no longer exposes Context.agent.
   return agent
 }
@@ -381,6 +388,11 @@ for (const generation of hostGenerations) {
           assert.deepEqual(selected, [{ provider: 'backup', model: 'backup-model' }],
             'the fallback route is recorded on the Agent for the next step')
           assert.deepEqual(projected, { provider: 'backup', model: 'backup-model' })
+          assert.equal(agent.cancelled.length, 1, 'the failed step is cancelled once')
+          assert.deepEqual(agent.cancelled[0].reason, { kind: 'hook', reason: 'agent-teams/model-fallback' })
+          assert.equal(agent.cancelled[0].options?.keepInbox, true, 'the inbox survives the cancel')
+          assert.equal(agent.followups.length, 1, 'and the member is woken with a continuation')
+          assert.match(JSON.stringify(agent.followups[0]), /switched to the configured fallback model/u)
         } else {
           assert.deepEqual(outcome, { kind: 'retry' })
           assert.equal(delegated, 0)

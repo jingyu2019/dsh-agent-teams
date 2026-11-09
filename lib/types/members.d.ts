@@ -12,7 +12,7 @@
  * @module dsh-agent-teams/members
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { Agent } from '@deepseek-ai/dsh-agent';
+import { type Agent } from '@deepseek-ai/dsh-agent';
 import type { Session } from '@deepseek-ai/dsh-session';
 import { type MemberStartResult, type SessionFormatBearer, type MemberSelectionChannel } from './harness-compat.ts';
 import type { MemberToolFilter } from './tool-policies.ts';
@@ -187,6 +187,7 @@ interface FailedMemberAttempt {
     readonly captainSessionId: string;
     readonly memberId: string;
     readonly task?: Pick<TeamTask, 'id' | 'attempt' | 'attemptId'>;
+    readonly openAttemptOnly?: boolean;
 }
 /** How a final member turn failure relates to the durable record. */
 export type MemberFailureDisposition = 

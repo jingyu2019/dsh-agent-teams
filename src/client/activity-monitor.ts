@@ -9,7 +9,6 @@ export interface ActivityMember {
   readonly model?: string
   readonly reasoningEffort?: string
   readonly executionPrompt?: string
-  readonly avatarUrl?: string
   readonly status?: 'idle' | 'working' | 'removed'
   readonly activity: 'working' | 'idle' | 'unknown'
   readonly progress: number
@@ -17,6 +16,8 @@ export interface ActivityMember {
   readonly total: number
   readonly currentTask: string
   readonly unread: number
+  /** Authenticated local avatar URL, when the member has an override. */
+  readonly avatarUrl?: string
 }
 
 /** One task row of a host snapshot. */
@@ -43,19 +44,7 @@ export interface ActivityTask {
   readonly updatedAt?: number
 }
 
-/** One captain-inbox preview row. */
-export interface ActivityMessage {
-  readonly from: string
-  readonly content: string
-  readonly attachments?: readonly {
-    readonly name: string
-    readonly mime: string
-    readonly bytes: number
-    readonly url: string
-  }[]
-}
-
-/** One durable activity entry exposed by the host snapshot. */
+/** One audit-timeline row rendered beside the board. */
 export interface ActivityTimelineEntry {
   readonly id: string
   readonly at: number
@@ -67,6 +56,18 @@ export interface ActivityTimelineEntry {
   readonly verdict?: string
   readonly from?: string
   readonly to?: string
+}
+
+/** One captain-inbox preview row. */
+export interface ActivityMessage {
+  readonly from: string
+  readonly content: string
+  /** Files the sender attached; the host serves them through a signed URL. */
+  readonly attachments?: readonly {
+    readonly name: string
+    readonly mime: string
+    readonly url: string
+  }[]
 }
 
 /** One team snapshot (mirrors the host TeamActivitySnapshot). */
@@ -83,6 +84,7 @@ export interface ActivityTeam {
   readonly tasks: readonly ActivityTask[]
   readonly messageCount: number
   readonly captainInbox: readonly ActivityMessage[]
+  /** Bounded audit trail of the team's last N state transitions. */
   readonly timeline?: readonly ActivityTimelineEntry[]
 }
 
@@ -109,6 +111,13 @@ const targetListeners = new Set<() => void>()
 const snapshotListeners = new Set<() => void>()
 let targetSnapshot: readonly ActivityMonitorTarget[] = []
 let activitySnapshots: ActivitySnapshots = { teams: [], archivedTeams: [] }
+// Keep recent successful visits during reconnects without retaining every
+// conversation's activity and full archive for the life of the tab.
+const MAX_RETAINED_SCOPES = 8
+const scopedSnapshots = {
+  teams: new Map<string, readonly ActivityTeam[]>(),
+  archivedTeams: new Map<string, readonly ActivityTeam[]>(),
+}
 
 function targetKey(sessionId: string, teamId: string): string {
   return `${sessionId}\u0000${teamId}`
@@ -191,11 +200,41 @@ export function getActivitySnapshotsSnapshot(): ActivitySnapshots {
   return activitySnapshots
 }
 
-/** Publish one or both successful state-route responses. */
-export function updateActivitySnapshots(update: Partial<ActivitySnapshots>): void {
+/** Read the rows owned by one route and optional scope for ETag comparison. */
+export function getPublishedActivityRows(
+  field: keyof ActivitySnapshots,
+  scope?: string,
+): readonly ActivityTeam[] | undefined {
+  return scope === undefined ? activitySnapshots[field] : scopedSnapshots[field].get(scope)
+}
+
+function replaceActivityRows(
+  field: keyof ActivitySnapshots,
+  rows: readonly ActivityTeam[] | undefined,
+  scope: string | undefined,
+): readonly ActivityTeam[] {
+  const current = activitySnapshots[field]
+  if (rows === undefined) return current
+  const recent = scopedSnapshots[field]
+  if (scope === undefined) {
+    recent.clear()
+    return rows
+  }
+  const previous = recent.get(scope)
+  recent.delete(scope)
+  recent.set(scope, rows)
+  const oldest = recent.size > MAX_RETAINED_SCOPES ? recent.keys().next().value : undefined
+  if (oldest !== undefined) recent.delete(oldest)
+  if (previous === rows) return current
+  const otherRows = current.filter(team => team.captainSessionId !== scope && team.captainSessionId !== oldest)
+  return otherRows.length === current.length && rows.length === 0 ? current : [...otherRows, ...rows]
+}
+
+/** Publish full state-route responses or replace the rows for just one captain. */
+export function updateActivitySnapshots(update: Partial<ActivitySnapshots>, scope?: string): void {
   const next = {
-    teams: update.teams ?? activitySnapshots.teams,
-    archivedTeams: update.archivedTeams ?? activitySnapshots.archivedTeams,
+    teams: replaceActivityRows('teams', update.teams, scope),
+    archivedTeams: replaceActivityRows('archivedTeams', update.archivedTeams, scope),
   }
   if (next.teams === activitySnapshots.teams && next.archivedTeams === activitySnapshots.archivedTeams) return
   activitySnapshots = next
@@ -211,7 +250,12 @@ export const ACTIVITY_POLL_MS = 1000
  * every ordinary session into a one-second filesystem scan.
  */
 export const ACTIVITY_PROBE_MS = 5000
-/** Slow cadence while the document is hidden; live data resumes on visibility. */
+
+/**
+ * Interval while the page is hidden. A background tab still needs to notice new
+ * activity, but at a tenth of the visible cadence so hiding the panel does not
+ * keep a one-second filesystem poll running.
+ */
 export const ACTIVITY_HIDDEN_MS = 10_000
 /** Host route serving live and archived team snapshots. */
 export const ACTIVITY_STATE_URL = '/plugins/dsh-agent-teams/state'
@@ -222,6 +266,23 @@ interface ActivityFetchResponse {
   readonly status?: number
   readonly headers?: { get(name: string): string | null }
   json(): Promise<unknown>
+}
+
+interface PublishedActivitySnapshot {
+  readonly teams: readonly ActivityTeam[]
+  readonly tag: string | undefined
+}
+
+async function readActivityTeams(response: ActivityFetchResponse, scope: string | undefined): Promise<readonly ActivityTeam[]> {
+  if (!response.ok) throw new Error('Activity unavailable')
+  const body = (await response.json()) as { teams?: unknown } | null
+  if (!Array.isArray(body?.teams) || body.teams.some(team =>
+    typeof team?.teamId !== 'string' || typeof team?.captainSessionId !== 'string')) {
+    throw new Error('Invalid activity response')
+  }
+  const teams = body.teams as readonly ActivityTeam[]
+  // Older hosts can ignore the query and send every team's row.
+  return scope === undefined ? teams : teams.filter(team => team.captainSessionId === scope)
 }
 
 /** Injectable browser primitives used by the poll controller and its tests. */
@@ -244,12 +305,14 @@ export interface ActivityPollingRuntime {
   ) => Promise<ActivityFetchResponse>
   readonly schedule?: (callback: () => void, intervalMs: number) => unknown
   readonly cancel?: (timer: unknown) => void
+  readonly publishSnapshots?: (update: Partial<ActivitySnapshots>, scope?: string) => void
+  /** Read back the shared store when supplying a custom publisher for it. */
+  readonly getPublishedRows?: typeof getPublishedActivityRows
+  readonly settleTargets?: (keys: ReadonlySet<string>) => void
   /** Whether the page is currently visible; defaults to `document.hidden`. */
   readonly documentHidden?: () => boolean
   /** Subscribe to visibility changes; returns an unsubscribe function. */
   readonly subscribeVisibility?: (listener: () => void) => () => void
-  readonly publishSnapshots?: (update: Partial<ActivitySnapshots>) => void
-  readonly settleTargets?: (keys: ReadonlySet<string>) => void
 }
 
 /** Handle returned by one current-session polling loop. */
@@ -285,42 +348,41 @@ export function startActivityPolling(
     return { firstTick: Promise.resolve(), stop: () => {} }
   }
   const fetchState = runtime.fetchState ?? ((url, init) => fetch(url, init))
+  const documentHidden = runtime.documentHidden
+    ?? (() => typeof document !== 'undefined' && document.hidden === true)
   const schedule = runtime.schedule ?? ((callback, intervalMs) => setInterval(callback, intervalMs))
   const cancel = runtime.cancel ?? ((timer) => { clearInterval(timer as ReturnType<typeof setInterval>) })
   const publishSnapshots = runtime.publishSnapshots ?? updateActivitySnapshots
+  const getPublishedRows = runtime.getPublishedRows
+    ?? (runtime.publishSnapshots === undefined ? getPublishedActivityRows : undefined)
   const settleTargets = runtime.settleTargets ?? settleActivityMonitorTargets
+  const owners = new Set(monitorTargets.map(target => target.sessionId))
+  if (discoverySessionId) owners.add(discoverySessionId)
+  const scope = owners.size === 1 ? owners.values().next().value : undefined
+  const sessionQuery = scope ? new URLSearchParams({ session: scope }).toString() : ''
+  const liveUrl = sessionQuery === '' ? ACTIVITY_STATE_URL : `${ACTIVITY_STATE_URL}?${sessionQuery}&summary=1`
+  const archiveUrl = `${ACTIVITY_STATE_URL}?archived=1${sessionQuery === '' ? '' : `&${sessionQuery}`}`
+  const conditionalHeaders = (tag: string | undefined) =>
+    tag === undefined ? {} : { headers: { 'if-none-match': tag } }
+  // A manual retry can publish to the same store. A 304 only validates the
+  // body this controller applied, so send its tag while that body is shown.
+  const stillPublished = (field: keyof ActivitySnapshots, snapshot: PublishedActivitySnapshot | undefined) =>
+    getPublishedRows === undefined || getPublishedRows(field, scope) === snapshot?.teams
   let cancelled = false
   let inFlight = false
   // Explicit card targets are demanded work: start at the live cadence. A
   // discovery session starts probing low-frequency and upgrades on detection.
   let hot = monitorTargets.length > 0
-  let discoveryComplete = false
   let discoveredLiveKeys = new Set<string>()
+  // Archive work stays pending after a failed request, even when the next live
+  // request is a 304 and does not publish or recompute the live snapshot.
+  let archiveRefreshPending = Boolean(discoverySessionId)
+  let missingTargets: ReadonlySet<string> = new Set()
+  let publishedLive: PublishedActivitySnapshot | undefined
+  let publishedArchive: PublishedActivitySnapshot | undefined
   let controller: AbortController | undefined
   let timer: unknown
-  let liveEtag: string | undefined
-  let archivedEtag: string | undefined
-  let lastLiveTeams: readonly ActivityTeam[] = []
-  let lastArchivedTeams: readonly ActivityTeam[] | undefined
-  let hasLiveSnapshot = false
-  // Scope the request only when every observed card belongs to one session.
-  // Mixed-session monitors still need the unscoped union, because their cards
-  // can be restored from different conversations.
-  const targetSessions = new Set(monitorTargets.map(target => target.sessionId))
-  if (discoverySessionId !== undefined && discoverySessionId !== '') targetSessions.add(discoverySessionId)
-  const scopedSessionId = targetSessions.size === 1 ? [...targetSessions][0] : undefined
-  const stateUrl = (): string => scopedSessionId === undefined
-    ? ACTIVITY_STATE_URL
-    : `${ACTIVITY_STATE_URL}?sessionId=${encodeURIComponent(scopedSessionId)}`
-  const documentHidden = runtime.documentHidden ?? (() => typeof document !== 'undefined' && document.hidden)
-  const subscribeVisibility = runtime.subscribeVisibility ?? ((listener) => {
-    if (typeof document === 'undefined') return () => {}
-    document.addEventListener('visibilitychange', listener)
-    return () => document.removeEventListener('visibilitychange', listener)
-  })
-  const intervalMs = (): number => (documentHidden()
-    ? ACTIVITY_HIDDEN_MS
-    : hot ? ACTIVITY_POLL_MS : ACTIVITY_PROBE_MS)
+  const intervalMs = (): number => (documentHidden() ? ACTIVITY_HIDDEN_MS : hot ? ACTIVITY_POLL_MS : ACTIVITY_PROBE_MS)
   const reschedule = (): void => {
     cancel(timer)
     timer = schedule(() => { void tick() }, intervalMs())
@@ -330,75 +392,66 @@ export function startActivityPolling(
     inFlight = true
     controller = new AbortController()
     try {
-      const liveResponse = await fetchState(stateUrl(), {
+      const liveTag = stillPublished('teams', publishedLive) ? publishedLive?.tag : undefined
+      const liveResponse = await fetchState(liveUrl, {
         cache: 'no-store',
         signal: controller.signal,
-        ...liveEtag === undefined ? {} : { headers: { 'if-none-match': liveEtag } },
+        ...conditionalHeaders(liveTag),
       })
-      const liveNotModified = liveResponse.status === 304
-      if (!liveResponse.ok && !liveNotModified) throw new Error('Activity unavailable')
       if (cancelled) return
-      let liveTeams = lastLiveTeams
-      if (!liveNotModified) {
-        const body = (await liveResponse.json()) as { teams?: unknown }
-        if (!Array.isArray(body.teams)) throw new Error('Invalid activity response')
-        liveTeams = body.teams as readonly ActivityTeam[]
-        lastLiveTeams = liveTeams
-        hasLiveSnapshot = true
-        liveEtag = liveResponse.headers?.get('etag') ?? undefined
-      } else if (!hasLiveSnapshot) {
-        throw new Error('304 activity response without a prior snapshot')
+      if (liveResponse.status !== 304 || liveTag === undefined) {
+        const liveTeams = await readActivityTeams(liveResponse, scope)
+        if (cancelled) return
+        publishSnapshots({ teams: liveTeams }, scope)
+        if (cancelled) return
+        publishedLive = { teams: liveTeams, tag: liveResponse.headers?.get('etag') ?? undefined }
+
+        const previousDiscoveredKeys = discoveredLiveKeys
+        discoveredLiveKeys = new Set(discoverySessionId
+          ? liveTeams.filter(team => team.captainSessionId === discoverySessionId).map(team => team.teamId)
+          : [])
+        archiveRefreshPending ||= [...previousDiscoveredKeys].some(teamId => !discoveredLiveKeys.has(teamId))
+        missingTargets = new Set(monitorTargets.filter(target => !liveTeams.some(team =>
+          team.captainSessionId === target.sessionId && team.teamId === target.teamId,
+        )).map(target => target.key))
+        // A discovery session found its first team: keep the live cadence.
+        if (!hot && discoveredLiveKeys.size > 0) {
+          hot = true
+          reschedule()
+        }
+      } else if (!stillPublished('teams', publishedLive)) {
+        // A concurrent write landed while the conditional request was in flight.
+        return
       }
       runtime.onStatus?.('ready')
-      if (!liveNotModified) publishSnapshots({ teams: liveTeams })
-      const previousDiscoveredKeys = discoveredLiveKeys
-      discoveredLiveKeys = new Set(discoverySessionId === undefined || discoverySessionId === ''
-        ? []
-        : liveTeams
-          .filter((team) => team.captainSessionId === discoverySessionId)
-          .map((team) => team.teamId))
-      // A discovery session found its first team: upgrade from the low-frequency
-      // probe to the live cadence for the rest of the controller lifetime.
-      if (!hot && discoveredLiveKeys.size > 0) {
-        hot = true
-        reschedule()
-      }
-      const discoveredTeamArchived = [...previousDiscoveredKeys]
-        .some((teamId) => !discoveredLiveKeys.has(teamId))
-      const missing = monitorTargets.filter((target) => !liveTeams.some((team) =>
-        team.captainSessionId === target.sessionId && team.teamId === target.teamId,
-      ))
-      const needsDiscoveryArchive = discoverySessionId !== undefined
-        && discoverySessionId !== ''
-        && !discoveryComplete
-      if (missing.length === 0 && !needsDiscoveryArchive && !discoveredTeamArchived) return
+      const archiveReplaced = publishedArchive !== undefined && !stillPublished('archivedTeams', publishedArchive)
+      if (cancelled || (missingTargets.size === 0 && !archiveRefreshPending && !archiveReplaced)) return
 
       // Archives are immutable per team generation. A successful fallback
       // retires every missing explicit target, including legacy cards whose
       // host archive no longer exists; a discovery session that already
       // upgraded keeps polling, and a still-probing one keeps probing, so a
       // team created later in the same session stays discoverable.
-      const archivedResponse = await fetchState(`${stateUrl()}${scopedSessionId === undefined ? '?' : '&'}archived=1`, {
+      const archiveTag = archiveReplaced ? undefined : publishedArchive?.tag
+      const archivedResponse = await fetchState(archiveUrl, {
         cache: 'no-store',
         signal: controller.signal,
-        ...archivedEtag === undefined ? {} : { headers: { 'if-none-match': archivedEtag } },
+        ...conditionalHeaders(archiveTag),
       })
-      const archivedNotModified = archivedResponse.status === 304
-      if (!archivedResponse.ok && !archivedNotModified) throw new Error('Archive unavailable')
       if (cancelled) return
-      if (!archivedNotModified) {
-        const archivedBody = (await archivedResponse.json()) as { teams?: unknown }
-        if (!Array.isArray(archivedBody.teams)) throw new Error('Invalid archive response')
-        lastArchivedTeams = archivedBody.teams as readonly ActivityTeam[]
-        archivedEtag = archivedResponse.headers?.get('etag') ?? undefined
-      } else if (lastArchivedTeams === undefined) {
-        throw new Error('304 archive response without a prior snapshot')
+      if (archivedResponse.status !== 304 || archiveTag === undefined) {
+        const archivedTeams = await readActivityTeams(archivedResponse, scope)
+        if (cancelled) return
+        publishSnapshots({ archivedTeams }, scope)
+        if (cancelled) return
+        publishedArchive = { teams: archivedTeams, tag: archivedResponse.headers?.get('etag') ?? undefined }
+      } else if (!stillPublished('archivedTeams', publishedArchive)) {
+        return
       }
-      if (!archivedNotModified && lastArchivedTeams !== undefined) {
-        publishSnapshots({ archivedTeams: lastArchivedTeams })
-      }
-      discoveryComplete = true
-      settleTargets(new Set(missing.map((target) => target.key)))
+      archiveRefreshPending = false
+      const settled = missingTargets
+      missingTargets = new Set()
+      settleTargets(settled)
     } catch (error: unknown) {
       if ((error as { name?: unknown })?.name === 'AbortError') return
       if (!cancelled) runtime.onStatus?.('error')
@@ -407,7 +460,8 @@ export function startActivityPolling(
       inFlight = false
     }
   }
-  const unsubscribeVisibility = subscribeVisibility(reschedule)
+  // Returning to a visible tab must not wait out the hidden cadence.
+  const unsubscribeVisibility = runtime.subscribeVisibility?.(() => reschedule())
   const firstTick = tick()
   if (timer === undefined) timer = schedule(() => { void tick() }, intervalMs())
   return {
@@ -415,9 +469,9 @@ export function startActivityPolling(
     stop: () => {
       if (cancelled) return
       cancelled = true
+      unsubscribeVisibility?.()
       controller?.abort()
       cancel(timer)
-      unsubscribeVisibility()
     },
   }
 }

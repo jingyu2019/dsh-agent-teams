@@ -34,7 +34,7 @@ test('activity ETags are stable and If-None-Match supports lists', () => {
   assert.equal(requestMatchesEtag(undefined, etag), false)
 })
 
-test('activity polling revalidates live and archive snapshots without duplicate publication', async () => {
+test('activity polling revalidates the live snapshot and skips an unchanged archive', async () => {
   const calls = []
   const published = []
   let scheduled
@@ -61,9 +61,13 @@ test('activity polling revalidates live and archive snapshots without duplicate 
   assert.deepEqual(published, [{ teams: [] }, { archivedTeams: [] }])
 
   scheduled()
-  await until(() => calls.length === 4)
+  await until(() => calls.length === 3)
   assert.equal(calls[2].init.headers?.['if-none-match'], '"live-1"')
-  assert.equal(calls[3].init.headers?.['if-none-match'], '"archive-1"')
+  // Archives are immutable per team generation. Once every explicit target is
+  // found and no replacement was published, an unchanged live snapshot must
+  // not drag the archive along on every tick.
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(calls.length, 3, 'an unchanged archive must not be refetched on every tick')
   assert.equal(published.length, 2, '304 responses must not republish unchanged snapshots')
   poll.stop()
 })
@@ -83,8 +87,8 @@ test('scoped polling names the session once and keeps the archive query valid', 
     settleTargets: () => {},
   })
   await poll.firstTick
-  assert.equal(calls[0], '/plugins/dsh-agent-teams/state?sessionId=session')
-  assert.equal(calls[1], '/plugins/dsh-agent-teams/state?sessionId=session&archived=1')
+  assert.equal(calls[0], '/plugins/dsh-agent-teams/state?session=session&summary=1')
+  assert.equal(calls[1], '/plugins/dsh-agent-teams/state?archived=1&session=session')
   poll.stop()
 })
 
