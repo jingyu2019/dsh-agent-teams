@@ -20,7 +20,7 @@ import { createUserMessage, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { agentTeamsSource, boundAgentRun, recordBoundAgentDiagnostic, observedSessionFormatVersion, outputLimitTurn, type MemberStartResult, type SessionFormatBearer, guardSubagentCreation, startMember, usesManagedActivations, guardSubagentDelivery, installContinuableMemberSetup, installMemberSelection, memberToolFilter, queueMemberPrompt, restrictableToolNames, startMemberWithLenientFilter, steerMemberPrompt, sessionOwnEvents, type MemberSelectionChannel } from './harness-compat.ts'
+import { agentTeamsSource, boundAgentRun, recordBoundAgentDiagnostic, observedSessionFormatVersion, outputLimitTurn, type MemberStartResult, type SessionFormatBearer, guardSubagentCreation, startMember, usesManagedActivations, guardSubagentDelivery, installContinuableMemberSetup, installMemberSelection, memberToolFilter, queueMemberPrompt, restrictableToolNames, startMemberWithLenientFilter, steerMemberPrompt, sessionOwnEvents, listedProviderNames, type MemberSelectionChannel } from './harness-compat.ts'
 import { markMailboxDelivered, appendMailbox, CAPTAIN_KEY, clearTaskProbe, createMessage, readRetiredMemberIds, readTeamSync, readTeam, releaseMailboxDelivery, withTeamLock, writeTeam } from './state.ts'
 import { mailboxPrompt } from './mailbox.ts'
 import { nearestLiveLead } from './lineage.ts'
@@ -1268,7 +1268,7 @@ export async function spawnMember(
   const provider = ctx.subagents.getProvider(config.provider)
   if (provider === undefined) {
     throw new Error(
-      `agent-teams: no subagent provider "${config.provider}" is registered (available: ${ctx.subagents.list().join(', ') || 'none'}) — `
+      `agent-teams: no subagent provider "${config.provider}" is registered (available: ${listedProviderNames(ctx.subagents).join(', ') || 'none'}) — `
       + 'check that the subagent provider row (e.g. subagent-spawn) is mounted in the composition',
     )
   }

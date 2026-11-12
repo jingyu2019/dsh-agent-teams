@@ -60,6 +60,28 @@ export declare function usesManagedActivations(runtime: Context['subagents']): b
 export declare function startMember(runtime: Context['subagents'], spec: MemberStartSpec): Promise<MemberStartResult>;
 /** Wrap every available creation API, restoring only this plugin's own methods. */
 export declare function guardSubagentCreation(ctx: Context, check: (parent: Agent) => void): void;
+/**
+ * 0.2.2-rc.2 retired the process-stable deliverPrompt symbol from the
+ * SubagentRuntime service and routed host-authored turns through
+ * manager.deliverPrompt(childId, content, { source, signal, delivery })
+ * (dsh-subagent 0.2.2-rc.2 lib/index.js:1768, :3197). That replacement drops
+ * the parent Agent, which the retired-member guard needs to locate the team's
+ * durable state directory, and routing through runtime.prompt() would mint a
+ * kind:"user" source and lose AgentTeams attribution. Re-expose the audited
+ * Deliver(parent, ...) shape as a stateless, idempotent adapter on the runtime:
+ * requireManager() is resolved at call time so the live manager survives HMR
+ * swaps, and keeping parent lets guardSubagentDelivery wrap and restore this
+ * exact method while queue, steer and setup consumers stay unchanged.
+ */
+export declare function installModernDelivery(runtime: Context['subagents']): void;
+/**
+ * Registered subagent provider names for an actionable diagnostic. 0.2.2-rc.2
+ * removed the public SubagentRuntime.list() accessor (its lib/types/index.d.ts
+ * no longer declares it) but the service still owns the provider registry as a
+ * live insertion-ordered Map, so read its keys as the same names. Fall back to
+ * an empty list on any host whose shape is unknown rather than throwing here.
+ */
+export declare function listedProviderNames(runtime: Context['subagents']): readonly string[];
 declare module '@deepseek-ai/dsh-llm' {
     interface MessageSourceMap {
         'agent-teams': {
@@ -199,7 +221,7 @@ export declare function memberToolFilter(maxDepth: number | undefined, knownTool
  * @returns the started member.
  */
 export declare function startMemberWithLenientFilter<T>(start: (filter: MemberToolFilter) => Promise<T>, filter: MemberToolFilter, relaxableDeny?: readonly string[]): Promise<T>;
-/** Targeted recursive cancellation renamed with the unified activation manager. */
+/** Targeted teardown of the selected member activations across host generations. */
 export declare function drainMemberChildren(runtime: Context['subagents'], parent: Agent, ids: readonly SessionId[]): Promise<void>;
 /**
  * The audited 0.2.1-rc.5 / 0.2.2-rc.1 model-selection boundary.

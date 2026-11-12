@@ -36,7 +36,7 @@
 
 ## 版本更新
 
-[最新发布](https://github.com/NanmiCoder/dsh-agent-teams/releases/latest) 发布 AgentTeams `0.1.31`，并把推荐宿主前移到 Harness `0.2.2-rc.1`（npm `latest`）。最低安装版本仍声明 `>=0.1.2-alpha.2` 与 `*` peer，后续宿主仍可安装；rc.2、rc.3、rc.4、rc.5 及更早的已测宿主继续留在矩阵中。0.2.2 支持有明确的证据边界：插件可加载、23 个工具可注册、源码可对已发布的 `0.2.2-rc.1` 包做类型检查，且完整的 `pnpm verify` 链与 lifecycle / fallback / cold-restore / failure 运行时场景均已在一棵干净的 `0.2.2-rc.1` 安装树上跑过；归档的端到端套件同时仍跑在 `0.2.1-rc.5` 上。目前仍没有真实的 `0.2.2` CLI 会话、Windows 运行与 Web GUI 评估。详见[测试矩阵](./compatibility.json)与 [0.1.31 发布说明](./docs/upgrade/0.2.2-release-notes.md)。
+[最新发布](https://github.com/NanmiCoder/dsh-agent-teams/releases/latest) 发布 AgentTeams `0.1.32`，并把推荐宿主前移到 Harness `0.2.2-rc.2`（npm `next`）。最低安装版本仍声明 `>=0.1.2-alpha.2` 与 `*` peer，后续宿主仍可安装；`0.2.2-rc.1`、更早的 `0.2.1` RC 与历史宿主继续留在矩阵中。0.2.2 支持有明确的证据边界：插件在已发布的 `0.2.2-rc.2` 包上可加载并注册全部 23 个工具、源码对其类型完成类型检查与构建、完整 42 段 `pnpm verify` 链通过；并且在一棵真实 `0.2.2-rc.2` CLI 安装树上跑过 lifecycle / fallback / failure / captain-idle-wakeup / progressive-entry / protocol-compatibility / plugin-manager-install 运行时场景及两个冷恢复变体，成员 turn 真实执行（6 / 7 / 1 / 5 次成员请求）。两条归档场景（`web-approval`、`stability`）仍断言与本 fork 的快照形状、工具准入行为不一致的 fixture 契约，作为已知分歧记录而非静默跳过。Windows 运行、Web GUI 运行时评估、CI 矩阵执行与人工 0.2.2 CLI 会话仍未覆盖。详见[测试矩阵](./compatibility.json)、[0.1.32 发布说明](./docs/upgrade/0.2.2-release-notes.md)与 [rc.2 适配报告](./docs/upgrade/0.2.2-rc2-adaptation.md)。
 
 ## 为什么需要 AgentTeams？
 
@@ -54,20 +54,20 @@
 
 ## 安装与版本选择
 
-**推荐组合：DeepSeek `0.2.2-rc.1` + AgentTeams `0.1.31`。宿主仍为 RC 版本。**
+**推荐组合：DeepSeek `0.2.2-rc.2` + AgentTeams `0.1.32`。宿主仍为 RC 版本。**
 
 | 使用场景 | DeepSeek Harness | AgentTeams 插件 |
 | --- | --- | --- |
-| **推荐版本** | **`0.2.2-rc.1`** | **`0.1.31`** |
-| 预览宿主（有归档端到端套件） | `0.2.1-rc.5`, `0.2.1-rc.4`, `0.2.1-rc.3`, `0.2.1-rc.2` | `0.1.31` |
-| 上一推荐 RC | `0.2.1-rc.1`, `0.2.0-rc.2`, `0.1.7-rc.2` | `0.1.31` |
-| 保留旧 RC | `0.1.5-rc.1`, `0.1.5-rc.2`, `0.1.5-rc.3` | `0.1.31` |
-| 保留旧 RC | `0.1.2-rc.1` | `0.1.31` |
-| 开发者测试 Alpha | `0.1.2-alpha.5` | `0.1.31` |
-| 保留旧 Alpha | `0.1.2-alpha.2` | `0.1.31` |
-| 更新的宿主 | `0.2.2-rc.2` 及之后的 `0.2.x` | `0.1.31` |
+| **推荐版本** | **`0.2.2-rc.2`** | **`0.1.32`** |
+| 预览宿主 | `0.2.2-rc.1`, `0.2.1-rc.5`, `0.2.1-rc.4`, `0.2.1-rc.3`, `0.2.1-rc.2` | `0.1.32` |
+| 上一推荐 RC | `0.2.1-rc.1`, `0.2.0-rc.2`, `0.1.7-rc.2` | `0.1.32` |
+| 保留旧 RC | `0.1.5-rc.1`, `0.1.5-rc.2`, `0.1.5-rc.3` | `0.1.32` |
+| 保留旧 RC | `0.1.2-rc.1` | `0.1.32` |
+| 开发者测试 Alpha | `0.1.2-alpha.5` | `0.1.32` |
+| 保留旧 Alpha | `0.1.2-alpha.2` | `0.1.32` |
+| 更新的宿主 | `0.2.2-rc.3` 及之后的 `0.2.x` | `0.1.32` |
 
-除最后一行外均为 CI 验证矩阵。rc.5 那一行承载归档的端到端证据：本 fork 归档的是 darwin/arm64 上的完整运行时套件结果，Ubuntu/Windows 矩阵任务已配置但本 fork 尚无归档。`0.2.2-rc.1` 那一行是刻意收窄的声明——对已发布 0.2.2-rc.1 包的产物审计、构建产物对该包的加载/注册冒烟、以及插件源码对该包类型的类型检查；尚未有真实的 0.2.2 CLI 会话、未在 Windows 上执行、也未做 Web GUI 运行时评估，具体缺口见[发布说明](./docs/upgrade/0.2.2-release-notes.md)。[v0.1.29 产物](./release-notes/v0.1.29.md)已逐字节安装到桌面 profile，解锁重启后的 GUI 成功渲染了六成员实时活动面板；`0.1.31` 候选同样已安装在该 profile 中——打包产物的 `lib/` 与构建输出逐字节一致，宿主在下次重启后加载。
+除最后一行外均为 CI 验证矩阵。rc.5 那一行承载归档的端到端证据：本 fork 归档的是 darwin/arm64 上的完整运行时套件结果，Ubuntu/Windows 矩阵任务已配置但本 fork 尚无归档。`0.2.2-rc.2` 那一行由一棵已发布 rc.2 cohort（327 个包）的真实 CLI 安装树支撑：插件安装、激活链成员 turn 与两个冷恢复变体均通过；逐场景结果与两条已知 fixture 分歧见 [rc.2 适配报告](./docs/upgrade/0.2.2-rc2-adaptation.md) §3。Windows 运行与 Web GUI 运行时评估仍未覆盖，具体缺口见[发布说明](./docs/upgrade/0.2.2-release-notes.md)。[v0.1.29 产物](./release-notes/v0.1.29.md)已逐字节安装到桌面 profile，解锁重启后的 GUI 成功渲染了六成员实时活动面板；`0.1.32` 产物已为该 profile 打包——其 `lib/` 与构建输出逐字节一致，宿主在下次重启后加载。
 
 ### 桌面端
 
@@ -83,11 +83,11 @@ https://github.com/NanmiCoder/dsh-agent-teams
 github:NanmiCoder/dsh-agent-teams
 ```
 
-从 npm 安装时输入带版本号的包名 `@nanmicoder/dsh-agent-teams@0.1.31`。桌面端的 pnpm 11 默认不自动安装发布未满 24 小时的版本：新版发布后的 24 小时内，不带版本号或使用 `@latest` 都会装到上一个版本，即使预览显示的是新版；如果上一个版本与你的宿主不兼容，安装会失败。写明版本号可以立即安装该版本；更换镜像源不会消除这项规则。GitHub 方式需要能够访问 GitHub，默认分支代码可能先于 npm 发布。
+从 npm 安装时输入带版本号的包名 `@nanmicoder/dsh-agent-teams@0.1.32`。桌面端的 pnpm 11 默认不自动安装发布未满 24 小时的版本：新版发布后的 24 小时内，不带版本号或使用 `@latest` 都会装到上一个版本，即使预览显示的是新版；如果上一个版本与你的宿主不兼容，安装会失败。写明版本号可以立即安装该版本；更换镜像源不会消除这项规则。GitHub 方式需要能够访问 GitHub，默认分支代码可能先于 npm 发布。
 
 安装完成后点击「立即启用」；宿主提示需要重启时，重启桌面应用。无需关闭兼容检查或全局发布等待期规则。
 
-桌面端自带 Harness 内核与包管理器，升级全局 CLI 不会升级桌面端；普通独立 CLI 不能管理桌面 profile，桌面端自带的 CLI carrier 在此版本可以管理。自建宿主时推荐目标是 `0.2.2-rc.1`；当前桌面端内置的 `0.2.1-rc.5` 内核仍完整受支持，并保留归档的运行时证据；更早的已测宿主继续受支持。详见 [rc.5 兼容验收记录](./docs/harness-0.2.1-rc.5/README.md)。
+桌面端自带 Harness 内核与包管理器，升级全局 CLI 不会升级桌面端；普通独立 CLI 不能管理桌面 profile，桌面端自带的 CLI carrier 在此版本可以管理。自建宿主时推荐目标是 `0.2.2-rc.2`；当前桌面端内置的 `0.2.1-rc.5` 内核仍完整受支持，并保留归档的运行时证据；更早的已测宿主继续受支持。详见 [rc.5 兼容验收记录](./docs/harness-0.2.1-rc.5/README.md)。
 
 ### CLI / Web：1. 安装 DeepSeek Harness
 
@@ -100,10 +100,10 @@ dsh --version
 
 ### CLI / Web：2. 安装 AgentTeams 插件
 
-从 npm 安装或升级插件时写明版本号（当前正式版为 `0.1.31`）：
+从 npm 安装或升级插件时写明版本号（当前正式版为 `0.1.32`）：
 
 ```sh
-dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.1.31
+dsh plugin --profile web add --save-exact @nanmicoder/dsh-agent-teams@0.1.32
 ```
 
 CLI 管理的安装可将 `web` 换成实际使用的 CLI profile。**安装后，停止并重新启动该 profile 的 Harness 进程，再刷新浏览器。** 安装插件不会自动升级宿主；Harness 的 `latest` 与插件的 `latest` 是两个独立渠道。

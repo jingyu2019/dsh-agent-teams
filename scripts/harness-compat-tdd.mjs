@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { SubagentRuntime } from '@deepseek-ai/dsh-subagent'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import { guardSubagentDelivery, installContinuableMemberSetup, memberToolFilter, queueMemberPrompt, restrictableToolNames, sessionOwnEvents } from '../lib/harness-compat.js'
+import { guardSubagentDelivery, installContinuableMemberSetup, installModernDelivery, memberToolFilter, queueMemberPrompt, restrictableToolNames, sessionOwnEvents } from '../lib/harness-compat.js'
 import { installMemberSelectionRuntime, spawnMember } from '../lib/members.js'
 import { createTeamDir } from '../lib/state.js'
 import { CAPTAIN_TOOL_NAMES } from '../lib/tool-names.js'
@@ -133,6 +133,11 @@ await test('native SubagentRuntime keeps its receiver through FIFO delivery and 
   await fiber.await()
   const runtime = host.subagents
   assert.ok(runtime)
+  // 0.2.2-rc.2 moved FIFO delivery onto manager.deliverPrompt and removed the
+  // process-stable deliverPrompt symbol. Install the same compatibility
+  // adapter the retired-member guard installs in production, so methodKey
+  // observes the exact delivery method the guard will wrap and restore.
+  installModernDelivery(runtime)
   if (typeof runtime.registerContinuableSetup === 'function') {
     // The real implementation reads this.ctx and this.setupRegistry. Its
     // internal ctx.effect must belong to the caller plugin, not the service.
@@ -157,6 +162,11 @@ await test('native SubagentRuntime keeps its receiver through FIFO delivery and 
   }
   const accepted = []
   const manager = {
+    async deliverPrompt(id, body, options) {
+      assert.equal(this, manager)
+      accepted.push({ path: options.delivery === 'steer' ? 'steer' : 'queue', id, body, source: options.source })
+      return 'accepted'
+    },
     async followup(parent, id, body, options) {
       assert.equal(this, manager)
       accepted.push({ path: 'followup', parent, id, body, source: options.source })
@@ -555,6 +565,45 @@ await test('managed activations restore scoped persona and tools before fresh an
   }
 })
 
+await test('0.2.2-rc.2 targeted drain disposes only the selected resident activations', async () => {
+  const { drainMemberChildren } = await import('../lib/harness-compat.js')
+  const disposed = []
+  const aggregates = []
+  const make = id => ({ id, closing: undefined })
+  const a = make('member-a'), b = make('member-b'), c = make('member-c')
+  const resident = new Map([['member-a', a], ['member-b', b], ['member-c', c]])
+  const manager = {
+    resident,
+    dispose(act) {
+      if (act.closing !== undefined) return act.closing  // memoized, like host close()
+      act.closing = Promise.resolve()
+      disposed.push(act.id)
+      return act.closing
+    },
+    async disposeRoots(targets, subject) {
+      aggregates.push({ targets: [...targets], subject })
+      // rc.2 disposeRoots maps every target through dispose synchronously
+      // before its first await, closing admission for all of them up front.
+      for (const target of targets) manager.dispose(target)
+    },
+  }
+  // Plain-object host: no drainChildren/drainContinuableChildren, so the modern
+  // requireManager() branch runs deterministically on BOTH host generations.
+  const runtime = { requireManager() { return manager } }
+  await drainMemberChildren(runtime, { id: 'captain' }, ['member-a', 'member-c', 'absent'])
+  assert.deepEqual(disposed.sort(), ['member-a', 'member-c'])
+  assert.equal(aggregates.length, 1)
+  assert.deepEqual(aggregates[0].targets, [a, c])
+  assert.equal(aggregates[0].subject, 'selected activation(s)')
+  // sibling b must stay resident and never be closed
+  assert.equal(resident.get('member-b'), b)
+  assert.equal(b.closing, undefined)
+  assert.notEqual(a.closing, undefined)
+  assert.notEqual(c.closing, undefined)
+  // an empty selection is a clean no-op, never a throw
+  await drainMemberChildren(runtime, { id: 'captain' }, [])
+})
+
 await test('managed start strips retired options and guards native activation creation', async () => {
   const { startMember, guardSubagentCreation, drainMemberChildren } = await import('../lib/harness-compat.js')
   let received, drained
@@ -573,6 +622,44 @@ await test('managed start strips retired options and guards native activation cr
   assert.deepEqual(drained, ['child'])
   ctx.dispose()
   await runtime.startActivation({ ...spec, request: { ...spec.request, parent: { id: 'member' } } })
+})
+
+await test('0.2.2-rc.2 flat activation spec exposes top-level task fields and keeps the guarded request', async () => {
+  const { startMember, guardSubagentCreation } = await import('../lib/harness-compat.js')
+  let received, guardParent
+  const runtime = {
+    async startActivation(spec) {
+      assert.equal(this, runtime)
+      received = spec
+      return { childId: 'child', result: Promise.resolve({}) }
+    },
+  }
+  const ctx = scope({ subagents: runtime })
+  guardSubagentCreation(ctx, parent => { guardParent = parent })
+  const parent = { id: 'captain' }
+  const agentOptions = { provider: 'chosen', model: 'model', reasoningEffort: 'high' }
+  const spec = {
+    provider: 'spawn', label: 'worker', signal,
+    request: { parent, prompt: content, cwd: '/tmp/work', agentOptions, persona: 'role', toolFilter: { deny: [] } },
+  }
+  assert.equal((await startMember(runtime, spec)).childId, 'child')
+  assert.equal(received.delivery, 'parent')
+  // rc.2 reads these at the top level; without them the child never turns.
+  assert.equal(received.parent, parent)
+  assert.deepEqual(received.prompt, content)
+  assert.equal(received.cwd, '/tmp/work')
+  assert.deepEqual(received.agentOptions, agentOptions)
+  // retired options must never leak to the flattened shape
+  assert.ok(!('persona' in received))
+  assert.ok(!('toolFilter' in received))
+  // rc.1 and guardSubagentCreation still consume the nested (stripped) request
+  assert.equal(received.request.parent, parent)
+  assert.deepEqual(received.request.prompt, content)
+  assert.deepEqual(received.request.agentOptions, agentOptions)
+  assert.ok(!('persona' in received.request))
+  assert.ok(!('toolFilter' in received.request))
+  assert.equal(guardParent, parent, 'creation guard still finds request.parent on the dual shape')
+  ctx.dispose()
 })
 
 await test('managed cold resume rejects missing setup and fresh failed persona rolls back tool scope', async t => {

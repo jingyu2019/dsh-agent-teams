@@ -63,7 +63,17 @@ export interface MemberStartSpec {
 interface CreationBoundary {
   start?: (name: string, request: MemberStartSpec['request']) => Promise<unknown>
   startContinuable?: (spec: MemberStartSpec) => Promise<{ childId: SessionId }>
-  startActivation?: (spec: MemberStartSpec & { delivery: 'parent' }) => Promise<{
+  // 0.2.2-rc.1 nests the task under `request`; 0.2.2-rc.2 flattened
+  // SubagentActivationSpec onto SubagentStartRequest and reads parent/prompt/
+  // agentOptions from the top level. startMember emits BOTH shapes, so this
+  // seam must accept the flattened fields as well as the nested request.
+  startActivation?: (spec: MemberStartSpec & {
+    delivery: 'parent'
+    parent?: Agent
+    prompt?: ContentBlock[]
+    cwd?: string
+    agentOptions?: AgentOptions
+  }) => Promise<{
     childId: SessionId
     messageId?: MessageId
     result: Promise<unknown>
@@ -123,7 +133,14 @@ export async function startMember(runtime: Context['subagents'], spec: MemberSta
   const host = runtime as unknown as CreationBoundary
   if (typeof host.startActivation === 'function') {
     const { persona: _persona, toolFilter: _filter, ...request } = spec.request
-    const activation = await host.startActivation.call(runtime, { ...spec, request, delivery: 'parent' })
+    // Dual shape: rc.1 startActivation/startLocal consume `request.parent`,
+    // `request.prompt`, `request.agentOptions`; rc.2 reads those at the top
+    // level (its startActivation checks `spec.parent.id` and startLocalNamed
+    // submits `spec.prompt`). Keeping both means one code path serves both
+    // published generations, guardSubagentCreation still finds request.parent,
+    // and no version probe is needed. rc.2 ignores the extra `request` key
+    // (no object-key validation on the local start path).
+    const activation = await host.startActivation.call(runtime, { ...spec, ...request, request, delivery: 'parent' })
     // The lifecycle pair is canonical; result/dispose remain exact fallback
     // handles for a missing end. Never discard their rejection unobserved.
     void activation.result.catch(() => undefined)
@@ -171,6 +188,60 @@ function boundary(runtime: Context['subagents']): RuntimeBoundary {
 
 function unsupported(detail: string): never {
   throw new Error(`agent-teams: unsupported Harness subagent contract (${detail}); use an explicitly tested Harness version and a coherent dependency installation`)
+}
+
+/** 0.2.2-rc.2 delivery adapter host shape (manager behind requireManager). */
+interface ModernDeliveryHost {
+  requireManager?: () => {
+    deliverPrompt?: (childId: SessionId, content: ContentBlock[], options: {
+      source: MessageSource; signal: AbortSignal; delivery: "queue" | "steer"
+    }) => Promise<MessageId>
+  }
+}
+
+/**
+ * 0.2.2-rc.2 retired the process-stable deliverPrompt symbol from the
+ * SubagentRuntime service and routed host-authored turns through
+ * manager.deliverPrompt(childId, content, { source, signal, delivery })
+ * (dsh-subagent 0.2.2-rc.2 lib/index.js:1768, :3197). That replacement drops
+ * the parent Agent, which the retired-member guard needs to locate the team's
+ * durable state directory, and routing through runtime.prompt() would mint a
+ * kind:"user" source and lose AgentTeams attribution. Re-expose the audited
+ * Deliver(parent, ...) shape as a stateless, idempotent adapter on the runtime:
+ * requireManager() is resolved at call time so the live manager survives HMR
+ * swaps, and keeping parent lets guardSubagentDelivery wrap and restore this
+ * exact method while queue, steer and setup consumers stay unchanged.
+ */
+export function installModernDelivery(runtime: Context['subagents']): void {
+  const host = boundary(runtime)
+  if (typeof host[hostPromptDeliver] === 'function') return
+  if (typeof host.followup === 'function') return
+  if (typeof host[hostPromptQueue] === 'function') return
+  const modern = runtime as unknown as ModernDeliveryHost
+  if (typeof modern.requireManager !== 'function') return
+  const compat: Deliver = async (_parent, childId, content, source, signal, delivery) => {
+    const manager = modern.requireManager?.()
+    if (manager === undefined || typeof manager.deliverPrompt !== 'function') return unsupported('missing 0.2.2 host FIFO delivery')
+    return manager.deliverPrompt(childId, content, { source, signal, delivery })
+  }
+  Object.defineProperty(host, hostPromptDeliver, { value: compat, writable: true, configurable: true })
+}
+
+/**
+ * Registered subagent provider names for an actionable diagnostic. 0.2.2-rc.2
+ * removed the public SubagentRuntime.list() accessor (its lib/types/index.d.ts
+ * no longer declares it) but the service still owns the provider registry as a
+ * live insertion-ordered Map, so read its keys as the same names. Fall back to
+ * an empty list on any host whose shape is unknown rather than throwing here.
+ */
+export function listedProviderNames(runtime: Context['subagents']): readonly string[] {
+  const host = runtime as unknown as {
+    list?: () => readonly string[]
+    providers?: { keys(): IterableIterator<string> }
+  }
+  if (typeof host.list === 'function') return host.list()
+  if (host.providers !== undefined && typeof host.providers.keys === 'function') return [...host.providers.keys()]
+  return []
 }
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -299,6 +370,7 @@ export function outputLimitTurn(event: SessionEvent): number | undefined {
 
 /** Install before the first request, including cold resume, with HMR cleanup. */
 export function installContinuableMemberSetup(ctx: Context, setup: Setup): void {
+  installModernDelivery(ctx.subagents)
   const runtime = boundary(ctx.subagents)
   if (typeof runtime.registerContinuableSetup === 'function') {
     // Upstream owns this registration with this.ctx.effect. Cordis resolves
@@ -410,6 +482,7 @@ export function guardSubagentDelivery(
   ctx: Context, isRetired: (sender: Agent, targetId: SessionId) => Promise<boolean>,
 ): void {
   const runtime = ctx.subagents
+  installModernDelivery(runtime)
   const host = boundary(runtime)
   const legacy = host.followup
   const queue = host[hostPromptQueue]
@@ -570,15 +643,51 @@ export async function startMemberWithLenientFilter<T>(
   }
 }
 
-/** Targeted recursive cancellation renamed with the unified activation manager. */
+/** Shape of the 0.2.2-rc.2 unified activation manager behind requireManager(). */
+interface ModernDrainHost {
+  requireManager?: () => {
+    resident?: { get(id: SessionId): unknown }
+    disposeRoots?: (activations: readonly unknown[], subject: string) => Promise<void>
+  } | undefined
+}
+
+/** Targeted teardown of the selected member activations across host generations. */
 export async function drainMemberChildren(runtime: Context['subagents'], parent: Agent, ids: readonly SessionId[]): Promise<void> {
   const host = runtime as unknown as {
     drainChildren?: (parent: Agent, ids: readonly SessionId[]) => Promise<void>
     drainContinuableChildren?: (parent: Agent, ids: readonly SessionId[]) => Promise<void>
   }
   const drain = host.drainChildren ?? host.drainContinuableChildren
-  if (typeof drain !== 'function') return unsupported('missing targeted child drain')
-  await drain.call(runtime, parent, ids)
+  if (typeof drain === 'function') {
+    await drain.call(runtime, parent, ids)
+    return
+  }
+  // 0.2.2-rc.2 retired both targeted drain methods: members now share one
+  // activation tree rooted at the captain and SubagentManager exposes no public
+  // per-child teardown (only drainDescendants, which stops the WHOLE tree).
+  // The exact equivalent of the old drainChildren is the manager's process-local
+  // resident Map plus disposeRoots: it closes admission (dispose -> close sets
+  // activation.closing synchronously before any await), cancels the turn,
+  // flushes final state, releases the slot and emits subagent/end, for the
+  // selected activations ONLY. Sibling activations stay resident, so an
+  // update_member route change never stops another member. Resolve the manager
+  // lazily through the same requireManager() seam as modern delivery; a manager
+  // that is not bound yet means no resident activations exist (rc.1 no-op), so
+  // a CONTINUATION_UNAVAILABLE throw is best-effort cleanup, not a failure.
+  const modern = runtime as unknown as ModernDrainHost
+  if (typeof modern.requireManager !== 'function') return unsupported('missing targeted child drain')
+  let manager: ReturnType<NonNullable<ModernDrainHost['requireManager']>>
+  try { manager = modern.requireManager() } catch { return }
+  if (manager === undefined || typeof manager.resident?.get !== 'function' || typeof manager.disposeRoots !== 'function') {
+    return unsupported('missing 0.2.2 targeted activation teardown')
+  }
+  const resident = manager.resident
+  const targets: unknown[] = []
+  for (const childId of new Set(ids)) {
+    const activation = resident.get(childId)
+    if (activation !== undefined) targets.push(activation)
+  }
+  await manager.disposeRoots(targets, 'selected activation(s)')
 }
 
 /**
