@@ -138,6 +138,28 @@ export interface AgentTeamsRuntime {
         ancestryCache: number;
     };
 }
+/**
+ * Consecutive member-start failures tolerated before dispatch pauses for that
+ * member. The scheduler treats a rejected dispatch as "not now" and retries, so
+ * without a bound a permanently broken member retries every pass and inflates
+ * its attempt counter with no visible cause (#350).
+ */
+export declare function memberSpawnFailureLimit(): number;
+/**
+ * Whether dispatch must pause for a member that keeps failing to start. The
+ * scheduler treats a rejected dispatch as "not now" and retries, so an unbounded
+ * member spins forever and inflates its attempt counter (#350).
+ */
+export declare function memberDispatchPaused(spawnFailures: number | undefined, limit?: number): boolean;
+/**
+ * Why a delivery to a retired member was refused. The host folds every terminal
+ * session state into one `NOT_RESUMABLE` code, so the plugin names the cause it
+ * owns instead of letting both collapse into one message.
+ */
+export declare function retiredMemberDeliveryFailure(memberName: string): string;
+/** Why a delivery to a member without a resumable session was refused. */
+export declare function lostSessionDeliveryFailure(memberName: string, spawnError: string | undefined): string;
+export declare function requireStagedTeam(team: TeamState, operation: string): void;
 /** Public schema guidance shared by every tool-policy selection surface. */
 export declare const TOOL_POLICY_DESCRIPTION = "Optional owner-declared tool-policy id. Omit when no policy is needed. Never invent an id; an unknown non-empty id is rejected atomically.";
 /**
