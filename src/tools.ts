@@ -63,6 +63,7 @@ import {
   isValidFindingLine,
   normalizeBlankOptionalTaskFields,
   taskKindOf,
+  readRetiredMemberIds,
 } from './state.ts'
 import { appendTaskEvidence } from './quality-gates.ts'
 import { archiveMemberSessions } from './member-sessions.ts'
@@ -340,11 +341,22 @@ function requireTask(team: TeamState, taskId: string): TeamTask {
   return task
 }
 
-function requireStagedTeam(team: TeamState): void {
+/**
+ * Consecutive member-start failures tolerated before dispatch pauses for that
+ * member. The scheduler treats a rejected dispatch as "not now" and retries, so
+ * without a bound a permanently broken member retries every pass and inflates
+ * its attempt counter with no visible cause (#350).
+ */
+function memberSpawnFailureLimit(): number {
+  const configured = Number(process.env['AGENT_TEAMS_MEMBER_SPAWN_FAILURE_LIMIT'] ?? '')
+  return Number.isInteger(configured) && configured > 0 ? configured : 3
+}
+
+function requireStagedTeam(team: TeamState, operation: string): void {
   if (team.phase !== 'staged') {
-    throw new Error(`team "${team.name}" is already running; its plan can no longer be edited`)
+    throw new Error(`team "${team.name}" is already running; ${operation} needs a staged team. A running team keeps its plan and roster; use agent_teams_status or agent_teams_edit_plan for it`)
   }
-  if (team.halted === true) throw new Error(`team "${team.name}" is halted, not awaiting plan approval`)
+  if (team.halted === true) throw new Error(`team "${team.name}" is halted, not awaiting plan approval; resume it before ${operation}`)
 }
 
 function trimmedOptional(value: string | null | undefined): string | undefined {
@@ -815,13 +827,17 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     // Record why a member never started. The scheduler treats a failed dispatch as
     // "not now" and retries, so without this the captain only ever sees an
     // unexplained `unspawned` member and no diagnostic reaches any surface.
-    const recordSpawnError = async (reason: string): Promise<void> => {
+    const recordSpawnError = async (reason: string, includeStarted = false): Promise<void> => {
       try {
         await withTeamLock(teamLockKey(root, teamId), async () => {
           const fresh = await requireFreshCaptainTeam(ctx, root, teamId, captain.id)
           const failed = fresh.members.find(item => item.name === memberName && item.status !== 'removed')
-          if (failed === undefined || failed.id !== '') return
+          if (failed === undefined) return
+          // A member that already owns a child session is not unspawned; its
+          // failure is a delivery failure and must not be reported as a start one.
+          if (failed.id !== '' && !includeStarted) return
           failed.spawnError = reason
+          failed.spawnFailures = (failed.spawnFailures ?? 0) + 1
           await writeTeam(root, fresh)
         })
       } catch (error: unknown) {
@@ -829,15 +845,32 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       }
     }
     let orphan: TeamMember | undefined
+    let deliveryFailure: string | undefined
     try {
-      return await withTeamLock(teamLockKey(root, teamId), async () => {
+      const result = await withTeamLock(teamLockKey(root, teamId), async () => {
         const team = await readTeam(root, teamId)
         if (team === undefined || !(await sessionLeadsTeamAsync(ctx, team, captain.id)) || team.halted === true || team.phase === 'staged') return { accepted: false }
         const member = team.members.find(item => item.name === memberName && item.status !== 'removed')
         if (member === undefined || member.stopping === true || team.tasks.some(task => task.reassigning === true && task.assignee === memberName)) return { accepted: false }
         if (attemptId !== undefined && !team.tasks.some(task => task.attemptId === attemptId && task.assignee === memberName && (task.status === 'claimed' || task.status === 'in_progress'))) return { accepted: false }
+        // A member that keeps failing to start would otherwise spin the scheduler
+        // forever and inflate its attempt counter with no visible cause.
+        if ((member.spawnFailures ?? 0) >= memberSpawnFailureLimit()) {
+          ctx.logger.warn(`agent-teams: member ${memberName} failed ${member.spawnFailures} times in a row; dispatch is paused until the captain reassigns the task or resets the member`)
+          return { accepted: false }
+        }
         if (request?.newChild !== true && member.id !== '') {
-          return { accepted: await deliverToMember(ctx, captain, member.id, text, signal, mode) }
+          // The host folds every terminal session state into one `NOT_RESUMABLE`
+          // code, so distinguish the two causes we own before delivering.
+          if ((await readRetiredMemberIds(root)).has(member.id)) {
+            deliveryFailure = `member "${memberName}" was retired: its session was stopped and cannot be resumed. Reset its context for a fresh session, or remove the member`
+            return { accepted: false }
+          }
+          const delivered = await deliverToMember(ctx, captain, member.id, text, signal, mode)
+          if (!delivered) {
+            deliveryFailure = `member "${memberName}" has no resumable session (start error: ${member.spawnError ?? 'unknown'}); reassign the task with agent_teams_reassign_task, or reset the member with agent_teams_reset_member_context once it is idle`
+          }
+          return { accepted: delivered }
         }
         const selection = await resolveMemberLlmSelection(ctx, captain, {
           provider: member.activeProvider ?? member.provider,
@@ -849,14 +882,17 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         const receipt = await spawnMember(ctx, memberRuntime(config), memberSelections, selection, captain, team, member, config.stateDir, signal, text, member.toolFilter, memberRelaxableDeny(config, member))
         orphan = { ...member }
         delete member.spawnError
+        delete member.spawnFailures
         await writeTeam(root, team)
         orphan = undefined
         return { accepted: true, receipt }
       })
+      if (deliveryFailure !== undefined) await recordSpawnError(deliveryFailure, true)
+      return result
     } catch (error: unknown) {
       if (orphan !== undefined) {
         await recordRetiredMemberIds(root, [orphan.id])
-        await stopTeamMemberActivations(ctx, captain, [orphan])
+        await stopTeamMemberActivations(ctx, captain, [orphan], undefined, root, teamId)
       }
       // The stack carries the failing frame; the message alone rarely does.
       let reason = String(error)
@@ -876,7 +912,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const before = JSON.parse(JSON.stringify(fresh)) as TeamState
       const pendingMailboxRenames: Array<{ from: string; to: string }> = []
       const staged = fresh.phase === 'staged'
-      if (!staged && !allowPendingEdits) requireStagedTeam(fresh)
+      if (!staged && !allowPendingEdits) requireStagedTeam(fresh, 'editing this plan')
       if (fresh.halted === true) throw new Error('team is halted; resume before editing tasks')
       if (!staged && mutations.some(mutation => mutation.action !== 'update_task')) {
         throw new Error('a running team only permits update_task edits to pending, never-started tasks; roster and removal edits require a staged plan')
@@ -1070,7 +1106,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     const runSignal = signal ?? new AbortController().signal
     const approved = await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
       const fresh = await requireFreshCaptainTeam(ctx, stateRoot, teamId, captain.id)
-      requireStagedTeam(fresh)
+      requireStagedTeam(fresh, 'approving a plan')
       // A staged removal has no child session to retain in history. Drop those
       // placeholders before transitioning to the stricter running shape.
       fresh.members = fresh.members.filter((member) => member.status !== 'removed')
@@ -1117,7 +1153,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     const stateRoot = stateRootOf(workspace, config)
     const prepared = await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
       const fresh = await requireFreshCaptainTeam(ctx, stateRoot, teamId, captain.id)
-      requireStagedTeam(fresh)
+      requireStagedTeam(fresh, 'continuing staged planning')
       if (fresh.planReviewState === 'awaiting_feedback') {
         return { teamName: fresh.name, alreadyWaiting: true }
       }
@@ -1141,7 +1177,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       // Captain disappeared between lookup and delivery.
       await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
         const fresh = await requireFreshCaptainTeam(ctx, stateRoot, teamId, captain.id)
-        requireStagedTeam(fresh)
+        requireStagedTeam(fresh, 'awaiting plan feedback')
         if (fresh.planReviewState === 'awaiting_feedback') {
           fresh.planReviewState = 'awaiting_review'
           await writeTeam(stateRoot, fresh)
@@ -1157,7 +1193,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     const stateRoot = stateRootOf(workspace, config)
     const discarded = await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
       const fresh = await requireFreshCaptainTeam(ctx, stateRoot, teamId, captain.id)
-      requireStagedTeam(fresh)
+      requireStagedTeam(fresh, 'discarding a plan')
       appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/plan-discarded', {
         teamId: fresh.id,
       })
@@ -1205,6 +1241,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
             skills: { type: 'array', items: { type: 'string' }, description: 'Optional owner-declared skill ids; unknown ids fail before persistence.' },
             preset_id: { type: 'string', description: 'Optional immutable global agent preset id; its settings are copied into this plan member.' },
+            executionPrompt: { type: 'string', description: 'Optional member-specific execution prompt. It remains editable while staged.' },
           } } },
           tasks: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
             id: { type: 'string', required: true, description: 'Local reference used by dependencies in this plan; the result maps it to a durable task id.' },
@@ -1479,6 +1516,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         delete member.activeModel
         delete member.fallbackActive
         delete member.spawnError
+        delete member.spawnFailures
         appendTimeline(fresh, { action: 'member.context_reset', actor: CAPTAIN_KEY, from: member.name })
         await writeTeam(stateRoot, fresh)
         return { member_name: member.name, reset: true, previous_member_id: previous }
@@ -2195,6 +2233,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           delete member.activeModel
           delete member.fallbackActive
           delete member.spawnError
+          delete member.spawnFailures
           member.stopping = false
           await writeTeam(stateRoot, fresh)
           return member
@@ -3404,6 +3443,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             ...member.contextLifecycle?.notes === undefined ? {} : { notes: member.contextLifecycle.notes },
           },
           ...member.spawnError === undefined ? {} : { spawn_error: member.spawnError },
+          ...member.spawnFailures === undefined ? {} : { spawn_failures: member.spawnFailures },
         }))
       const tasks = team.tasks.map((task) => ({
         id: task.id,

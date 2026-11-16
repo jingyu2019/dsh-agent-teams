@@ -483,6 +483,12 @@ export interface TeamMember {
    * member. Cleared by the next successful start.
    */
   spawnError?: string
+  /**
+   * Consecutive member-start or delivery failures since the last successful
+   * start. Dispatch refuses a member past the limit so a permanently broken
+   * member cannot spin the scheduler and inflate the attempt counter.
+   */
+  spawnFailures?: number
   /** Owner-declared skill ids selected for this member, in stable order (#244). */
   skills?: string[]
   /** SHA-256 of the exact resolved owner skill prompt frozen at member creation. */
