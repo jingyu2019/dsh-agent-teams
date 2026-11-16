@@ -332,6 +332,95 @@ function requireMember(team: TeamState, name: string): TeamMember {
   return member
 }
 
+/**
+ * Replace one member's child context while its team lock is held. The tool and
+ * the automatic dead-session recovery share this single path so the guard set
+ * (running member, open attempt, active activation) can never drift into a
+ * looser copy: a refusal is the caller's failure, never something to route
+ * around.
+ * @param input - freshly read team state, state root, member name and the
+ *   timeline reason to record (omitted for an explicit captain reset).
+ * @returns the tool-facing result; `reset` is false when there was no context.
+ */
+export async function resetMemberContextLocked(input: {
+  readonly team: TeamState
+  readonly stateRoot: string
+  readonly memberName: string
+  readonly reason?: string
+}): Promise<{ member_name: string; reset: boolean; previous_member_id?: string }> {
+  const fresh = input.team
+  const member = requireMember(fresh, input.memberName)
+  if (member.status === 'working' || member.stopping === true) throw new Error(`member "${member.name}" is running; wait until it is idle`)
+  if (fresh.tasks.some(task => task.assignee === member.name && task.attemptId !== undefined && !TERMINAL_TASK_STATUSES.includes(task.status))) {
+    throw new Error(`member "${member.name}" still owns an open attempt`)
+  }
+  if (fresh.activations?.some(lease => lease.memberId === member.id && (lease.state === 'pending' || lease.state === 'started' || lease.state === 'recovering'))) {
+    throw new Error(`member "${member.name}" still has an active activation`)
+  }
+  const previous = member.id
+  if (previous === '') return { member_name: member.name, reset: false }
+  await recordRetiredMemberIds(input.stateRoot, [previous])
+  forgetAncestryCache([previous])
+  member.id = ''
+  member.status = 'idle'
+  member.generation = (member.generation ?? 1) + 1
+  delete member.runtimeSetup
+  delete member.currentActivationId
+  delete member.activeProvider
+  delete member.activeModel
+  delete member.fallbackActive
+  delete member.spawnError
+  delete member.spawnFailures
+  appendTimeline(fresh, {
+    action: 'member.context_reset',
+    actor: CAPTAIN_KEY,
+    from: member.name,
+    ...input.reason === undefined ? {} : { result: input.reason },
+  })
+  await writeTeam(input.stateRoot, fresh)
+  return { member_name: member.name, reset: true, previous_member_id: previous }
+}
+
+/** Timeline reason recorded when a refused delivery resets a member automatically. */
+export const AUTO_RESET_REASON = 'automatic recovery: the member session was gone'
+
+/** Why a refused delivery happened, as far as the plugin can tell it apart. */
+export type DeliveryFailureCause = 'retired' | 'lost-session'
+
+/** What {@link recoverLostSessionDelivery} did with one refused delivery. */
+export interface DeadSessionRecoveryOutcome {
+  readonly accepted: boolean
+  /** Whether the second delivery ran; false when the guarded reset refused. */
+  readonly retried: boolean
+  /** Annotated reason to record when the reset itself was refused. */
+  readonly deliveryFailure?: string
+}
+
+/**
+ * Retry one refused delivery after automatically resetting the member context.
+ * A retired member was stopped by a human and stays refused with its existing
+ * wording. Any other refusal is retried exactly once through the caller's
+ * guarded reset; when that guard refuses, its own message becomes the recorded
+ * reason instead of being bypassed.
+ * @param input - the failed cause, its reason, and the two injected operations.
+ * @returns the outcome; the caller owns durable failure recording.
+ */
+export async function recoverLostSessionDelivery(input: {
+  readonly cause: DeliveryFailureCause
+  readonly failure: string
+  readonly reset: () => Promise<unknown>
+  readonly retry: () => Promise<boolean>
+}): Promise<DeadSessionRecoveryOutcome> {
+  if (input.cause !== 'lost-session') return { accepted: false, retried: false }
+  try {
+    await input.reset()
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : String(error)
+    return { accepted: false, retried: false, deliveryFailure: `${input.failure} (automatic context reset refused: ${reason})` }
+  }
+  return { accepted: await input.retry(), retried: true }
+}
+
 /** Look up one task by id. */
 function requireTask(team: TeamState, taskId: string): TeamTask {
   const task = team.tasks.find((candidate) => candidate.id === taskId)
@@ -861,7 +950,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
   const scheduler = installTeamScheduler(ctx, schedulerRuntimeConfig(config, dispatchMember))
 
 
-  async function dispatchMember(captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', request?: DispatchRequest): Promise<DispatchResult> {
+  async function dispatchMember(captain: Agent, teamId: string, memberName: string, text: string, signal: AbortSignal, mode: 'queue' | 'steer', request?: DispatchRequest, recovered = false): Promise<DispatchResult> {
     const attemptId = request?.attemptId
     const root = stateRootOf(workspaceOf(captain), config)
     // Record why a member never started. The scheduler treats a failed dispatch as
@@ -886,6 +975,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     }
     let orphan: TeamMember | undefined
     let deliveryFailure: string | undefined
+    let deliveryCause: DeliveryFailureCause | undefined
     try {
       const result = await withTeamLock(teamLockKey(root, teamId), async () => {
         const team = await readTeam(root, teamId)
@@ -903,11 +993,13 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           // The host folds every terminal session state into one `NOT_RESUMABLE`
           // code, so distinguish the two causes we own before delivering.
           if ((await readRetiredMemberIds(root)).has(member.id)) {
+            deliveryCause = 'retired'
             deliveryFailure = retiredMemberDeliveryFailure(memberName)
             return { accepted: false }
           }
           const delivered = await deliverToMember(ctx, captain, member.id, text, signal, mode)
           if (!delivered) {
+            deliveryCause = 'lost-session'
             deliveryFailure = lostSessionDeliveryFailure(memberName, member.spawnError)
           }
           return { accepted: delivered }
@@ -927,6 +1019,34 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         orphan = undefined
         return { accepted: true, receipt }
       })
+      if (deliveryFailure !== undefined && deliveryCause !== undefined) {
+        // A lost session is recoverable without the captain: reset exactly like
+        // the tool does and deliver once more. A retired member was stopped on
+        // purpose, and a refused reset is reported instead of bypassed.
+        let recoveredReceipt: DispatchResult['receipt']
+        const retried = await recoverLostSessionDelivery({
+          cause: deliveryCause,
+          failure: deliveryFailure,
+          reset: async () => {
+            await withTeamLock(teamLockKey(root, teamId), async () => {
+              const fresh = await requireFreshCaptainTeam(ctx, root, teamId, captain.id)
+              await resetMemberContextLocked({ team: fresh, stateRoot: root, memberName, reason: AUTO_RESET_REASON })
+            })
+          },
+          retry: async () => {
+            const attempt = await dispatchMember(captain, teamId, memberName, text, signal, mode, request, true)
+            // The scheduler binds the fresh child to the same activation through
+            // this receipt; dropping it would orphan the lease it just repaired.
+            recoveredReceipt = attempt.receipt
+            return attempt.accepted
+          },
+        })
+        if (retried.accepted) return { accepted: true, ...recoveredReceipt === undefined ? {} : { receipt: recoveredReceipt } }
+        // The retried dispatch recorded its own refusal; only a refused reset
+        // still needs this path's annotated reason on the durable surface.
+        if (retried.retried) return result
+        if (retried.deliveryFailure !== undefined) deliveryFailure = retried.deliveryFailure
+      }
       if (deliveryFailure !== undefined) await recordSpawnError(deliveryFailure, true)
       return result
     } catch (error: unknown) {
@@ -1528,31 +1648,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const team = await requireCaptainTeam(ctx, workspace, config, captain)
       return withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(ctx, stateRoot, team.id, captain.id)
-        const member = requireMember(fresh, args.member_name.trim())
-        if (member.status === 'working' || member.stopping === true) throw new Error(`member "${member.name}" is running; wait until it is idle`)
-        if (fresh.tasks.some(task => task.assignee === member.name && task.attemptId !== undefined && !TERMINAL_TASK_STATUSES.includes(task.status))) {
-          throw new Error(`member "${member.name}" still owns an open attempt`)
-        }
-        if (fresh.activations?.some(lease => lease.memberId === member.id && (lease.state === 'pending' || lease.state === 'started' || lease.state === 'recovering'))) {
-          throw new Error(`member "${member.name}" still has an active activation`)
-        }
-        const previous = member.id
-        if (previous === '') return { member_name: member.name, reset: false }
-        await recordRetiredMemberIds(stateRoot, [previous])
-        forgetAncestryCache([previous])
-        member.id = ''
-        member.status = 'idle'
-        member.generation = (member.generation ?? 1) + 1
-        delete member.runtimeSetup
-        delete member.currentActivationId
-        delete member.activeProvider
-        delete member.activeModel
-        delete member.fallbackActive
-        delete member.spawnError
-        delete member.spawnFailures
-        appendTimeline(fresh, { action: 'member.context_reset', actor: CAPTAIN_KEY, from: member.name })
-        await writeTeam(stateRoot, fresh)
-        return { member_name: member.name, reset: true, previous_member_id: previous }
+        return resetMemberContextLocked({ team: fresh, stateRoot, memberName: args.member_name.trim() })
       })
     },
   }))

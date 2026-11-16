@@ -139,6 +139,53 @@ export interface AgentTeamsRuntime {
     };
 }
 /**
+ * Replace one member's child context while its team lock is held. The tool and
+ * the automatic dead-session recovery share this single path so the guard set
+ * (running member, open attempt, active activation) can never drift into a
+ * looser copy: a refusal is the caller's failure, never something to route
+ * around.
+ * @param input - freshly read team state, state root, member name and the
+ *   timeline reason to record (omitted for an explicit captain reset).
+ * @returns the tool-facing result; `reset` is false when there was no context.
+ */
+export declare function resetMemberContextLocked(input: {
+    readonly team: TeamState;
+    readonly stateRoot: string;
+    readonly memberName: string;
+    readonly reason?: string;
+}): Promise<{
+    member_name: string;
+    reset: boolean;
+    previous_member_id?: string;
+}>;
+/** Timeline reason recorded when a refused delivery resets a member automatically. */
+export declare const AUTO_RESET_REASON = "automatic recovery: the member session was gone";
+/** Why a refused delivery happened, as far as the plugin can tell it apart. */
+export type DeliveryFailureCause = 'retired' | 'lost-session';
+/** What {@link recoverLostSessionDelivery} did with one refused delivery. */
+export interface DeadSessionRecoveryOutcome {
+    readonly accepted: boolean;
+    /** Whether the second delivery ran; false when the guarded reset refused. */
+    readonly retried: boolean;
+    /** Annotated reason to record when the reset itself was refused. */
+    readonly deliveryFailure?: string;
+}
+/**
+ * Retry one refused delivery after automatically resetting the member context.
+ * A retired member was stopped by a human and stays refused with its existing
+ * wording. Any other refusal is retried exactly once through the caller's
+ * guarded reset; when that guard refuses, its own message becomes the recorded
+ * reason instead of being bypassed.
+ * @param input - the failed cause, its reason, and the two injected operations.
+ * @returns the outcome; the caller owns durable failure recording.
+ */
+export declare function recoverLostSessionDelivery(input: {
+    readonly cause: DeliveryFailureCause;
+    readonly failure: string;
+    readonly reset: () => Promise<unknown>;
+    readonly retry: () => Promise<boolean>;
+}): Promise<DeadSessionRecoveryOutcome>;
+/**
  * Consecutive member-start failures tolerated before dispatch pauses for that
  * member. The scheduler treats a rejected dispatch as "not now" and retries, so
  * without a bound a permanently broken member retries every pass and inflates
@@ -162,6 +209,53 @@ export declare function lostSessionDeliveryFailure(memberName: string, spawnErro
 export declare function requireStagedTeam(team: TeamState, operation: string): void;
 /** Public schema guidance shared by every tool-policy selection surface. */
 export declare const TOOL_POLICY_DESCRIPTION = "Optional owner-declared tool-policy id. Omit when no policy is needed. Never invent an id; an unknown non-empty id is rejected atomically.";
+/**
+ * Declared shape of one `agent_teams_create` `plan.members[]` entry. Exported
+ * as a module constant so tests can assert the schema itself: a field missing
+ * here is silently dropped before validation (upstream #352 lost
+ * `executionPrompt` that way), which no source-text grep can catch.
+ */
+export declare const planMemberSchema: {
+    readonly type: "object";
+    readonly additionalProperties: false;
+    readonly properties: {
+        readonly name: {
+            readonly type: "string";
+            readonly required: true;
+        };
+        readonly role: {
+            readonly type: "string";
+        };
+        readonly provider: {
+            readonly type: "string";
+        };
+        readonly model: {
+            readonly type: "string";
+        };
+        readonly reasoning_effort: {
+            readonly type: "string";
+        };
+        readonly tool_policy: {
+            readonly type: "string";
+            readonly description: "Optional owner-declared tool-policy id. Omit when no policy is needed. Never invent an id; an unknown non-empty id is rejected atomically.";
+        };
+        readonly skills: {
+            readonly type: "array";
+            readonly items: {
+                readonly type: "string";
+            };
+            readonly description: "Optional owner-declared skill ids; unknown ids fail before persistence.";
+        };
+        readonly preset_id: {
+            readonly type: "string";
+            readonly description: "Optional immutable global agent preset id; its settings are copied into this plan member.";
+        };
+        readonly executionPrompt: {
+            readonly type: "string";
+            readonly description: "Optional member-specific execution prompt. It remains editable while staged.";
+        };
+    };
+};
 /**
  * Normalize a tool-policy selection from runtime input. Tool gateways may
  * materialize omitted optional strings as empty or whitespace-only values;
