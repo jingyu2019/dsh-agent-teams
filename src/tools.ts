@@ -391,6 +391,23 @@ function trimmedOptional(value: string | null | undefined): string | undefined {
 export const TOOL_POLICY_DESCRIPTION = 'Optional owner-declared tool-policy id. Omit when no policy is needed. Never invent an id; an unknown non-empty id is rejected atomically.'
 
 /**
+ * Declared shape of one `agent_teams_create` `plan.members[]` entry. Exported
+ * as a module constant so tests can assert the schema itself: a field missing
+ * here is silently dropped before validation (upstream #352 lost
+ * `executionPrompt` that way), which no source-text grep can catch.
+ */
+export const planMemberSchema = {
+  type: 'object', additionalProperties: false, properties: {
+    name: { type: 'string', required: true }, role: { type: 'string' },
+    provider: { type: 'string' }, model: { type: 'string' }, reasoning_effort: { type: 'string' },
+    tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
+    skills: { type: 'array', items: { type: 'string' }, description: 'Optional owner-declared skill ids; unknown ids fail before persistence.' },
+    preset_id: { type: 'string', description: 'Optional immutable global agent preset id; its settings are copied into this plan member.' },
+    executionPrompt: { type: 'string', description: 'Optional member-specific execution prompt. It remains editable while staged.' },
+  },
+} as const
+
+/**
  * Normalize a tool-policy selection from runtime input. Tool gateways may
  * materialize omitted optional strings as empty or whitespace-only values;
  * those mean "no policy". A non-string runtime value is also treated as
@@ -1258,14 +1275,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         type: 'object', additionalProperties: false,
         description: 'Optional complete ordinary-work roster and DAG in one atomic call, instead of separate add_member/create_task rounds. Mutually exclusive with profile. For quality gates use create_task with the explicit quality contract.',
         properties: {
-          members: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
-            name: { type: 'string', required: true }, role: { type: 'string' },
-            provider: { type: 'string' }, model: { type: 'string' }, reasoning_effort: { type: 'string' },
-            tool_policy: { type: 'string', description: TOOL_POLICY_DESCRIPTION },
-            skills: { type: 'array', items: { type: 'string' }, description: 'Optional owner-declared skill ids; unknown ids fail before persistence.' },
-            preset_id: { type: 'string', description: 'Optional immutable global agent preset id; its settings are copied into this plan member.' },
-            executionPrompt: { type: 'string', description: 'Optional member-specific execution prompt. It remains editable while staged.' },
-          } } },
+          members: { type: 'array', required: true, items: planMemberSchema },
           tasks: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
             id: { type: 'string', required: true, description: 'Local reference used by dependencies in this plan; the result maps it to a durable task id.' },
             subject: { type: 'string', required: true }, description: { type: 'string' }, assignee: { type: 'string' },
