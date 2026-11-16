@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { SubagentRuntime } from '@deepseek-ai/dsh-subagent'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import { guardSubagentDelivery, installContinuableMemberSetup, installModernDelivery, memberToolFilter, queueMemberPrompt, restrictableToolNames, sessionOwnEvents } from '../lib/harness-compat.js'
+import { guardSubagentDelivery, installContinuableMemberSetup, installModernDelivery, memberToolFilter, queueMemberPrompt, restrictableToolNames, sessionOwnEventWindow, sessionOwnEvents } from '../lib/harness-compat.js'
 import { installMemberSelectionRuntime, spawnMember } from '../lib/members.js'
 import { createTeamDir } from '../lib/state.js'
 import { CAPTAIN_TOOL_NAMES } from '../lib/tool-names.js'
@@ -230,15 +230,44 @@ await test('unsupported queue-only or send-only contract fails explicitly', asyn
   assert.throws(() => installContinuableMemberSetup(scope({ subagents: runtime }), () => () => {}), /unsupported Harness/)
   assert.throws(() => guardSubagentDelivery(scope({ subagents: runtime }), async () => false), /unsupported Harness/)
   await assert.rejects(queueMemberPrompt(runtime, {}, 'child', content, signal), /missing host FIFO/)
-  assert.throws(() => sessionOwnEvents({ header: {} }), /missing ownEvents/)
+  assert.throws(() => sessionOwnEvents({ header: {} }), /missing snapshotEvents/)
 })
 
 await test('legacy session history excludes its inherited prefix; modern uses ownEvents receiver', () => {
   const inherited = { type: 'subagent/descriptor', data: { label: 'foreign' } }
   const own = { type: 'subagent/descriptor', data: { label: 'member' } }
   assert.deepEqual(sessionOwnEvents({ header: { seedLength: 1 }, events: [inherited, own] }), [own])
+  assert.deepEqual(sessionOwnEvents({ header: { seedLength: 1 }, events: [inherited, own] }, { edge: 'head' }), [own])
   const session = { header: {}, ownEvents() { assert.equal(this, session); return [own] } }
   assert.deepEqual(sessionOwnEvents(session), [own])
+})
+
+await test('own-history reads are bounded: modern sessions take a range, never the whole log', () => {
+  const width = 1000
+  const events = Array.from({ length: width }, (_, index) => ({ type: 'step/start', data: { turn: 1, step: index } }))
+  const calls = []
+  const session = {
+    seq: 1200,
+    inheritedEventCount: 200,
+    header: {},
+    snapshotEvents(from, to) {
+      calls.push([from, to])
+      return events.slice(from - 200, to - 200)
+    },
+    ownEvents() { assert.fail('bounded read must not materialize the whole own log') },
+  }
+  const tail = sessionOwnEventWindow(session, { edge: 'tail', limit: 16 })
+  assert.deepEqual(calls.at(-1), [1184, 1200])
+  assert.equal(tail.events.length, 16)
+  assert.equal(tail.complete, false)
+  const head = sessionOwnEventWindow(session, { edge: 'head', limit: 4 })
+  assert.deepEqual(calls.at(-1), [200, 204])
+  assert.equal(head.events.length, 4)
+  assert.equal(head.complete, false)
+  assert.deepEqual(sessionOwnEvents(session, { edge: 'head', limit: 4 }), head.events)
+  const whole = sessionOwnEventWindow({ seq: 204, inheritedEventCount: 200, header: {}, snapshotEvents: session.snapshotEvents }, { limit: 16 })
+  assert.equal(whole.complete, true)
+  assert.equal(whole.events.length, 4)
 })
 
 await test('synchronous modern setup selects the first request, deduplicates events, and disposes for HMR', async () => {

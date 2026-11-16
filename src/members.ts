@@ -886,7 +886,7 @@ export function installMemberSelectionRuntime(
   const pending = new Map<string, MemberLlmSelection>()
   const pendingSetup = new Map<string, NonNullable<TeamMember['runtimeSetup']>>()
   installContinuableMemberSetup(ctx, (childCtx, child) => {
-    const descriptor = foldSubagentDescriptor(sessionOwnEvents(child.session))
+    const descriptor = foldSubagentDescriptor(sessionOwnEvents(child.session, { edge: 'head' }))
     if (descriptor?.mode !== 'continuable' || !descriptor.label.startsWith(MEMBER_LABEL_PREFIX)) {
       return () => undefined
     }
@@ -1115,7 +1115,7 @@ export function installMemberSelectionRuntime(
   return {
     isPendingMember(agent) {
       const parent = agent.session.header.parentSession
-      const descriptor = foldSubagentDescriptor(sessionOwnEvents(agent.session))
+      const descriptor = foldSubagentDescriptor(sessionOwnEvents(agent.session, { edge: 'head' }))
       return parent !== undefined && descriptor?.mode === 'continuable'
         && pending.has(pendingSelectionKey(parent, descriptor.label))
     },
@@ -1454,7 +1454,7 @@ export function installMemberDelegationGuard(ctx: Context, stateDir: string, max
     let ancestor: Agent | undefined = parent
     let depth = 1
     while (ancestor !== undefined) {
-      const descriptor = foldSubagentDescriptor(sessionOwnEvents(ancestor.session))
+      const descriptor = foldSubagentDescriptor(sessionOwnEvents(ancestor.session, { edge: 'head' }))
       if (descriptor?.label?.startsWith(MEMBER_LABEL_PREFIX)) {
         const identity = descriptor.label.slice(MEMBER_LABEL_PREFIX.length)
         const separator = identity.indexOf(':')

@@ -10,7 +10,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { type Agent, type AgentOptions, type ModelSelection } from '@deepseek-ai/dsh-agent';
 import type { ContentBlock, MessageId, MessageSource } from '@deepseek-ai/dsh-llm';
-import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session';
+import { type Session, type SessionEvent, type SessionId } from '@deepseek-ai/dsh-session';
 import { type MemberToolFilter } from './tool-policies.ts';
 type Setup = (childCtx: Context, child: Agent) => () => void;
 /** Version-independent creation contract; legacy-only options stay at this seam. */
@@ -159,8 +159,40 @@ export declare function agentTeamsSource(modern: AgentTeamsSource, observed?: nu
  * Keep the removed event's type confined to this audited compatibility seam.
  */
 export declare function onAgentReady(ctx: Context, listener: (agent: Agent, vetoable: boolean) => void): () => void;
-/** Read child-owned history, excluding any descriptor inherited from a parent. */
-export declare function sessionOwnEvents(session: Session): readonly SessionEvent[];
+/**
+ * Own events one bounded read may materialize. Every caller looks at one edge
+ * of child-owned history — creation folds the leading descriptor, step
+ * admission scans the current turn's tail — so copying the whole log per step
+ * was pure long-session cost (upstream #356).
+ */
+export declare const OWN_EVENT_READ_LIMIT = 256;
+/** Which edge of child-owned history a bounded read returns, and its cap. */
+export interface OwnEventRead {
+    /** `head` for creation facts, `tail` for recent turn activity. Defaults to `tail`. */
+    readonly edge?: 'head' | 'tail';
+    /** Maximum events the read may return. Defaults to {@link OWN_EVENT_READ_LIMIT}. */
+    readonly limit?: number;
+}
+/** A bounded child-owned window in log order plus whether it is the whole own log. */
+export interface OwnEventWindow {
+    readonly events: readonly SessionEvent[];
+    /** False when the read stopped at `limit` before covering every own event. */
+    readonly complete: boolean;
+}
+/**
+ * Read a bounded window of child-owned history, excluding any descriptor
+ * inherited from a parent. Modern hosts take the deprecated-but-supported
+ * range read (`snapshotEvents`), which is exactly how `ownEvents()` itself is
+ * implemented upstream, so a per-step caller never copies the whole log.
+ * Hosts whose session only materializes its events keep the array path; the
+ * window is then sliced from the same inherited-prefix boundary.
+ * @param session - the session whose own history is read.
+ * @param window - edge and cap of the read.
+ * @returns the window events in log order and whether it covers the own log.
+ */
+export declare function sessionOwnEventWindow(session: Session, window?: OwnEventRead): OwnEventWindow;
+/** Bounded child-owned history for callers that only fold the returned window. */
+export declare function sessionOwnEvents(session: Session, window?: OwnEventRead): readonly SessionEvent[];
 /** Legacy hosts log each chunk separately; current hosts embed the committed stream. */
 export declare function outputLimitTurn(event: SessionEvent): number | undefined;
 /** Install before the first request, including cold resume, with HMR cleanup. */

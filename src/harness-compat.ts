@@ -12,7 +12,7 @@ import { installModelSelection, type Agent, type AgentOptions, type ModelSelecti
 import type { ContentBlock, MessageId, MessageSource, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import * as dshSession from '@deepseek-ai/dsh-session'
-import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import { SessionLogOffset, type Session, type SessionEvent, type SessionId } from '@deepseek-ai/dsh-session'
 import { SubagentError } from '@deepseek-ai/dsh-subagent'
 import { BUILTIN_DENY_TOOLS, resolveMemberToolFilter, type MemberToolFilter } from './tool-policies.ts'
 
@@ -343,13 +343,76 @@ export function onAgentReady(ctx: Context, listener: (agent: Agent, vetoable: bo
   return () => { stopCreated(); stopLegacy() }
 }
 
-/** Read child-owned history, excluding any descriptor inherited from a parent. */
-export function sessionOwnEvents(session: Session): readonly SessionEvent[] {
-  const current = session as unknown as { ownEvents?: () => readonly SessionEvent[] }
-  if (typeof current.ownEvents === 'function') return current.ownEvents.call(session)
-  const legacy = session as unknown as { events?: readonly SessionEvent[]; header: { seedLength?: number } }
-  if (!Array.isArray(legacy.events)) return unsupported('missing ownEvents/legacy session log')
-  return legacy.events.slice(legacy.header.seedLength ?? 0)
+/**
+ * Own events one bounded read may materialize. Every caller looks at one edge
+ * of child-owned history — creation folds the leading descriptor, step
+ * admission scans the current turn's tail — so copying the whole log per step
+ * was pure long-session cost (upstream #356).
+ */
+export const OWN_EVENT_READ_LIMIT = 256
+
+/** Which edge of child-owned history a bounded read returns, and its cap. */
+export interface OwnEventRead {
+  /** `head` for creation facts, `tail` for recent turn activity. Defaults to `tail`. */
+  readonly edge?: 'head' | 'tail'
+  /** Maximum events the read may return. Defaults to {@link OWN_EVENT_READ_LIMIT}. */
+  readonly limit?: number
+}
+
+/** A bounded child-owned window in log order plus whether it is the whole own log. */
+export interface OwnEventWindow {
+  readonly events: readonly SessionEvent[]
+  /** False when the read stopped at `limit` before covering every own event. */
+  readonly complete: boolean
+}
+
+/**
+ * Read a bounded window of child-owned history, excluding any descriptor
+ * inherited from a parent. Modern hosts take the deprecated-but-supported
+ * range read (`snapshotEvents`), which is exactly how `ownEvents()` itself is
+ * implemented upstream, so a per-step caller never copies the whole log.
+ * Hosts whose session only materializes its events keep the array path; the
+ * window is then sliced from the same inherited-prefix boundary.
+ * @param session - the session whose own history is read.
+ * @param window - edge and cap of the read.
+ * @returns the window events in log order and whether it covers the own log.
+ */
+export function sessionOwnEventWindow(session: Session, window: OwnEventRead = {}): OwnEventWindow {
+  const limit = Math.max(1, Math.trunc(window.limit ?? OWN_EVENT_READ_LIMIT))
+  const edge = window.edge ?? 'tail'
+  const current = session as unknown as {
+    seq?: number
+    inheritedEventCount?: number
+    snapshotEvents?: (from: SessionLogOffset, to?: SessionLogOffset) => readonly SessionEvent[]
+    ownEvents?: () => readonly SessionEvent[]
+    events?: readonly SessionEvent[]
+    header?: { seedLength?: number }
+  }
+  const start = Number(current.inheritedEventCount ?? current.header?.seedLength ?? 0)
+  const end = Number(current.seq)
+  if (typeof current.snapshotEvents === 'function' && Number.isSafeInteger(end) && end >= start) {
+    if (edge === 'head') {
+      const to = Math.min(end, start + limit)
+      return { events: current.snapshotEvents(SessionLogOffset(start), SessionLogOffset(to)), complete: to >= end }
+    }
+    const from = Math.max(start, end - limit)
+    return { events: current.snapshotEvents(SessionLogOffset(from), SessionLogOffset(end)), complete: from <= start }
+  }
+  // Hosts and their test doubles that only materialize the log: the deprecated
+  // full reader is the array itself, so slicing it adds no scan of its own.
+  const materialized = typeof current.ownEvents === 'function'
+    ? current.ownEvents.call(session)
+    : Array.isArray(current.events) ? current.events.slice(start) : undefined
+  if (materialized === undefined) return unsupported('missing snapshotEvents/ownEvents/legacy session log')
+  return {
+    events: edge === 'head' ? materialized.slice(0, limit) : materialized.slice(-limit),
+    complete: materialized.length <= limit,
+  }
+}
+
+/** Bounded child-owned history for callers that only fold the returned window. */
+export function sessionOwnEvents(session: Session, window: OwnEventRead = {}): readonly SessionEvent[] {
+  return sessionOwnEventWindow(session, window).events
 }
 
 /** Legacy hosts log each chunk separately; current hosts embed the committed stream. */

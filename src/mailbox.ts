@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
 import { acknowledgeMailbox, CAPTAIN_KEY, discardMailboxMessages, findTeamByCaptain, readMailbox, readUnreadMailbox, readTeam, sanitizeKey, withTeamLock } from './state.ts'
 import { TERMINAL_TASK_STATUSES, type ActivationLease, type TeamMessage, type TeamState } from './types.ts'
-import { sessionOwnEvents } from './harness-compat.ts'
+import { sessionOwnEventWindow } from './harness-compat.ts'
 import { leadIdentityOfAsync, sessionLeadsTeamAsync } from './lineage.ts'
 
 const PREFIX = 'AgentTeams inbox receipt: '
@@ -214,13 +214,19 @@ export function installMailboxAdmission(ctx: Context, stateDir: string): void {
     // existing turn, a status tool may have consumed this same mail already;
     // dropping its duplicate must not block the pending tool-result response.
     if (decision.messages.length > 0 && admitted.length === 0) {
-      const events = sessionOwnEvents(payload.agent.session)
+      // One bounded tail is enough: the scan stops at the first step/start or
+      // turn/start, which is at most one step behind the log's end.
+      const window = sessionOwnEventWindow(payload.agent.session, { edge: 'tail' })
       let continuing = false
-      for (let i = events.length - 1; i >= 0; i--) {
-        const event = events[i]!
-        if (event.type === 'step/start' && event.data.turn === payload.turn) { continuing = true; break }
-        if (event.type === 'turn/start') break
+      let decided = false
+      for (let i = window.events.length - 1; i >= 0; i--) {
+        const event = window.events[i]!
+        if (event.type === 'step/start' && event.data.turn === payload.turn) { continuing = true; decided = true; break }
+        if (event.type === 'turn/start') { decided = true; break }
       }
+      // Undecided on a truncated window means the live turn already spans more
+      // events than one window: treat it as in progress rather than drop mail.
+      if (!decided && !window.complete) continuing = true
       if (!continuing) return { kind: 'reject' }
     }
     return { ...decision, messages: admitted }

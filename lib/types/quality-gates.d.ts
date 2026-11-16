@@ -172,6 +172,22 @@ export declare function isDefaultExcludedPath(path: string): boolean;
 export declare function classifyChangedPath(path: string, inScope?: readonly string[], outOfScope?: readonly string[]): PathClassification;
 export declare function collectChangedPaths(gitStatusText: string): string[];
 export declare function inScopeOverlap(left: readonly string[] | undefined, right: readonly string[] | undefined): string[];
+export interface WriteScopeConflict {
+    taskId: string;
+    paths: string[];
+}
+/**
+ * Dispatch-time write-domain admission. `create_task` already rejects an
+ * overlapping writer pair, but a graph written before that check, or one whose
+ * contract was amended later, can still hold two open writers on one path.
+ * Starting the second writer would let two members edit the same file, so the
+ * scheduler defers it until the started writer settles.
+ *
+ * Only already-started writers block. Two ready writers on the same path are
+ * serialized by the single-claim scheduler, and blocking on a `pending` task
+ * would deadlock that pair against itself.
+ */
+export declare function writeScopeConflict(tasks: readonly TeamTask[], task: TeamTask): WriteScopeConflict | undefined;
 export declare function validateCreateTask(team: TeamState, input: CreateTaskInput): ValidateCreateTaskResult;
 export declare function evaluateQualityCompletion(task: TeamTask, update: QualityCompletionUpdate): QualityCompletionResult;
 /**
