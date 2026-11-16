@@ -361,6 +361,40 @@ export function inScopeOverlap(
   return hits
 }
 
+const STARTED_WRITE_STATUSES: readonly TaskStatus[] = ['claimed', 'in_progress']
+
+export interface WriteScopeConflict {
+  taskId: string
+  paths: string[]
+}
+
+/**
+ * Dispatch-time write-domain admission. `create_task` already rejects an
+ * overlapping writer pair, but a graph written before that check, or one whose
+ * contract was amended later, can still hold two open writers on one path.
+ * Starting the second writer would let two members edit the same file, so the
+ * scheduler defers it until the started writer settles.
+ *
+ * Only already-started writers block. Two ready writers on the same path are
+ * serialized by the single-claim scheduler, and blocking on a `pending` task
+ * would deadlock that pair against itself.
+ */
+export function writeScopeConflict(
+  tasks: readonly TeamTask[],
+  task: TeamTask,
+): WriteScopeConflict | undefined {
+  if (!WRITE_KINDS.includes(taskKindOf(task))) return undefined
+  if (task.inScope === undefined || task.inScope.length === 0) return undefined
+  for (const other of tasks) {
+    if (other.id === task.id) continue
+    if (!WRITE_KINDS.includes(taskKindOf(other))) continue
+    if (!STARTED_WRITE_STATUSES.includes(other.status)) continue
+    const overlap = inScopeOverlap(task.inScope, other.inScope)
+    if (overlap.length > 0) return { taskId: other.id, paths: overlap }
+  }
+  return undefined
+}
+
 function nonemptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim() !== ''
 }

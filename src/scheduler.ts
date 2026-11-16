@@ -42,7 +42,7 @@ import {
   withTeamLock,
   writeTeam,
 } from './state.ts'
-import { contractStaleness, isVerdictKind, taskKindOf, verdictScopePatterns } from './quality-gates.ts'
+import { contractStaleness, isVerdictKind, taskKindOf, verdictScopePatterns, writeScopeConflict } from './quality-gates.ts'
 import { digestWorkspacePaths, snapshotWorkspacePaths } from './artifacts.ts'
 import type { ActivationLease, ActivationStopReason, ContextLifecycleCapability, ContextLifecycleComposition, NotificationLedgerEntry, TaskParking, TeamMember, TeamState, TeamTask } from './types.ts'
 
@@ -1540,6 +1540,21 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
               await writeTeam(stateRoot, fresh)
             }
             return undefined
+          }
+          // A fresh candidate may not enter a write domain another member has
+          // already started on. Defer silently: the task stays pending with no
+          // attempt, and the task-graph kick that follows the blocker's
+          // completion brings the scheduler back here.
+          if (owned === undefined) {
+            const conflict = writeScopeConflict(fresh.tasks, task)
+            if (conflict !== undefined) {
+              ctx.logger.warn(`agent-teams: deferring ${team!.id}/${task.id} for ${currentMember.name}: inScope overlaps started writer ${conflict.taskId} at ${conflict.paths.join(', ')}`)
+              if (currentMember.status !== 'idle') {
+                currentMember.status = 'idle'
+                await writeTeam(stateRoot, fresh)
+              }
+              return undefined
+            }
           }
           const previousAssignee = task.assignee
           const previousStatus = recoverOwned ? task.status as 'claimed' | 'in_progress' : undefined
