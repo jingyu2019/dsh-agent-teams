@@ -117,6 +117,17 @@ test('a refused delivery names the cause the plugin owns', async t => {
     assert.match(retiredMemberDeliveryFailure('drafter'), /"drafter"/u)
     assert.match(lostSessionDeliveryFailure('drafter', 'x'), /"drafter"/u)
   })
+
+  await t.test('the host refusal is carried into the recorded reason', () => {
+    // The host folds every terminal session state into one NOT_RESUMABLE code,
+    // so its own text is the only place the real cause survives. Dropping it left
+    // a member replaying "no resumable session" with nothing to act on.
+    const withHost = lostSessionDeliveryFailure('drafter', 'start failed', 'subagent "abc" already exists')
+    assert.match(withHost, /\[host: subagent "abc" already exists\]/u)
+    assert.match(withHost, /no resumable session/u, 'the exit instructions must survive')
+    assert.doesNotMatch(lostSessionDeliveryFailure('drafter', 'x', ''), /\[host:/u, 'an empty host reason adds no noise')
+    assert.doesNotMatch(lostSessionDeliveryFailure('drafter', 'x'), /\[host:/u)
+  })
 })
 
 test('the staged-plan guard says which operation was refused', async t => {
@@ -156,5 +167,15 @@ test('a reserved child id is not evidence that a session started', async t => {
   await t.test('a member without any lease keeps the strict reading', () => {
     assert.equal(startedSessionEvidence({}, member({ currentActivationId: undefined })), true)
     assert.equal(startedSessionEvidence({ activations: [] }, member({ id: '' })), false)
+  })
+
+  await t.test('a rejected lease is a refusal, not evidence that a session started', () => {
+    // Counting `rejected` as a start made `recordSpawnError` return early on
+    // every retry: no spawnError reached the team and the breaker never tripped,
+    // so the member retried forever (session-69bf9399).
+    assert.equal(startedSessionEvidence({ activations: [{ ...pending, state: 'rejected' }] }, member()), false)
+    // A settled lease belongs to a session the host did start.
+    assert.equal(startedSessionEvidence({ activations: [{ ...pending, state: 'ended' }] }, member()), true)
+    assert.equal(startedSessionEvidence({ activations: [{ ...pending, state: 'released' }] }, member()), true)
   })
 })

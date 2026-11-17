@@ -1395,6 +1395,59 @@ export async function spawnMember(
  * @param signal - caller cancellation, forwarded to the delivery.
  * @returns whether the member inbox accepted the message.
  */
+export interface MemberDeliveryAttempt {
+  /** Whether the member inbox accepted the message. */
+  readonly delivered: boolean
+  /** The host's own refusal reason, when the delivery threw. */
+  readonly error?: string
+}
+
+/**
+ * Deliver one member prompt and keep the host's refusal reason.
+ *
+ * The host folds every terminal session state into one `NOT_RESUMABLE` code, so
+ * the thrown message is the only place the real cause survives — an already
+ * existing child, a session absent from its creator catalog, a missing
+ * continuation state. {@link deliverToMember} alone drops it into a log line the
+ * captain never sees, which is how a member can replay "no resumable session"
+ * forever with nothing recorded on the team (#350).
+ * @param ctx - the plugin context (injects `subagents`).
+ * @param captain - the exact live captain agent (the member's direct parent).
+ * @param childId - the member's durable child session id.
+ * @param text - the message content.
+ * @param signal - caller cancellation, forwarded to the delivery.
+ * @returns whether the inbox accepted the message, and why it did not.
+ */
+export async function deliverToMemberWithReason(
+  ctx: Context,
+  captain: Agent,
+  childId: string,
+  text: string,
+  signal: AbortSignal,
+  mode: 'queue' | 'steer' = 'queue',
+): Promise<MemberDeliveryAttempt> {
+  try {
+    const content = [{ type: 'text' as const, text }]
+    if (mode === 'steer') await steerMemberPrompt(ctx.subagents, captain, brandedSessionId(childId), content, signal, ctx.agents.get(brandedSessionId(childId)))
+    else await queueMemberPrompt(ctx.subagents, captain, brandedSessionId(childId), content, signal)
+    return { delivered: true }
+  } catch (error: unknown) {
+    ctx.logger.warn(`agent-teams: prompt delivery to member ${childId} failed: ${String(error)}`)
+    return { delivered: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * Deliver one message to a member as its next FIFO turn. Best effort: a
+ * failure (member gone or not continuable) is logged and reported as `false`
+ * so the caller can decide (mailbox delivery still happened).
+ * @param ctx - the plugin context (injects `subagents`).
+ * @param captain - the exact live captain agent (the member's direct parent).
+ * @param childId - the member's durable child session id.
+ * @param text - the message content.
+ * @param signal - caller cancellation, forwarded to the delivery.
+ * @returns whether the member inbox accepted the message.
+ */
 export async function deliverToMember(
   ctx: Context,
   captain: Agent,
@@ -1403,15 +1456,7 @@ export async function deliverToMember(
   signal: AbortSignal,
   mode: 'queue' | 'steer' = 'queue',
 ): Promise<boolean> {
-  try {
-    const content = [{ type: 'text' as const, text }]
-    if (mode === 'steer') await steerMemberPrompt(ctx.subagents, captain, brandedSessionId(childId), content, signal, ctx.agents.get(brandedSessionId(childId)))
-    else await queueMemberPrompt(ctx.subagents, captain, brandedSessionId(childId), content, signal)
-    return true
-  } catch (error: unknown) {
-    ctx.logger.warn(`agent-teams: prompt delivery to member ${childId} failed: ${String(error)}`)
-    return false
-  }
+  return (await deliverToMemberWithReason(ctx, captain, childId, text, signal, mode)).delivered
 }
 
 /**

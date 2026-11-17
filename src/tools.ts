@@ -92,6 +92,7 @@ import { bumpTaskRevision, expectedRevisionError, isExpectedRevision, taskRevisi
 import { captureLaneState, cleanupLane, integrateLane, preserveLane } from './worktrees.ts'
 import {
   deliverToMember,
+  deliverToMemberWithReason,
   installRetiredMemberGuard,
   installMemberSelectionRuntime,
   installMemberDelegationGuard,
@@ -610,9 +611,16 @@ export function retiredMemberDeliveryFailure(memberName: string): string {
   return `member "${memberName}" was retired: its session was stopped and cannot be resumed. Reset its context for a fresh session, or remove the member`
 }
 
-/** Why a delivery to a member without a resumable session was refused. */
-export function lostSessionDeliveryFailure(memberName: string, spawnError: string | undefined): string {
-  return `member "${memberName}" has no resumable session (start error: ${spawnError ?? 'unknown'}); reassign the task with agent_teams_reassign_task, or reset the member with agent_teams_reset_member_context once it is idle`
+/**
+ * Why a delivery to a member without a resumable session was refused.
+ * @param spawnError - why starting the member failed earlier, if it did.
+ * @param hostError - the host's own refusal text for this delivery. It carries
+ *   the real cause behind the folded `NOT_RESUMABLE` code, so it is recorded
+ *   with the reason instead of only being logged.
+ */
+export function lostSessionDeliveryFailure(memberName: string, spawnError: string | undefined, hostError?: string): string {
+  const base = `member "${memberName}" has no resumable session (start error: ${spawnError ?? 'unknown'}); reassign the task with agent_teams_reassign_task, or reset the member with agent_teams_reset_member_context once it is idle`
+  return hostError === undefined || hostError === '' ? base : `${base} [host: ${hostError}]`
 }
 
 /**
@@ -652,18 +660,22 @@ export function memberRouteBusyFailure(memberName: string): string {
  * `member.id` is the *reserved* child id: the scheduler writes it before asking
  * the host to start the session (#350), so a non-empty id is not evidence. The
  * activation lease is: `pending` with no start/running observation means the
- * host never got as far as a session. Without any lease for the member the id
- * predates managed activations, and the strict reading is kept.
+ * host never got as far as a session. `rejected` is the same story one step
+ * further along — the dispatch was refused, so that lease proves the opposite of
+ * a start. Counting it as evidence is what let a member replay "no resumable
+ * session" forever with no `spawnError` recorded and the breaker never tripping.
+ * Without any lease for the member the id predates managed activations, and the
+ * strict reading is kept.
  */
 export function startedSessionEvidence(team: { activations?: ActivationLease[] }, member: TeamMember): boolean {
   const leases = (team.activations ?? []).filter(lease => lease.memberId === member.id)
   const lease = leases.find(item => item.activationId === member.currentActivationId)
     ?? leases[leases.length - 1]
   if (lease !== undefined) {
-    return lease.startObserved === true
-      || lease.runningObservedAt !== undefined
-      || lease.startedAt !== undefined
-      || lease.state !== 'pending'
+    if (lease.startObserved === true || lease.runningObservedAt !== undefined || lease.startedAt !== undefined) return true
+    // A rejected lease is a refusal, not a start. `ended`/`released` are
+    // settlements of a session the host had already started, so they count.
+    return lease.state !== 'pending' && lease.state !== 'rejected'
   }
   return member.id !== ''
 }
@@ -1263,12 +1275,12 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             deliveryFailure = retiredMemberDeliveryFailure(memberName)
             return { accepted: false }
           }
-          const delivered = await deliverToMember(ctx, captain, member.id, text, signal, mode)
-          if (!delivered) {
+          const attempt = await deliverToMemberWithReason(ctx, captain, member.id, text, signal, mode)
+          if (!attempt.delivered) {
             deliveryCause = 'lost-session'
-            deliveryFailure = lostSessionDeliveryFailure(memberName, member.spawnError)
+            deliveryFailure = lostSessionDeliveryFailure(memberName, member.spawnError, attempt.error)
           }
-          return { accepted: delivered }
+          return { accepted: attempt.delivered }
         }
         const selection = await resolveMemberLlmSelection(ctx, captain, {
           provider: member.activeProvider ?? member.provider,

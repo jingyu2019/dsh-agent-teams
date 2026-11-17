@@ -237,6 +237,9 @@ test('R2 a dead session on the dispatch path is reclaimed and reset, not reporte
     assert.match(team.tasks[0].output, /has no resumable session/u)
     assert.match(team.tasks[0].output, /start error: previous start error/u, 'the recorded start error must be carried forward')
     assert.equal(team.timeline.some(entry => entry.action === 'member.context_reset'), true, 'the reset must leave a timeline trace')
+    // The host refusal is the only surviving description of why the session was
+    // gone; it must reach the team record, not only the captain's log.
+    assert.match(team.tasks[0].output, /\[host: NOT_RESUMABLE: session is gone\]/u, 'the host refusal must be recorded with the reason')
   } finally { await f.cleanup() }
 })
 

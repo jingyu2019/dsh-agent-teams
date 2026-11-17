@@ -354,6 +354,40 @@ export declare function spawnMember(ctx: Context, config: MemberRuntimeConfig, s
  * @param signal - caller cancellation, forwarded to the delivery.
  * @returns whether the member inbox accepted the message.
  */
+export interface MemberDeliveryAttempt {
+    /** Whether the member inbox accepted the message. */
+    readonly delivered: boolean;
+    /** The host's own refusal reason, when the delivery threw. */
+    readonly error?: string;
+}
+/**
+ * Deliver one member prompt and keep the host's refusal reason.
+ *
+ * The host folds every terminal session state into one `NOT_RESUMABLE` code, so
+ * the thrown message is the only place the real cause survives — an already
+ * existing child, a session absent from its creator catalog, a missing
+ * continuation state. {@link deliverToMember} alone drops it into a log line the
+ * captain never sees, which is how a member can replay "no resumable session"
+ * forever with nothing recorded on the team (#350).
+ * @param ctx - the plugin context (injects `subagents`).
+ * @param captain - the exact live captain agent (the member's direct parent).
+ * @param childId - the member's durable child session id.
+ * @param text - the message content.
+ * @param signal - caller cancellation, forwarded to the delivery.
+ * @returns whether the inbox accepted the message, and why it did not.
+ */
+export declare function deliverToMemberWithReason(ctx: Context, captain: Agent, childId: string, text: string, signal: AbortSignal, mode?: 'queue' | 'steer'): Promise<MemberDeliveryAttempt>;
+/**
+ * Deliver one message to a member as its next FIFO turn. Best effort: a
+ * failure (member gone or not continuable) is logged and reported as `false`
+ * so the caller can decide (mailbox delivery still happened).
+ * @param ctx - the plugin context (injects `subagents`).
+ * @param captain - the exact live captain agent (the member's direct parent).
+ * @param childId - the member's durable child session id.
+ * @param text - the message content.
+ * @param signal - caller cancellation, forwarded to the delivery.
+ * @returns whether the member inbox accepted the message.
+ */
 export declare function deliverToMember(ctx: Context, captain: Agent, childId: string, text: string, signal: AbortSignal, mode?: 'queue' | 'steer'): Promise<boolean>;
 /**
  * Request cancellation of one live member's current turn. Best effort, fire

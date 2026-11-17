@@ -268,8 +268,14 @@ export declare function memberDispatchPaused(spawnFailures: number | undefined, 
  * owns instead of letting both collapse into one message.
  */
 export declare function retiredMemberDeliveryFailure(memberName: string): string;
-/** Why a delivery to a member without a resumable session was refused. */
-export declare function lostSessionDeliveryFailure(memberName: string, spawnError: string | undefined): string;
+/**
+ * Why a delivery to a member without a resumable session was refused.
+ * @param spawnError - why starting the member failed earlier, if it did.
+ * @param hostError - the host's own refusal text for this delivery. It carries
+ *   the real cause behind the folded `NOT_RESUMABLE` code, so it is recorded
+ *   with the reason instead of only being logged.
+ */
+export declare function lostSessionDeliveryFailure(memberName: string, spawnError: string | undefined, hostError?: string): string;
 /**
  * Why a member route change was refused because the team is not running yet.
  *
@@ -296,8 +302,12 @@ export declare function memberRouteBusyFailure(memberName: string): string;
  * `member.id` is the *reserved* child id: the scheduler writes it before asking
  * the host to start the session (#350), so a non-empty id is not evidence. The
  * activation lease is: `pending` with no start/running observation means the
- * host never got as far as a session. Without any lease for the member the id
- * predates managed activations, and the strict reading is kept.
+ * host never got as far as a session. `rejected` is the same story one step
+ * further along — the dispatch was refused, so that lease proves the opposite of
+ * a start. Counting it as evidence is what let a member replay "no resumable
+ * session" forever with no `spawnError` recorded and the breaker never tripping.
+ * Without any lease for the member the id predates managed activations, and the
+ * strict reading is kept.
  */
 export declare function startedSessionEvidence(team: {
     activations?: ActivationLease[];
