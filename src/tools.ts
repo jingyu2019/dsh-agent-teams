@@ -97,7 +97,7 @@ import {
   validateMemberLlmSelections,
   type MemberRuntimeConfig,
 } from './members.ts'
-import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamMessage, type TeamState, type TeamTask } from './types.ts'
+import { TERMINAL_TASK_STATUSES, type ActivationLease, type TeamMember, type TeamMessage, type TeamState, type TeamTask } from './types.ts'
 import { collectCompletedDependencyOutputs, formatDependencyOutputs, installTeamScheduler, type DispatchRequest, type DispatchResult, type TeamScheduler } from './scheduler.ts'
 import { installMailboxAdmission, isCurrentMail, mailboxContent, mailboxPrompt, readCurrentMailbox, readCurrentMailboxLocked } from './mailbox.ts'
 import { resolveMemberSkills, resolveTeamProfile, type SkillBindingConfig } from './profiles.ts'
@@ -462,6 +462,28 @@ export function retiredMemberDeliveryFailure(memberName: string): string {
 /** Why a delivery to a member without a resumable session was refused. */
 export function lostSessionDeliveryFailure(memberName: string, spawnError: string | undefined): string {
   return `member "${memberName}" has no resumable session (start error: ${spawnError ?? 'unknown'}); reassign the task with agent_teams_reassign_task, or reset the member with agent_teams_reset_member_context once it is idle`
+}
+
+/**
+ * Whether a member record proves that a child session actually started.
+ *
+ * `member.id` is the *reserved* child id: the scheduler writes it before asking
+ * the host to start the session (#350), so a non-empty id is not evidence. The
+ * activation lease is: `pending` with no start/running observation means the
+ * host never got as far as a session. Without any lease for the member the id
+ * predates managed activations, and the strict reading is kept.
+ */
+export function startedSessionEvidence(team: { activations?: ActivationLease[] }, member: TeamMember): boolean {
+  const leases = (team.activations ?? []).filter(lease => lease.memberId === member.id)
+  const lease = leases.find(item => item.activationId === member.currentActivationId)
+    ?? leases[leases.length - 1]
+  if (lease !== undefined) {
+    return lease.startObserved === true
+      || lease.runningObservedAt !== undefined
+      || lease.startedAt !== undefined
+      || lease.state !== 'pending'
+  }
+  return member.id !== ''
 }
 
 export function requireStagedTeam(team: TeamState, operation: string): void {
@@ -964,7 +986,11 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           if (failed === undefined) return
           // A member that already owns a child session is not unspawned; its
           // failure is a delivery failure and must not be reported as a start one.
-          if (failed.id !== '' && !includeStarted) return
+          // The reserved child id is written before the host is asked to start
+          // the session (#350), so a non-empty id alone proves nothing: look for
+          // evidence that a session actually started. Without a lease record we
+          // keep the strict reading — that id predates managed activations.
+          if (startedSessionEvidence(fresh, failed) && !includeStarted) return
           failed.spawnError = reason
           failed.spawnFailures = (failed.spawnFailures ?? 0) + 1
           await writeTeam(root, fresh)

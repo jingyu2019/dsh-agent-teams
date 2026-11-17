@@ -26,6 +26,7 @@ import {
   memberSpawnFailureLimit,
   requireStagedTeam,
   retiredMemberDeliveryFailure,
+  startedSessionEvidence,
 } from '../lib/tools.js'
 import { createTeamDir, readTeam } from '../lib/state.js'
 import { removeTestTree } from './test-cleanup.mjs'
@@ -132,5 +133,28 @@ test('the staged-plan guard says which operation was refused', async t => {
     // The old copy claimed the whole plan was locked; a running team still has
     // status and edit_plan, and the message must point there.
     assert.throws(() => requireStagedTeam(running, 'editing this plan'), /agent_teams_status|agent_teams_edit_plan/u)
+  })
+})
+
+test('a reserved child id is not evidence that a session started', async t => {
+  const member = (over = {}) => ({ id: 'child-1', name: 'worker', joinedAt: 0, status: 'idle', currentActivationId: 'a1', ...over })
+  const pending = { activationId: 'a1', memberId: 'child-1', state: 'pending', startObserved: false }
+
+  await t.test('the reserved id alone does not count, so a start failure is recorded', () => {
+    // The scheduler writes the reserved child id before asking the host to start
+    // the session (#350). Treating that id as "already has a session" kept the
+    // failure counter at zero forever, so the breaker could never trip.
+    assert.equal(startedSessionEvidence({ activations: [pending] }, member()), false)
+  })
+
+  await t.test('an observed start counts', () => {
+    assert.equal(startedSessionEvidence({ activations: [{ ...pending, startObserved: true }] }, member()), true)
+    assert.equal(startedSessionEvidence({ activations: [{ ...pending, state: 'started' }] }, member()), true)
+    assert.equal(startedSessionEvidence({ activations: [{ ...pending, startedAt: 7 }] }, member()), true)
+  })
+
+  await t.test('a member without any lease keeps the strict reading', () => {
+    assert.equal(startedSessionEvidence({}, member({ currentActivationId: undefined })), true)
+    assert.equal(startedSessionEvidence({ activations: [] }, member({ id: '' })), false)
   })
 })

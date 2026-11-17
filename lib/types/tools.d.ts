@@ -14,7 +14,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { type MemberToolPolicy } from './tool-policies.ts';
 import type { ArtifactRootConfig, ArtifactSnapshot } from './types.ts';
 import { type MemberRuntimeConfig } from './members.ts';
-import { type TeamState, type TeamTask } from './types.ts';
+import { type ActivationLease, type TeamMember, type TeamState, type TeamTask } from './types.ts';
 import { type TeamScheduler } from './scheduler.ts';
 import { type SkillBindingConfig } from './profiles.ts';
 export { steerCaptainReport } from './members.ts';
@@ -206,6 +206,18 @@ export declare function memberDispatchPaused(spawnFailures: number | undefined, 
 export declare function retiredMemberDeliveryFailure(memberName: string): string;
 /** Why a delivery to a member without a resumable session was refused. */
 export declare function lostSessionDeliveryFailure(memberName: string, spawnError: string | undefined): string;
+/**
+ * Whether a member record proves that a child session actually started.
+ *
+ * `member.id` is the *reserved* child id: the scheduler writes it before asking
+ * the host to start the session (#350), so a non-empty id is not evidence. The
+ * activation lease is: `pending` with no start/running observation means the
+ * host never got as far as a session. Without any lease for the member the id
+ * predates managed activations, and the strict reading is kept.
+ */
+export declare function startedSessionEvidence(team: {
+    activations?: ActivationLease[];
+}, member: TeamMember): boolean;
 export declare function requireStagedTeam(team: TeamState, operation: string): void;
 /** Public schema guidance shared by every tool-policy selection surface. */
 export declare const TOOL_POLICY_DESCRIPTION = "Optional owner-declared tool-policy id. Omit when no policy is needed. Never invent an id; an unknown non-empty id is rejected atomically.";
