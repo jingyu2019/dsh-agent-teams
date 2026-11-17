@@ -132,6 +132,14 @@ export interface TeamTask {
     status: TaskStatus;
     /** Member name (or `captain`) the task is assigned to; unassigned tasks await a claim. */
     assignee?: string;
+    /**
+     * Dispatch this task into a fresh member conversation. The member keeps its
+     * roster row, route, skills, tool policy and worktree lane; only the durable
+     * child session is retired, so the turn starts without the previous tasks'
+     * transcript. The scheduler honours it when the member is safely idle and
+     * otherwise dispatches normally and logs why the reset was skipped.
+     */
+    freshContext?: boolean;
     /** Task ids that must reach `completed` before this task can be claimed. */
     dependencies: string[];
     /** The worker's written result, set when the task completes or fails. */

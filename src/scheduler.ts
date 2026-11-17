@@ -18,7 +18,7 @@ import { SessionId, SessionLogOffset, type SessionEvent } from '@deepseek-ai/dsh
 import type { SubagentRunEndInfo, SubagentRunInfo } from '@deepseek-ai/dsh-subagent'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { createRouteCursor, deliverToMember, memberRouteChain, routeCursorReady, steerCaptainReport } from './members.ts'
+import { createRouteCursor, deliverToMember, memberRouteChain, resetMemberContextForDispatch, routeCursorReady, steerCaptainReport } from './members.ts'
 import { bumpTaskRevision } from './task-revision.ts'
 import { bindAgentRun, boundAgentRun, sessionOwnEventWindow, unbindAgentRun, usesManagedActivations, type MemberStartResult } from './harness-compat.ts'
 import { isCurrentMail, mailboxPrompt } from './mailbox.ts'
@@ -1652,6 +1652,23 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
                 await writeTeam(stateRoot, fresh)
               }
               return undefined
+            }
+          }
+          // A task may ask for an empty member conversation (`freshContext`).
+          // Retiring live work is never worth honouring the hint, so a refusal
+          // degrades to a normal dispatch turn and the reason stays in the log.
+          if (owned === undefined && task.freshContext === true) {
+            const reset = await resetMemberContextForDispatch({
+              stateRoot,
+              team: fresh,
+              memberName: currentMember.name,
+              reason: `fresh context requested by ${task.id}`,
+              task,
+            })
+            if (reset.reset) {
+              ctx.logger.info(`agent-teams: ${team!.id}/${task.id} starts in a fresh ${currentMember.name} context (retired session ${reset.previousMemberId ?? 'unknown'})`)
+            } else if (reset.reason !== 'member has no session yet') {
+              ctx.logger.warn(`agent-teams: ${team!.id}/${task.id} asked for a fresh ${currentMember.name} context but kept the previous one: ${reset.reason}`)
             }
           }
           const previousAssignee = task.assignee

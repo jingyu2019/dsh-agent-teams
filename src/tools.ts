@@ -172,6 +172,8 @@ export type StagedPlanMutation =
       dependencies: string[]
       /** Optional optimistic lock: refuse the edit when the task moved on. */
       expectedRevision?: number
+      /** Send this task into a fresh member conversation when it is dispatched. */
+      freshContext?: boolean
     }
   | {
       action: 'add_task'
@@ -1283,6 +1285,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           task.description = trimmedOptional(mutation.description)
           task.assignee = trimmedOptional(mutation.assignee)
           task.dependencies = [...new Set(mutation.dependencies.map((item) => item.trim()).filter(Boolean))]
+          if (mutation.freshContext !== undefined) task.freshContext = mutation.freshContext ? true : undefined
           task.updatedAt = Date.now()
           bumpTaskRevision(task)
         } else if (mutation.action === 'add_task') {
@@ -2350,6 +2353,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             description: { type: 'string', description: 'Optional task description.' },
             assignee: { type: 'string', description: 'Optional task assignee; an empty string moves it to the shared pool.' },
             dependencies: { type: 'array', items: { type: 'string' }, description: 'Complete replacement dependency list for a task.' },
+            fresh_context: { type: 'boolean', description: 'Retire the member session before this (never-started) task is dispatched, so its turn starts without the transcript of the previous tasks. The roster row, route, skills, tool policy and worktree lane stay.' },
             role: { type: 'string', description: 'Optional member role.' },
             provider: { type: 'string', description: 'Optional member provider; defaults to the current staged route.' },
             model: { type: 'string', description: 'Optional member model; defaults to the current staged route.' },
@@ -2419,6 +2423,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             assignee: operation.assignee ?? task.assignee,
             dependencies: operation.dependencies ?? task.dependencies,
             ...expectedRevision === undefined ? {} : { expectedRevision },
+            ...operation.fresh_context === undefined ? {} : { freshContext: operation.fresh_context },
           }
         }
         if (operation.action === 'add_task') {
@@ -2732,6 +2737,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       sourceTaskId: { type: 'string', description: 'Source implementation/artifact. Required for kind=repair.' },
       sourceFindingIds: { type: 'array', items: { type: 'string' }, description: 'Finding ids this repair must close.' },
       coverageOf: { type: 'array', items: { type: 'string' }, description: 'User-constraint / goal items this task covers.' },
+      fresh_context: { type: 'boolean', description: 'Dispatch this task into a fresh member conversation: the assigned member keeps its roster row, route, skills, tool policy and worktree lane, but its durable child session is retired first so the turn starts without the previous tasks\' transcript. Use it for work unrelated to what the member just finished; the scheduler keeps the old session and logs why when the member is not safely idle.' },
       resume: { type: 'boolean', description: 'If true, clear halted in the same lock before creating the task.' },
       resumeReason: { type: 'string', description: 'Required non-empty reason when resume=true.' },
     },
@@ -2836,6 +2842,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ...input.sourceTaskId === undefined ? {} : { sourceTaskId: input.sourceTaskId },
           ...input.sourceFindingIds === undefined ? {} : { sourceFindingIds: input.sourceFindingIds },
           ...input.coverageOf === undefined ? {} : { coverageOf: input.coverageOf },
+          ...args.fresh_context === true ? { freshContext: true } : {},
         }
         fresh.taskSeq += 1
         fresh.tasks.push(task)

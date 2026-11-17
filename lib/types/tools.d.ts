@@ -83,6 +83,8 @@ export type StagedPlanMutation = {
     dependencies: string[];
     /** Optional optimistic lock: refuse the edit when the task moved on. */
     expectedRevision?: number;
+    /** Send this task into a fresh member conversation when it is dispatched. */
+    freshContext?: boolean;
 } | {
     action: 'add_task';
     subject: string;

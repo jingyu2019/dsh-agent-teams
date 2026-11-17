@@ -22,9 +22,9 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { agentTeamsSource, boundAgentRun, recordBoundAgentDiagnostic, observedSessionFormatVersion, outputLimitTurn, type MemberStartResult, type SessionFormatBearer, guardSubagentCreation, startMember, usesManagedActivations, guardSubagentDelivery, installContinuableMemberSetup, installMemberSelection, memberToolFilter, queueMemberPrompt, restrictableToolNames, startMemberWithLenientFilter, steerMemberPrompt, sessionOwnEvents, listedProviderNames, type MemberSelectionChannel } from './harness-compat.ts'
 import { bumpTaskRevision } from './task-revision.ts'
-import { markMailboxDelivered, appendMailbox, CAPTAIN_KEY, clearTaskProbe, createMessage, readRetiredMemberIds, readTeamSync, readTeam, releaseMailboxDelivery, withTeamLock, writeTeam } from './state.ts'
+import { markMailboxDelivered, appendMailbox, appendTimeline, CAPTAIN_KEY, clearTaskProbe, createMessage, readRetiredMemberIds, readTeamSync, readTeam, recordRetiredMemberIds, releaseMailboxDelivery, withTeamLock, writeTeam } from './state.ts'
 import { mailboxPrompt } from './mailbox.ts'
-import { nearestLiveLead } from './lineage.ts'
+import { forgetAncestryCache, nearestLiveLead } from './lineage.ts'
 import { appendTeamEvent, captainSessionOf } from './events.ts'
 import type { MemberToolFilter } from './tool-policies.ts'
 import { resolveMemberSkills, type SkillBindingConfig } from './profiles.ts'
@@ -1441,6 +1441,98 @@ export function interruptMember(ctx: Context, captain: Agent, childId: string): 
  * persisted conversation inaccessible. Exact ids keep unrelated subagents
  * untouched while the delivery boundary still prevents further model turns.
  */
+/** Why a requested fresh member context cannot be applied right now. */
+export type FreshContextSkipReason =
+  | 'member has no session yet'
+  | 'member is working'
+  | 'member is stopping'
+  | 'member owns another open attempt'
+  | 'member has an active activation'
+
+/** Whether {@link resetMemberContextForDispatch} may retire the member session. */
+export interface FreshContextEligibility {
+  readonly eligible: boolean
+  readonly reason?: FreshContextSkipReason
+}
+
+/**
+ * Decide whether one task may be dispatched into a fresh member conversation.
+ *
+ * Pure: it reads the persisted graph and decides, so the scheduler can skip a
+ * reset without writing anything. A reset retires the durable child session, so
+ * it is only safe when nothing of the member's previous work is still live —
+ * a running turn, another open attempt, or an activation lease the member still
+ * holds would lose its capability.
+ * @param team - persisted team state (tasks + activation leases).
+ * @param member - the member that would receive the task.
+ * @param task - the task asking for a fresh context.
+ * @returns whether the reset applies, or the reason it was skipped.
+ */
+export function freshContextEligibility(
+  team: Pick<TeamState, 'tasks' | 'activations'>,
+  member: Pick<TeamMember, 'id' | 'name' | 'status' | 'stopping'>,
+  task: Pick<TeamTask, 'id'>,
+): FreshContextEligibility {
+  if (member.id === '') return { eligible: false, reason: 'member has no session yet' }
+  if (member.stopping === true) return { eligible: false, reason: 'member is stopping' }
+  if (member.status === 'working') return { eligible: false, reason: 'member is working' }
+  const otherAttempt = team.tasks.some(candidate => candidate.assignee === member.name
+    && candidate.id !== task.id
+    && candidate.attemptId !== undefined
+    && !TERMINAL_TASK_STATUSES.includes(candidate.status))
+  if (otherAttempt) return { eligible: false, reason: 'member owns another open attempt' }
+  const activation = (team.activations ?? []).some(lease => lease.memberId === member.id
+    && (lease.state === 'pending' || lease.state === 'started' || lease.state === 'recovering'))
+  if (activation) return { eligible: false, reason: 'member has an active activation' }
+  return { eligible: true }
+}
+
+/**
+ * Retire a member's durable child session while keeping its roster row.
+ *
+ * The caller owns the team lock and the write. Returns `false` when the reset
+ * would lose live work, so a dispatch can degrade to a normal turn instead of
+ * failing.
+ * @param stateRoot - workspace state directory for the retired-id registry.
+ * @param team - persisted team state, mutated in place.
+ * @param memberName - member whose next turn starts with a fresh context.
+ * @param reason - timeline note explaining who asked for the reset.
+ * @returns the outcome, including the retired session id when it applied.
+ */
+export async function resetMemberContextForDispatch(input: {
+  readonly stateRoot: string
+  readonly team: TeamState
+  readonly memberName: string
+  readonly reason: string
+  readonly task: Pick<TeamTask, 'id'>
+}): Promise<{ reset: boolean; previousMemberId?: string; reason?: FreshContextSkipReason }> {
+  const member = input.team.members.find(candidate => candidate.name === input.memberName)
+  if (member === undefined) return { reset: false, reason: 'member has no session yet' }
+  const eligibility = freshContextEligibility(input.team, member, input.task)
+  if (!eligibility.eligible) return { reset: false, reason: eligibility.reason }
+  const previous = member.id
+  await recordRetiredMemberIds(input.stateRoot, [previous])
+  forgetAncestryCache([previous])
+  member.id = ''
+  member.status = 'idle'
+  member.generation = (member.generation ?? 1) + 1
+  delete member.runtimeSetup
+  delete member.currentActivationId
+  delete member.activeProvider
+  delete member.activeModel
+  delete member.fallbackActive
+  delete member.spawnError
+  delete member.spawnFailures
+  appendTimeline(input.team, {
+    action: 'member.context_reset',
+    actor: CAPTAIN_KEY,
+    from: member.name,
+    result: input.reason,
+  })
+  await writeTeam(input.stateRoot, input.team)
+  return { reset: true, previousMemberId: previous }
+}
+
 export function installRetiredMemberGuard(ctx: Context, stateDir: string): void {
   guardSubagentDelivery(ctx, async (parent, childId) => {
     const retired = await readRetiredMemberIds(join(parent.session.header.cwd ?? process.cwd(), stateDir))

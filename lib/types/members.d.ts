@@ -375,6 +375,50 @@ export declare function interruptMember(ctx: Context, captain: Agent, childId: s
  * persisted conversation inaccessible. Exact ids keep unrelated subagents
  * untouched while the delivery boundary still prevents further model turns.
  */
+/** Why a requested fresh member context cannot be applied right now. */
+export type FreshContextSkipReason = 'member has no session yet' | 'member is working' | 'member is stopping' | 'member owns another open attempt' | 'member has an active activation';
+/** Whether {@link resetMemberContextForDispatch} may retire the member session. */
+export interface FreshContextEligibility {
+    readonly eligible: boolean;
+    readonly reason?: FreshContextSkipReason;
+}
+/**
+ * Decide whether one task may be dispatched into a fresh member conversation.
+ *
+ * Pure: it reads the persisted graph and decides, so the scheduler can skip a
+ * reset without writing anything. A reset retires the durable child session, so
+ * it is only safe when nothing of the member's previous work is still live —
+ * a running turn, another open attempt, or an activation lease the member still
+ * holds would lose its capability.
+ * @param team - persisted team state (tasks + activation leases).
+ * @param member - the member that would receive the task.
+ * @param task - the task asking for a fresh context.
+ * @returns whether the reset applies, or the reason it was skipped.
+ */
+export declare function freshContextEligibility(team: Pick<TeamState, 'tasks' | 'activations'>, member: Pick<TeamMember, 'id' | 'name' | 'status' | 'stopping'>, task: Pick<TeamTask, 'id'>): FreshContextEligibility;
+/**
+ * Retire a member's durable child session while keeping its roster row.
+ *
+ * The caller owns the team lock and the write. Returns `false` when the reset
+ * would lose live work, so a dispatch can degrade to a normal turn instead of
+ * failing.
+ * @param stateRoot - workspace state directory for the retired-id registry.
+ * @param team - persisted team state, mutated in place.
+ * @param memberName - member whose next turn starts with a fresh context.
+ * @param reason - timeline note explaining who asked for the reset.
+ * @returns the outcome, including the retired session id when it applied.
+ */
+export declare function resetMemberContextForDispatch(input: {
+    readonly stateRoot: string;
+    readonly team: TeamState;
+    readonly memberName: string;
+    readonly reason: string;
+    readonly task: Pick<TeamTask, 'id'>;
+}): Promise<{
+    reset: boolean;
+    previousMemberId?: string;
+    reason?: FreshContextSkipReason;
+}>;
 export declare function installRetiredMemberGuard(ctx: Context, stateDir: string): void;
 /** Bound all descendant creation, including renamed tools and code-runtime calls. */
 export declare function installMemberDelegationGuard(ctx: Context, stateDir: string, maxDepth: number): void;
