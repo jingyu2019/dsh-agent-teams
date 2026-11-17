@@ -4,7 +4,19 @@
 基线：`4dbadab^`（M1 开工前）→ HEAD `f30ec3d`，共 19 个提交。
 复核方式：每条给「行为 / 代码落点（当前 HEAD 行号）/ 提交 / 可复跑命令」；行号会随编辑漂移，以符号名为准（`git grep -n <符号>`）。
 
-结论：**16 项中 15 项已交付并有用例，1 项未开始**（`/expert-name` 零 token 手势，依赖宿主 `userInvocable`，本仓库无探测代码）。
+> **更正（2026-11-17 16:20，独立复核后）**：本文初版把「有代码落点 + 有用例」等同「已交付」，结论写成 15/16 已交付，**低估了 6 处 PRD 明确要求但代码确实没做的缺口**。逐条复核见 [`requirements-inventory-2026-11-17-status-review.md`](./requirements-inventory-2026-11-17-status-review.md)。
+>
+> 修正后的口径：**完整交付 7 项 · 部分交付 8 项 · 未开始 1 项**（16 项按 P2 的 a/b/c 拆分计 18 行）。部分交付的 8 项 = R1、R2、R5、P0-1、P0-3、P0-4、P1-1、P1-2、P1-4 中的 8 行（明细见复核文件 §1）。
+>
+> 其中 6 处是「PRD 要求、代码没做」，不是口径差异（均已由队长 grep 复核）：
+> 1. **P0-3 未覆盖 `reassign_task`**：`writeScopeConflict` 全仓只有定义 `src/quality-gates.ts:401` 与唯一调用 `src/scheduler.ts:1647`，改派路径不设准入；防饥饿与 `member_lane` 放行也未实现。
+> 2. **P0-4 漏了 `agent_teams_amend_task`**：`src/tools.ts:3389-3403` 的参数表没有 `expected_revision`，而 PRD 的问题陈述正是「两次 amend 之间被第三方改写」。
+> 3. **P0-1 的 `docs/tool-surface-budget.json` 未重算**：最后改动仍是 `af1f71c`（2026-11-03），早于 M1 的 `4dbadab`。
+> 4. **R1 只有参传修正、没有 TTL 清扫**：`git grep reconcileStaleActivationLeases` 零命中。
+> 5. **P1-1 无 `reason === 'optional-platform'` 断言**：该字符串只出现在生产文件 `scripts/harness-runtime-cohort.mjs:24`；PRD 指定的 `scripts/harness-runtime-cohort.test.mjs` 不存在。
+> 6. **P1-2 零用例**：`grep -rn consumer-resolution scripts/` 零命中，唯一证据是 `.github/workflows/publish.yml:164/220/234` 与 `f72ecd0`。
+>
+> 另一处安全级问题 I12：P2-a 的免核验依据是成员**自报的 `changedPaths`**（`src/quality-gates.ts:1703`），与 PRD 要点 4「必须以不可伪造的 host effective sandbox 为依据，否则维持固定质量链」冲突——少报路径即可换掉核验。裁定见文末「§裁定」。
 
 ---
 
@@ -78,14 +90,14 @@
 - 行为：`consumer-resolution` 仅在 `publish` 成功且未取消时运行，避免发布失败仍去扫消费者。
 - 落点：`.github/workflows/publish.yml:166` `if: ${{ !cancelled() && needs.publish.result == 'success' }}`。
 - 提交：`f72ecd0`。
-- 复跑：`npm run verify:release`（脚本存在性+job 结构；真实 CI 未在本机跑）。
+- 复跑：**无自动化用例**——`npm run verify:release` 跑的是 `scripts/release-metadata.test.mjs`，该文件对 `publish.yml` / `consumer-resolution` 零提及（已 grep 确认）。唯一证据是 `.github/workflows/publish.yml:164/220/234` 与 `git show f72ecd0 -- .github/workflows/publish.yml`；真实 CI 未在本机跑。
 
 ---
 
 ## M3 · 专家目录、消息闸、只读交付、死会话
 
 ### P1-4 专家目录导入导出与按名解析
-- 行为：`agent_teams_agent_catalog` 的 import / export / resolve 三动作；目录约定 `agents/<name>/{plugin.json, instructions.md, skills/, avatars/}` 或单 JSON（对象 / 数组 / `{schemaVersion:1, presets:[...]}`）；报告 conflicts / warnings / skipped / unchanged，不半途导入；不执行被导入内容；拒绝 `..`、绝对路径、盘符、UNC。
+- 行为：`agent_teams_agent_catalog` 的 import / export / resolve 三动作；目录约定 `agents/<name>/{plugin.json, instructions.md, skills/}` 或单 JSON（对象 / 数组 / `{schemaVersion:1, presets:[...]}`）；报告 conflicts / warnings / skipped / unchanged，不半途导入；不执行被导入内容；拒绝 `..`、绝对路径、盘符、UNC。注意 avatar 不是被扫描的目录，而是 `plugin.json` 的引用字段（`builtin` 角色引用，或 `managed` 的 sha256+ext 引用）：导入时原样复制引用并 warn「托管二进制不可移植」，见 `src/agent-library.ts:225-234`。
 - 落点：`src/agent-library.ts:418` `importAgentCatalog`（同文件 `exportAgentCatalog` / `resolvePresetByName` / `resolveAgentPresetByName`）；工具入口 `src/tools.ts:2251`；工具名 `src/tool-names.ts:9`。
 - 提交：`4d801de`、`f3b048b`（lib + 挂链）。
 - 复跑：`npm run verify:p1-4-agent-catalog`。
@@ -131,3 +143,20 @@
 2. token 计量与 upstream #317 的 token-neutral 决议存在潜在冲突（我们只报数不设门，风险可控）。
 3. 用户已否掉 token 预算门（m01296），本清单不含该需求。
 4. `npm run verify` 整链依赖 pnpm，本机无 pnpm，只能逐项跑 `verify:*`。
+---
+
+## §裁定（2026-11-17 16:25，队长）
+
+1. **t13 状态改判**：接受独立复核结论，本文以「完整 7 / 部分 8 / 未开始 1」为准，初版的「15/16 已交付」作废（正文未删，供对照追溯）。
+2. **I12 走「明示可伪造」而非「补不可伪造依据」**：
+   - 现阶段不实现 host effective sandbox 取证——本机 `0.2.2-rc.3` 未暴露可用的写入事实接口，硬造会变成第二个「自报即证据」。
+   - 已把 README 的「Read-only delivery and spend」改成明示：免核验依据是成员自报的 `changedPaths`，属可见留痕而非防伪门；只对可信的只读工作使用，不可信的仍走固定质量链。
+   - 立 backlog：等宿主提供 effective sandbox / 写事实接口后，把它作为免核验的唯一依据。
+3. **6 处真实缺口不合并进本清单的「已交付」**，按修复顺序排入下一轮（见下），每条都要补「能失败的用例」：
+   1. P0-4 `agent_teams_amend_task` 接 `expected_revision`（并发场景正是 PRD 起因，风险最高）。
+   2. P0-3 `reassign_task` 路径接写域准入 + 防饥饿 + `member_lane` 放行。
+   3. P1-1 `scripts/harness-runtime-cohort.test.mjs` 补 `reason === 'optional-platform'` 断言（不再依赖 `harness-runtime-platform.test.mjs`）。
+   4. P1-2 给 `publish.yml` 的 `consumer-resolution` 门补结构断言用例。
+   5. P0-1 重算 `docs/tool-surface-budget.json` 并挂进 verify。
+   6. R1 补 activation 租约 TTL 清扫（`reconcileStaleActivationLeases`），让 429 后的僵尸租约可自愈。
+4. **`npm run verify` 整链跑不完的真实原因**（复核实测）：`scripts/harness-runtime-verify.mjs` 需要真实 Harness 安装路径，无参调用直接抛错退出；不是产物过期，也与 pnpm 缺失无关。
