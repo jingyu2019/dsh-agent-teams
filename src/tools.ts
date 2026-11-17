@@ -83,7 +83,7 @@ import { memberSpawnRelaxableDeny, optionalToolPolicy, requireToolPolicy, resolv
 import type { ContractAmendmentInput } from './state.ts'
 import type { AcceptanceResult, ArtifactDigest, ArtifactRootConfig, ArtifactSnapshot, CommandResult, ReviewFinding, ReviewVerdict, TaskKind } from './types.ts'
 import { AttachmentError, copyAttachments } from './attachments.ts'
-import { deleteAgentPreset, loadAgentLibrary, saveAgentPreset } from './agent-library.ts'
+import { deleteAgentPreset, exportAgentCatalog, importAgentCatalog, loadAgentLibrary, resolveAgentPresetByName, saveAgentPreset } from './agent-library.ts'
 import { captureLaneState, cleanupLane, integrateLane, preserveLane } from './worktrees.ts'
 import {
   deliverToMember,
@@ -2114,6 +2114,88 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const id = args.id.trim()
       if (id === '') throw new Error('preset id must not be empty')
       return { deleted: await deleteAgentPreset(stateRootOf(workspaceOf(captain), config), id), id }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_teams_agent_catalog',
+    description: 'Import, export, or resolve the portable agent-preset catalog. Import reads a directory (agents/<name>/plugin.json + instructions.md, optional skills/) or one JSON file, validates every entry, reports same-name conflicts instead of overwriting silently, and never executes anything from the imported tree. Export writes the same layout so the tree imports back without loss.',
+    parameters: {
+      action: { type: 'string', required: true, enum: ['import', 'export', 'resolve'] },
+      path: { type: 'string', description: 'Catalog directory or JSON file to import, or the directory to export into. Required for import and export.' },
+      name: { type: 'string', description: 'Preset name for action=resolve.' },
+      overwrite: { type: 'boolean', description: 'Import: replace same-name presets instead of reporting conflicts (identical content keeps its revision). Export: replace existing entry directories.' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          action: { type: 'string', required: true },
+          imported: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { name: { type: 'string', required: true }, id: { type: 'string', required: true }, revision: { type: 'number', required: true } } } },
+          unchanged: { type: 'array', required: true, items: { type: 'string' } },
+          conflicts: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { name: { type: 'string', required: true }, existing_id: { type: 'string', required: true }, existing_revision: { type: 'number', required: true } } } },
+          skipped: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { source: { type: 'string', required: true }, reason: { type: 'string', required: true } } } },
+          warnings: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { source: { type: 'string', required: true }, field: { type: 'string', required: true }, message: { type: 'string', required: true } } } },
+          exported: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { name: { type: 'string', required: true }, directory: { type: 'string', required: true } } } },
+          preset: { type: 'object', additionalProperties: false, properties: {
+            id: { type: 'string', required: true }, revision: { type: 'number', required: true }, name: { type: 'string', required: true },
+            role: { type: 'string', required: true }, execution_prompt: { type: 'string', required: true },
+            provider: { type: 'string' }, model: { type: 'string' }, reasoning_effort: { type: 'string' }, tool_policy: { type: 'string' },
+            skill_ids: { type: 'array', items: { type: 'string' } },
+          } },
+        },
+      },
+      render: (_args, value) => {
+        if (value.action === 'resolve') return [{ type: 'text', text: value.preset === undefined ? 'No agent preset matches that name.' : `Agent preset "${value.preset.name}" (${value.preset.id} r${value.preset.revision}): ${value.preset.role || 'no role'}, ${value.preset.provider ?? 'default provider'}/${value.preset.model ?? 'default model'}.` }]
+        if (value.action === 'export') return [{ type: 'text', text: `Exported ${value.exported.length} agent preset(s): ${value.exported.map(entry => `${entry.name} → ${entry.directory}`).join(', ') || '(none)'}.` }]
+        const conflicts = value.conflicts.map(conflict => `\n  conflict ${conflict.name} (existing ${conflict.existing_id} r${conflict.existing_revision})`).join('')
+        const skipped = value.skipped.map(entry => `\n  skipped ${entry.source}: ${entry.reason}`).join('')
+        const warnings = value.warnings.map(warning => `\n  warning ${warning.source} ${warning.field}: ${warning.message}`).join('')
+        return [{ type: 'text', text: `Imported ${value.imported.length} agent preset(s), ${value.unchanged.length} unchanged, ${value.conflicts.length} conflict(s), ${value.skipped.length} skipped, ${value.warnings.length} warning(s).${conflicts}${skipped}${warnings}` }]
+      },
+    },
+    async execute(args, exec) {
+      if (config.agentLibrary?.enabled !== true) throw new Error('agent preset library is disabled; enable agentLibrary.enabled')
+      const captain = requireCaptain(exec)
+      const stateRoot = stateRootOf(workspaceOf(captain), config)
+      if (args.action === 'resolve') {
+        const name = args.name?.trim() ?? ''
+        if (name === '') throw new Error('action=resolve requires a preset name')
+        const preset = await resolveAgentPresetByName(stateRoot, name)
+        return {
+          action: 'resolve', imported: [], unchanged: [], conflicts: [], skipped: [], warnings: [], exported: [],
+          ...preset === undefined ? {} : { preset: {
+            id: preset.id, revision: preset.revision, name: preset.name, role: preset.role,
+            execution_prompt: preset.executionPrompt, skill_ids: [...preset.skillIds],
+            ...preset.provider === undefined ? {} : { provider: preset.provider },
+            ...preset.model === undefined ? {} : { model: preset.model },
+            ...preset.reasoningEffort === undefined ? {} : { reasoning_effort: preset.reasoningEffort },
+            ...preset.toolPolicy === undefined ? {} : { tool_policy: preset.toolPolicy },
+          } },
+        }
+      }
+      const path = args.path?.trim() ?? ''
+      if (path === '') throw new Error(`action=${args.action} requires a path`)
+      const overwrite = args.overwrite === true
+      if (args.action === 'import') {
+        const result = await importAgentCatalog(stateRoot, path, {
+          overwrite,
+          validate: (input) => {
+            try {
+              resolveMemberSkills(config.skills ?? {}, input.skillIds, input.toolPolicy)
+              return undefined
+            } catch (error: unknown) {
+              return error instanceof Error ? error.message : String(error)
+            }
+          },
+        })
+        return {
+          action: 'import', imported: result.imported, unchanged: result.unchanged, skipped: result.skipped, warnings: result.warnings, exported: [],
+          conflicts: result.conflicts.map(conflict => ({ name: conflict.name, existing_id: conflict.existingId, existing_revision: conflict.existingRevision })),
+        }
+      }
+      const result = await exportAgentCatalog(stateRoot, path, { overwrite })
+      return { action: 'export', imported: [], unchanged: [], conflicts: [], skipped: [], warnings: result.warnings, exported: result.exported }
     },
   }))
 
