@@ -90,6 +90,19 @@ export interface CoverageRow {
     status: 'missing' | 'in_progress' | 'passed' | 'blocked';
     evidence?: string;
 }
+/**
+ * One read-only delivery that skipped a pending verification gate, with the
+ * evidence it was based on. Recorded on the delivery result so the exemption is
+ * never silent: the caller sees which verification was waived and why.
+ */
+export interface DeliveryVerificationExemption {
+    /** Verification tasks this delivery does not have to run. */
+    readonly verificationTaskIds: readonly string[];
+    /** Completed deliveries whose recorded changedPaths were all empty. */
+    readonly basisTaskIds: readonly string[];
+    /** Human-readable evidence line, also mirrored into warnings. */
+    readonly reason: string;
+}
 export interface DeliveryResult {
     ok: boolean;
     blockers: string[];
@@ -99,6 +112,11 @@ export interface DeliveryResult {
      * moved on. Delivery is still allowed, but never silently.
      */
     warnings: string[];
+    /**
+     * Read-only deliveries that needed no verification run. Present only when the
+     * exemption applied, so an empty list and an absent field are equivalent.
+     */
+    exemptions?: readonly DeliveryVerificationExemption[];
 }
 /**
  * Current workspace bytes handed to the delivery check. The rules stay pure:
@@ -375,6 +393,25 @@ export interface WorkOrderWarning {
  * work that is already done.
  */
 export declare function workOrderWarnings(team: TeamState, current: readonly ArtifactDigest[] | undefined): WorkOrderWarning[];
+/**
+ * P2: a read-only delivery needs no verification run.
+ *
+ * A pure research or documentation delivery changes no file, so there is
+ * nothing for a verification task to execute against: demanding passed
+ * `commandsRun` evidence for it would force the verifier to invent a check. The
+ * exemption is deliberately narrow — it exists only when
+ *
+ * 1. the team already completed at least one deliverable,
+ * 2. every completed deliverable recorded an empty `changedPaths`, and
+ * 3. a `verification` task is still open, i.e. it is the gate being waived.
+ *
+ * Anything that reports a changed path keeps the ordinary gate, and no other
+ * kind is ever waived: a completed implementation without `changedPaths` is
+ * rejected by `evaluateQualityCompletion` long before it reaches delivery.
+ * The returned record is the evidence: it names the verification that was
+ * skipped and the deliveries whose empty path list justified skipping it.
+ */
+export declare function readOnlyDeliveryExemption(team: TeamState): DeliveryVerificationExemption | undefined;
 export declare function canDeclareDelivery(team: TeamState, audit?: DeliveryAudit): DeliveryResult;
 export declare function resumeTeamState(team: TeamState, reason: string): ResumeTeamResult;
 /**

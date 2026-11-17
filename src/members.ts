@@ -21,6 +21,7 @@ import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { agentTeamsSource, boundAgentRun, recordBoundAgentDiagnostic, observedSessionFormatVersion, outputLimitTurn, type MemberStartResult, type SessionFormatBearer, guardSubagentCreation, startMember, usesManagedActivations, guardSubagentDelivery, installContinuableMemberSetup, installMemberSelection, memberToolFilter, queueMemberPrompt, restrictableToolNames, startMemberWithLenientFilter, steerMemberPrompt, sessionOwnEvents, listedProviderNames, type MemberSelectionChannel } from './harness-compat.ts'
+import { bumpTaskRevision } from './task-revision.ts'
 import { markMailboxDelivered, appendMailbox, CAPTAIN_KEY, clearTaskProbe, createMessage, readRetiredMemberIds, readTeamSync, readTeam, releaseMailboxDelivery, withTeamLock, writeTeam } from './state.ts'
 import { mailboxPrompt } from './mailbox.ts'
 import { nearestLiveLead } from './lineage.ts'
@@ -503,6 +504,7 @@ export async function failMemberOpenAttempt(
       task.output = summary
       clearTaskProbe(task)
       task.updatedAt = Date.now()
+      bumpTaskRevision(task)
     }
     if (member !== undefined && ctx.agents.get(brandedSessionId(member.id))?.status !== 'running') member.status = 'idle'
     // Only a terminal record of the observed task may be described, and only a

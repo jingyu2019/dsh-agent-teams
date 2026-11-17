@@ -14,7 +14,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { type MemberStartResult } from './harness-compat.ts';
-import type { ActivationLease, ContextLifecycleCapability, TeamTask } from './types.ts';
+import type { ActivationLease, ContextLifecycleCapability, TeamMember, TeamTask } from './types.ts';
 /** Per-dependency output cap in the assignment prompt. */
 export declare const DEPENDENCY_OUTPUT_MAX_CHARS = 2000;
 /** Combined dependency-output budget in the assignment prompt. */
@@ -143,6 +143,32 @@ export interface DispatchTicket {
 export declare function collectCompletedDependencyOutputs(tasks: readonly TeamTask[], taskId: string, warn?: (message: string) => void): DependencyOutput[];
 /** Format completed-dependency outputs with per-item and total truncation. */
 export declare function formatDependencyOutputs(items: readonly DependencyOutput[]): string;
+/** Token counters the host can report per assistant step. */
+declare const TOKEN_USAGE_FIELDS: readonly ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens", "totalTokens"];
+type TokenUsageField = typeof TOKEN_USAGE_FIELDS[number];
+/** Bounded tail read: usage is summed from this window, never the whole log. */
+export declare const TOKEN_USAGE_EVENT_WINDOW = 2000;
+/** One member's token accounting, or why the host cannot report it. */
+export interface MemberTokenUsage {
+    readonly status: 'available' | 'unavailable';
+    /** Assistant steps inside the window that reported usage. */
+    readonly requests: number;
+    /** False when the bounded read stopped before the member's first event. */
+    readonly complete: boolean;
+    readonly usage?: Readonly<Partial<Record<TokenUsageField, number>>>;
+    /** Why the numbers are missing. Never a fabricated zero. */
+    readonly reason?: string;
+}
+/**
+ * P2: aggregate token usage per member for the status surface.
+ *
+ * The numbers come from the member's own durable session log through a bounded
+ * window, so this never copies a long transcript. A member that is not attached,
+ * whose host reports no usage, or whose window holds no usage event is reported
+ * as `unavailable` with the reason — an absent measurement is not zero tokens.
+ */
+export declare function memberTokenUsage(ctx: Context, members: readonly TeamMember[]): Map<string, MemberTokenUsage>;
 export declare function assignmentPrompt(ticket: DispatchTicket, stateDir: string, teamId: string, workOrderWarnings?: readonly string[], parallelToolCalls?: boolean): string;
 /** Install one scheduler and its member activity observer. */
 export declare function installTeamScheduler(ctx: Context, config: SchedulerConfig): TeamScheduler;
+export {};

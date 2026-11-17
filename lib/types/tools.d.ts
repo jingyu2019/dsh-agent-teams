@@ -81,6 +81,8 @@ export type StagedPlanMutation = {
     description?: string | null;
     assignee?: string | null;
     dependencies: string[];
+    /** Optional optimistic lock: refuse the edit when the task moved on. */
+    expectedRevision?: number;
 } | {
     action: 'add_task';
     subject: string;

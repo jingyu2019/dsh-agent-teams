@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import type { MemberToolFilter } from './tool-policies.ts'
 import { FINDING_SEVERITIES, REVIEW_VERDICTS, TASK_KINDS, TERMINAL_TASK_STATUSES, type AvatarRef, type ContextLifecycleCapability, type MessageAttachment, type ReviewFinding, type TaskProbe, type TaskStatus, type TeamMember, type TeamMessage, type TeamProfileSnapshot, type TeamState, type TeamTask, type TimelineAction, type TimelineEntry, type WorktreeLane } from './types.ts'
 import { hasValidQualityTaskFields, isReviewPolicy, isValidFindingLine, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
+import { bumpTaskRevision } from './task-revision.ts'
 import { teamLeadMatch, type LeadIdentity } from './lineage.ts'
 
 export {
@@ -223,6 +224,7 @@ export function activateTaskAttempt(task: TeamTask, assignee: string): string {
   task.probe = undefined
   clearAttemptResult(task)
   task.updatedAt = Date.now()
+  bumpTaskRevision(task)
   return attemptId
 }
 
@@ -262,6 +264,7 @@ export function cancelUnfinishedTask(task: TeamTask, output?: string): void {
   clearTaskActivation(task)
   if (output !== undefined) task.output = output
   task.updatedAt = Date.now()
+  bumpTaskRevision(task)
 }
 
 export function invalidateTaskAttempt(
@@ -277,6 +280,7 @@ export function invalidateTaskAttempt(
   clearTaskActivation(task)
   clearAttemptResult(task)
   task.updatedAt = Date.now()
+  bumpTaskRevision(task)
 }
 
 /**
@@ -1450,6 +1454,8 @@ export function isTeamTask(value: unknown): value is TeamTask {
     && isOptionalString(value['output'])
     && (value['attempt'] === undefined
       || (Number.isSafeInteger(value['attempt']) && (value['attempt'] as number) >= 0))
+    && (value['revision'] === undefined
+      || (Number.isSafeInteger(value['revision']) && (value['revision'] as number) >= 1))
     && isOptionalString(value['attemptId'])
     && isOptionalString(value['handoffId'])
     && isOptionalString(value['handoffFromMemberId'])

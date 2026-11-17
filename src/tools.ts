@@ -84,6 +84,7 @@ import type { ContractAmendmentInput } from './state.ts'
 import type { AcceptanceResult, ArtifactDigest, ArtifactRootConfig, ArtifactSnapshot, CommandResult, MessageIdempotencyRecord, ReviewFinding, ReviewVerdict, TaskKind } from './types.ts'
 import { AttachmentError, copyAttachments } from './attachments.ts'
 import { deleteAgentPreset, exportAgentCatalog, importAgentCatalog, loadAgentLibrary, resolveAgentPresetByName, saveAgentPreset } from './agent-library.ts'
+import { bumpTaskRevision, expectedRevisionError, isExpectedRevision, taskRevision } from './task-revision.ts'
 import { captureLaneState, cleanupLane, integrateLane, preserveLane } from './worktrees.ts'
 import {
   deliverToMember,
@@ -169,6 +170,8 @@ export type StagedPlanMutation =
       description?: string | null
       assignee?: string | null
       dependencies: string[]
+      /** Optional optimistic lock: refuse the edit when the task moved on. */
+      expectedRevision?: number
     }
   | {
       action: 'add_task'
@@ -1241,7 +1244,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             const previousName = member.name
             member.name = renameTo
             for (const task of fresh.tasks) {
-              if (task.assignee === previousName) task.assignee = renameTo
+              if (task.assignee !== previousName) continue
+              task.assignee = renameTo
+              bumpTaskRevision(task)
             }
             const renameReviewer = (policy: import('./types.ts').ReviewPolicy | undefined): void => {
               if (policy?.requiredReviewers === undefined) return
@@ -1270,6 +1275,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             throw new Error(`task "${task.id}" has already started and cannot be edited`)
           }
           if (!staged && mutation.assignee === CAPTAIN_KEY) throw new Error('use reassign_task for captain takeover')
+          const conflict = expectedRevisionError(task, mutation.expectedRevision)
+          if (conflict !== undefined) throw new Error(conflict)
           const subject = mutation.subject.trim()
           if (subject === '') throw new Error('task subject must not be empty')
           task.subject = subject
@@ -1277,6 +1284,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           task.assignee = trimmedOptional(mutation.assignee)
           task.dependencies = [...new Set(mutation.dependencies.map((item) => item.trim()).filter(Boolean))]
           task.updatedAt = Date.now()
+          bumpTaskRevision(task)
         } else if (mutation.action === 'add_task') {
           const subject = mutation.subject.trim()
           if (subject === '') throw new Error('task subject must not be empty')
@@ -1291,6 +1299,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             dependencies: [...new Set(mutation.dependencies.map((item) => item.trim()).filter(Boolean))],
             attempt: 0,
             kind: 'work',
+            revision: 1,
             createdAt: now,
             updatedAt: now,
           }
@@ -2336,6 +2345,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             member_name: { type: 'string', description: 'Member name for update_member or remove_member.' },
             new_name: { type: 'string', description: 'Staged-only replacement member name. Renames the member and every staged task/reviewer reference atomically.' },
             task_id: { type: 'string', description: 'Task id for update_task or remove_task.' },
+            expected_revision: { type: 'number', description: 'Optional optimistic lock for update_task: the task revision you read. The edit is refused when the task changed since; omit it for the previous unconditional behaviour.' },
             subject: { type: 'string', description: 'Required for add_task; optional replacement for update_task.' },
             description: { type: 'string', description: 'Optional task description.' },
             assignee: { type: 'string', description: 'Optional task assignee; an empty string moves it to the shared pool.' },
@@ -2399,6 +2409,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           const taskId = operation.task_id?.trim() ?? ''
           if (taskId === '') throw new Error(`${label} requires task_id`)
           const task = requireTask(team, taskId)
+          const expectedRevision = operation.expected_revision ?? undefined
+          if (expectedRevision !== undefined && !isExpectedRevision(expectedRevision)) throw new Error('expected_revision must be an integer >= 1')
           return {
             action: 'update_task',
             taskId,
@@ -2406,6 +2418,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             description: operation.description ?? task.description,
             assignee: operation.assignee ?? task.assignee,
             dependencies: operation.dependencies ?? task.dependencies,
+            ...expectedRevision === undefined ? {} : { expectedRevision },
           }
         }
         if (operation.action === 'add_task') {
@@ -2807,6 +2820,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           assignee: args.assignee,
           dependencies,
           attempt: 0,
+          revision: 1,
           createdAt: Date.now(),
           updatedAt: Date.now(),
           kind,
@@ -2854,6 +2868,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     description: 'Atomically retry, reassign, or let the captain take over one ready unfinished/failed task. The old attempt is revoked before its member is interrupted, so late updates cannot overwrite the new owner. Use assignee="captain" only when you will finish that task in this turn; a captain can own only one unfinished takeover at a time, and an unfinished takeover returns to the member pool when the captain becomes idle.',
     parameters: {
       task_id: { type: 'string', required: true, description: 'Task to retry/reassign.' },
+      expected_revision: { type: 'number', description: 'Optional optimistic lock: the task revision you read. The reassignment is refused when the task moved on since; omit it for the previous unconditional behaviour.' },
       assignee: { type: 'string', required: true, description: 'Active member name, or "captain" for captain takeover.' },
       reason: { type: 'string', description: 'Why the task is being retried or reassigned.' },
     },
@@ -2886,6 +2901,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const revoked = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(ctx, stateRoot, team.id, captain.id)
         const task = requireTask(fresh, args.task_id)
+        if (args.expected_revision !== undefined && !isExpectedRevision(args.expected_revision)) throw new Error('expected_revision must be an integer >= 1')
+        const staleReassign = expectedRevisionError(task, args.expected_revision)
+        if (staleReassign !== undefined) throw new Error(staleReassign)
         if (task.status === 'completed') throw new Error(`completed task ${task.id} is immutable and cannot be reassigned`)
         if (task.reassigning === true) {
           const previousMember = fresh.members.find(member => member.id === task.handoffFromMemberId && member.stopping === true)
@@ -3101,6 +3119,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     description: 'Update a task status/output. Members must supply the current attempt_id returned by claim_task; stale attempts are rejected after takeover/reassignment. Terminal results are immutable, but owners and the captain can append acceptanceResults/commandsRun/evidence_note as attributed supplemental evidence, without reclaiming or changing the verdict. A captain must use reassign_task(assignee="captain") before updating active member-owned work.',
     parameters: {
       task_id: { type: 'string', required: true, description: 'The task id to update.' },
+      expected_revision: { type: 'number', description: 'Optional optimistic lock: the task revision you read. The update is refused when another writer moved the task since; the error names the current revision to retry with. Omit it to keep the previous unconditional behaviour.' },
       attempt_id: { type: 'string', description: 'Members must explicitly include the current attempt_id from their assignment/claim in EVERY update, including failed reviews with findings. If omitted, retry with the same current id; omission does not revoke the attempt.' },
       status: {
         type: 'string',
@@ -3192,6 +3211,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const updated = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const { team: fresh, identity } = await requireFreshParticipant(ctx, stateRoot, team.id, caller.id)
         const task = requireTask(fresh, args.task_id)
+        if (args.expected_revision !== undefined && !isExpectedRevision(args.expected_revision)) throw new Error('expected_revision must be an integer >= 1')
+        const staleUpdate = expectedRevisionError(task, args.expected_revision)
+        if (staleUpdate !== undefined) throw new Error(staleUpdate)
         if (identity.kind === 'captain'
           && task.assignee !== undefined
           && task.assignee !== CAPTAIN_KEY
@@ -3278,6 +3300,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         // later edit cannot leave the team advertising an unreviewed revision.
         bindClosingVerdict(workspace, fresh, task)
         task.updatedAt = Date.now()
+        bumpTaskRevision(task)
         const priorDependencies = new Map(fresh.tasks.map(item => [item.id, [...item.dependencies]]))
         const followUp = (task.status === 'failed' && isQualityKind(taskKindOf(task)))
           ? applyQualityFollowUp(
@@ -3404,6 +3427,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           throw new Error(result.error ?? 'amend_task rejected by quality gates')
         }
         Object.assign(task, result.task)
+        bumpTaskRevision(task)
         task.updatedAt = Date.now()
         appendTimeline(fresh, { action: 'task.amended', actor: CAPTAIN_KEY, taskId: task.id, result: args.reason })
         await writeTeam(stateRoot, fresh)
@@ -4196,6 +4220,7 @@ async function initializeProfileTeam(input: {
       assignee: template.assignee,
       dependencies: template.dependencies.map((dependency) => seedToActual.get(dependency) ?? dependency),
       attempt: 0,
+      revision: 1,
       createdAt: now,
       updatedAt: now,
     })),
@@ -4319,6 +4344,7 @@ export function applyQualityFollowUp(
       status: 'pending',
       assignee: draft.assignee,
       dependencies,
+      revision: 1,
       attempt: 0,
       createdAt: now,
       updatedAt: now,

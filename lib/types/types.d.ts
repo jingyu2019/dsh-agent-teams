@@ -222,6 +222,18 @@ export interface TeamTask {
     coverageOf?: string[];
     /** Captain-only contract amendments, oldest first (see amendTaskContract). */
     revisions?: TaskRevision[];
+    /**
+     * Monotonic optimistic-lock version (#P0-4): 1 when created, +1 on every
+     * contract/status/assignee write. Callers that read a task can send it back
+     * as `expected_revision` so a concurrent editor cannot be overwritten
+     * silently. The `revisions[]` ledger stays the human-readable audit trail.
+     *
+     * Absent on records written before this field existed; those read as 1
+     * through `taskRevision()` and gain the field on their next durable write.
+     * It stays absent rather than being normalized on read so a read-back record
+     * keeps byte-identical equality with the in-memory state an audit captured.
+     */
+    revision?: number;
     createdAt: number;
     updatedAt: number;
     /** Opt-in member-lane worktree binding (#287). */
