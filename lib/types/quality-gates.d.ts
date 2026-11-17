@@ -191,21 +191,63 @@ export declare function classifyChangedPath(path: string, inScope?: readonly str
 export declare function collectChangedPaths(gitStatusText: string): string[];
 export declare function inScopeOverlap(left: readonly string[] | undefined, right: readonly string[] | undefined): string[];
 export interface WriteScopeConflict {
+    /** The started writer that holds the overlapping paths. */
     taskId: string;
     paths: string[];
+    /**
+     * The holder's write-scope lease ran out (#P0-3 anti-starvation). The domain
+     * is still nominally occupied, but blocking forever would starve the new
+     * writer behind a member that died or is parked, so the caller proceeds and
+     * logs the lease. Nothing is preempted: the stuck owner keeps its attempt.
+     */
+    stale?: boolean;
 }
 /**
- * Dispatch-time write-domain admission. `create_task` already rejects an
- * overlapping writer pair, but a graph written before that check, or one whose
- * contract was amended later, can still hold two open writers on one path.
- * Starting the second writer would let two members edit the same file, so the
- * scheduler defers it until the started writer settles.
- *
- * Only already-started writers block. Two ready writers on the same path are
- * serialized by the single-claim scheduler, and blocking on a `pending` task
- * would deadlock that pair against itself.
+ * Default write-scope lease: 45 minutes. Long enough for a real implementation
+ * turn, short enough that a member which died mid-task (or is parked behind a
+ * 429 window) cannot reserve a domain for the rest of the session. Override
+ * with `AGENT_TEAMS_WRITE_SCOPE_LEASE_MS`.
  */
-export declare function writeScopeConflict(tasks: readonly TeamTask[], task: TeamTask): WriteScopeConflict | undefined;
+export declare const DEFAULT_WRITE_SCOPE_LEASE_MS: number;
+export declare function writeScopeLeaseMs(raw?: string | undefined): number;
+/**
+ * The worktree lane a task's writes land in (#287), if any. Two writers on
+ * different lanes own separate worktrees and branches, so an identical
+ * `inScope` in each is not a conflict: each edits its own checkout and a later
+ * integration task reconciles them.
+ */
+export declare function writeScopeLaneOf(team: TeamState, task: TeamTask): string | undefined;
+export interface WriteScopeOptions {
+    /** Lane of the task under admission; defaults to `laneOf(task)`. */
+    lane?: string | undefined;
+    /** Lane lookup for candidate holders; omit it for "lanes unknown" (strict). */
+    laneOf?: (task: TeamTask) => string | undefined;
+    /** Clock and lease overrides (tests, and callers that already read a clock). */
+    now?: number;
+    leaseMs?: number;
+}
+/**
+ * Actionable refusal for a reassignment into an occupied, still-live domain.
+ * Names the holder and the overlap so the captain can either wait for that
+ * task or narrow one of the two `inScope` contracts.
+ */
+export declare function reassignWriteScopeFailure(conflict: WriteScopeConflict): string;
+/**
+ * Write-domain admission. `create_task` already rejects an overlapping writer
+ * pair, but a graph written before that check, a contract amended later, or a
+ * reassignment can still put two open writers on one path. Starting the second
+ * writer would let two members edit the same file, so dispatch and reassign
+ * refuse it until the started writer settles.
+ *
+ * Only already-started writers hold a domain. Two ready writers on the same
+ * path are serialized by the single-claim scheduler, and blocking on a
+ * `pending` task would deadlock that pair against itself.
+ *
+ * Two escape hatches keep the rule from starving anyone: writers on different
+ * worktree lanes never collide, and a holder whose lease expired no longer
+ * blocks (the conflict comes back marked `stale` so the caller can log it).
+ */
+export declare function writeScopeConflict(tasks: readonly TeamTask[], task: TeamTask, options?: WriteScopeOptions): WriteScopeConflict | undefined;
 export declare function validateCreateTask(team: TeamState, input: CreateTaskInput): ValidateCreateTaskResult;
 export declare function evaluateQualityCompletion(task: TeamTask, update: QualityCompletionUpdate): QualityCompletionResult;
 /**

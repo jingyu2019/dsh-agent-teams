@@ -383,35 +383,110 @@ export function inScopeOverlap(
 const STARTED_WRITE_STATUSES: readonly TaskStatus[] = ['claimed', 'in_progress']
 
 export interface WriteScopeConflict {
+  /** The started writer that holds the overlapping paths. */
   taskId: string
   paths: string[]
+  /**
+   * The holder's write-scope lease ran out (#P0-3 anti-starvation). The domain
+   * is still nominally occupied, but blocking forever would starve the new
+   * writer behind a member that died or is parked, so the caller proceeds and
+   * logs the lease. Nothing is preempted: the stuck owner keeps its attempt.
+   */
+  stale?: boolean
 }
 
 /**
- * Dispatch-time write-domain admission. `create_task` already rejects an
- * overlapping writer pair, but a graph written before that check, or one whose
- * contract was amended later, can still hold two open writers on one path.
- * Starting the second writer would let two members edit the same file, so the
- * scheduler defers it until the started writer settles.
+ * Default write-scope lease: 45 minutes. Long enough for a real implementation
+ * turn, short enough that a member which died mid-task (or is parked behind a
+ * 429 window) cannot reserve a domain for the rest of the session. Override
+ * with `AGENT_TEAMS_WRITE_SCOPE_LEASE_MS`.
+ */
+export const DEFAULT_WRITE_SCOPE_LEASE_MS = 45 * 60 * 1000
+
+export function writeScopeLeaseMs(raw: string | undefined = process.env['AGENT_TEAMS_WRITE_SCOPE_LEASE_MS']): number {
+  const configured = Number(raw)
+  return Number.isFinite(configured) && configured > 0 ? Math.trunc(configured) : DEFAULT_WRITE_SCOPE_LEASE_MS
+}
+
+/**
+ * The worktree lane a task's writes land in (#287), if any. Two writers on
+ * different lanes own separate worktrees and branches, so an identical
+ * `inScope` in each is not a conflict: each edits its own checkout and a later
+ * integration task reconciles them.
+ */
+export function writeScopeLaneOf(team: TeamState, task: TeamTask): string | undefined {
+  if (task.worktreeLaneId !== undefined) return task.worktreeLaneId
+  if (task.workspace !== undefined && task.workspace.kind === 'member_lane') return task.workspace.laneId
+  if (task.assignee === undefined) return undefined
+  return team.members.find(member => member.name === task.assignee)?.worktreeLaneId
+}
+
+export interface WriteScopeOptions {
+  /** Lane of the task under admission; defaults to `laneOf(task)`. */
+  lane?: string | undefined
+  /** Lane lookup for candidate holders; omit it for "lanes unknown" (strict). */
+  laneOf?: (task: TeamTask) => string | undefined
+  /** Clock and lease overrides (tests, and callers that already read a clock). */
+  now?: number
+  leaseMs?: number
+}
+
+/**
+ * Actionable refusal for a reassignment into an occupied, still-live domain.
+ * Names the holder and the overlap so the captain can either wait for that
+ * task or narrow one of the two `inScope` contracts.
+ */
+export function reassignWriteScopeFailure(conflict: WriteScopeConflict): string {
+  return `task ${conflict.taskId} is still writing ${conflict.paths.join(', ')}; wait for it to finish or change its inScope, then retry the reassignment`
+}
+
+/**
+ * Write-domain admission. `create_task` already rejects an overlapping writer
+ * pair, but a graph written before that check, a contract amended later, or a
+ * reassignment can still put two open writers on one path. Starting the second
+ * writer would let two members edit the same file, so dispatch and reassign
+ * refuse it until the started writer settles.
  *
- * Only already-started writers block. Two ready writers on the same path are
- * serialized by the single-claim scheduler, and blocking on a `pending` task
- * would deadlock that pair against itself.
+ * Only already-started writers hold a domain. Two ready writers on the same
+ * path are serialized by the single-claim scheduler, and blocking on a
+ * `pending` task would deadlock that pair against itself.
+ *
+ * Two escape hatches keep the rule from starving anyone: writers on different
+ * worktree lanes never collide, and a holder whose lease expired no longer
+ * blocks (the conflict comes back marked `stale` so the caller can log it).
  */
 export function writeScopeConflict(
   tasks: readonly TeamTask[],
   task: TeamTask,
+  options: WriteScopeOptions = {},
 ): WriteScopeConflict | undefined {
   if (!WRITE_KINDS.includes(taskKindOf(task))) return undefined
   if (task.inScope === undefined || task.inScope.length === 0) return undefined
+  const laneOf = options.laneOf
+  const taskLane = 'lane' in options ? options.lane : laneOf?.(task)
+  const now = options.now ?? Date.now()
+  const leaseMs = options.leaseMs ?? writeScopeLeaseMs()
+  let stale: WriteScopeConflict | undefined
   for (const other of tasks) {
     if (other.id === task.id) continue
     if (!WRITE_KINDS.includes(taskKindOf(other))) continue
     if (!STARTED_WRITE_STATUSES.includes(other.status)) continue
+    if (taskLane !== undefined && laneOf !== undefined) {
+      const otherLane = laneOf(other)
+      if (otherLane !== undefined && otherLane !== taskLane) continue
+    }
     const overlap = inScopeOverlap(task.inScope, other.inScope)
-    if (overlap.length > 0) return { taskId: other.id, paths: overlap }
+    if (overlap.length === 0) continue
+    // `updatedAt` advances on claim and on every later durable write, so it is
+    // the closest thing to an attempt start this record carries: a live owner
+    // keeps refreshing it, a hung one lets the lease run out.
+    if (now - other.updatedAt >= leaseMs) {
+      stale ??= { taskId: other.id, paths: overlap, stale: true }
+      continue
+    }
+    return { taskId: other.id, paths: overlap }
   }
-  return undefined
+  return stale
 }
 
 function nonemptyString(value: unknown): value is string {

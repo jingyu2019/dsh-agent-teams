@@ -73,7 +73,10 @@ import {
   deliveryArtifactPaths,
   deliveryScopePatterns,
   isQualityKind,
+  reassignWriteScopeFailure,
   verdictScopePatterns,
+  writeScopeConflict,
+  writeScopeLaneOf,
 } from './quality-gates.ts'
 import type { DeliveryAudit } from './quality-gates.ts'
 import { workspaceAuditor } from './workspace-audit-service.ts'
@@ -2932,6 +2935,20 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           if (busy !== undefined) {
             throw new Error(`member "${targetMember.name}" is busy with ${busy.id}; finish or reassign it first`)
           }
+        }
+        // Write-domain admission (#P0-3): a reassignment must not drop a writer
+        // into a domain another member is still editing, or the next dispatch
+        // puts two members on one file. Refuse before any durable write, so a
+        // rejected reassignment leaves the task exactly as it was.
+        const writeConflict = writeScopeConflict(fresh.tasks, task, {
+          lane: task.worktreeLaneId ?? targetMember?.worktreeLaneId,
+          laneOf: candidate => writeScopeLaneOf(fresh, candidate),
+        })
+        if (writeConflict !== undefined && writeConflict.stale !== true) {
+          throw new Error(reassignWriteScopeFailure(writeConflict))
+        }
+        if (writeConflict !== undefined) {
+          ctx.logger.warn(`agent-teams: write scope lease expired for ${writeConflict.taskId}; reassigning ${team.id}/${task.id} to ${target} anyway (overlap at ${writeConflict.paths.join(', ')})`)
         }
         const previousAssignee = task.assignee ?? ''
         const previousMember = (task.status !== 'claimed' && task.status !== 'in_progress')
