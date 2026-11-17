@@ -98,7 +98,7 @@ import {
   type MemberRuntimeConfig,
 } from './members.ts'
 import { TERMINAL_TASK_STATUSES, type ActivationLease, type TeamMember, type TeamMessage, type TeamState, type TeamTask } from './types.ts'
-import { collectCompletedDependencyOutputs, formatDependencyOutputs, installTeamScheduler, type DispatchRequest, type DispatchResult, type TeamScheduler } from './scheduler.ts'
+import { collectCompletedDependencyOutputs, formatDependencyOutputs, installTeamScheduler, type DispatchRequest, type DispatchResult, type TeamScheduler, memberTokenUsage } from './scheduler.ts'
 import { installMailboxAdmission, isCurrentMail, mailboxContent, mailboxPrompt, readCurrentMailbox, readCurrentMailboxLocked } from './mailbox.ts'
 import { resolveMemberSkills, resolveTeamProfile, type SkillBindingConfig } from './profiles.ts'
 import { ancestryCacheEntryCount, forgetAncestryCache, forkLineageNote, leadIdentityOf, leadIdentityOfAsync, nearestLiveLead, sessionLeadsTeam, sessionLeadsTeamAsync } from './lineage.ts'
@@ -3794,6 +3794,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         return { team, identity, captainInbox, ownInbox, memberInboxes, mailboxWarnings, mailboxWarningCount }
       })
       const activity = memberActivity(ctx, team.members.map((member) => member.id))
+      const tokenUsage = memberTokenUsage(ctx, team.members.filter((member) => member.status !== 'removed'))
       const audit = await auditor.audit(workspace, team, stateRoot)
       const members = team.members
         .filter((member) => member.status !== 'removed')
@@ -3820,6 +3821,19 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           },
           ...member.spawnError === undefined ? {} : { spawn_error: member.spawnError },
           ...member.spawnFailures === undefined ? {} : { spawn_failures: member.spawnFailures },
+          // Per-member token accounting from the host's own usage records. A
+          // missing measurement is reported as unavailable, never as zero.
+          tokens: (() => {
+            const tokens = tokenUsage.get(member.name)
+            if (tokens === undefined) return { status: 'unavailable', requests: 0, complete: false, reason: 'usage was not collected for this member' }
+            return {
+              status: tokens.status,
+              requests: tokens.requests,
+              complete: tokens.complete,
+              ...tokens.usage === undefined ? {} : { usage: tokens.usage },
+              ...tokens.reason === undefined ? {} : { reason: tokens.reason },
+            }
+          })(),
         }))
       const tasks = team.tasks.map((task) => ({
         id: task.id,
@@ -3866,6 +3880,13 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         ok: deliveryCheck.ok,
         blockers: [...deliveryCheck.blockers],
         warnings: [...deliveryCheck.warnings],
+        ...deliveryCheck.exemptions === undefined ? {} : {
+          exemptions: deliveryCheck.exemptions.map((exemption) => ({
+            verification_task_ids: [...exemption.verificationTaskIds],
+            basis_task_ids: [...exemption.basisTaskIds],
+            reason: exemption.reason,
+          })),
+        },
       }
       const loop = describeQualityLoop(team, audit)
       const result = {

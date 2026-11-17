@@ -14,12 +14,13 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentStatus } from '@deepseek-ai/dsh-agent'
-import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionLogOffset, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SubagentRunEndInfo, SubagentRunInfo } from '@deepseek-ai/dsh-subagent'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { createRouteCursor, deliverToMember, memberRouteChain, routeCursorReady, steerCaptainReport } from './members.ts'
-import { bindAgentRun, boundAgentRun, unbindAgentRun, usesManagedActivations, type MemberStartResult } from './harness-compat.ts'
+import { bumpTaskRevision } from './task-revision.ts'
+import { bindAgentRun, boundAgentRun, sessionOwnEventWindow, unbindAgentRun, usesManagedActivations, type MemberStartResult } from './harness-compat.ts'
 import { isCurrentMail, mailboxPrompt } from './mailbox.ts'
 import {
   markMailboxDelivered,
@@ -332,6 +333,101 @@ function nextReadyTask(tasks: readonly TeamTask[], memberName: string): TeamTask
     && unsatisfiedDependencies([...tasks], task.dependencies).length === 0)
   return ready.find(task => task.assignee === memberName)
     ?? ready.find(task => task.assignee === undefined)
+}
+
+/** Token counters the host can report per assistant step. */
+const TOKEN_USAGE_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens', 'totalTokens'] as const
+type TokenUsageField = typeof TOKEN_USAGE_FIELDS[number]
+/** Bounded tail read: usage is summed from this window, never the whole log. */
+export const TOKEN_USAGE_EVENT_WINDOW = 2_000
+
+/** One member's token accounting, or why the host cannot report it. */
+export interface MemberTokenUsage {
+  readonly status: 'available' | 'unavailable'
+  /** Assistant steps inside the window that reported usage. */
+  readonly requests: number
+  /** False when the bounded read stopped before the member's first event. */
+  readonly complete: boolean
+  readonly usage?: Readonly<Partial<Record<TokenUsageField, number>>>
+  /** Why the numbers are missing. Never a fabricated zero. */
+  readonly reason?: string
+}
+
+/**
+ * The step usage a session event carries, if any.
+ *
+ * The host attaches `usage` to the assembled `assistant/message` event (there is
+ * no separate usage record), and omits it when the adapter reported no token
+ * accounting. Older hosts log the raw stream chunk instead, so both shapes are
+ * accepted; anything else reports nothing rather than a zero.
+ */
+function stepUsageOf(event: SessionEvent): Partial<Record<TokenUsageField, number>> | undefined {
+  const record = event as unknown as {
+    type?: string
+    data?: { usage?: unknown; chunk?: { type?: string; usage?: unknown } }
+  }
+  const candidate = record.type === 'assistant/message'
+    ? record.data?.usage
+    : record.type === 'assistant/chunk' && record.data?.chunk?.type === 'usage'
+      ? record.data.chunk.usage
+      : undefined
+  if (typeof candidate !== 'object' || candidate === null) return undefined
+  const usage: Partial<Record<TokenUsageField, number>> = {}
+  for (const field of TOKEN_USAGE_FIELDS) {
+    const value = (candidate as Record<string, unknown>)[field]
+    if (typeof value === 'number' && Number.isFinite(value)) usage[field] = value
+  }
+  return Object.keys(usage).length === 0 ? undefined : usage
+}
+
+/**
+ * P2: aggregate token usage per member for the status surface.
+ *
+ * The numbers come from the member's own durable session log through a bounded
+ * window, so this never copies a long transcript. A member that is not attached,
+ * whose host reports no usage, or whose window holds no usage event is reported
+ * as `unavailable` with the reason — an absent measurement is not zero tokens.
+ */
+export function memberTokenUsage(ctx: Context, members: readonly TeamMember[]): Map<string, MemberTokenUsage> {
+  const collected = new Map<string, MemberTokenUsage>()
+  for (const member of members) {
+    const agent = member.id === '' ? undefined : ctx.agents.get(member.id as SessionId)
+    if (agent === undefined) {
+      collected.set(member.name, {
+        status: 'unavailable', requests: 0, complete: false,
+        reason: 'the member session is not attached, so the host reports no usage',
+      })
+      continue
+    }
+    let window: ReturnType<typeof sessionOwnEventWindow>
+    try {
+      window = sessionOwnEventWindow(agent.session, { limit: TOKEN_USAGE_EVENT_WINDOW, edge: 'tail' })
+    } catch (error: unknown) {
+      collected.set(member.name, {
+        status: 'unavailable', requests: 0, complete: false,
+        reason: `the member session log could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      })
+      continue
+    }
+    const usage: Partial<Record<TokenUsageField, number>> = {}
+    let requests = 0
+    for (const event of window.events) {
+      const step = stepUsageOf(event)
+      if (step === undefined) continue
+      requests += 1
+      for (const field of TOKEN_USAGE_FIELDS) {
+        const value = step[field]
+        if (value !== undefined) usage[field] = (usage[field] ?? 0) + value
+      }
+    }
+    collected.set(member.name, requests === 0
+      ? {
+        status: 'unavailable', requests: 0, complete: window.complete,
+        reason: 'the host reported no token usage for this member',
+      }
+      : { status: 'available', requests, complete: window.complete, usage })
+  }
+  return collected
 }
 
 function contextLifecycleGuidance(capability: ContextLifecycleCapability | undefined): string {
@@ -964,6 +1060,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             task.output = lease.diagnostic === undefined ? base : `${base}: ${lease.diagnostic}`
             task.probe = undefined
             task.updatedAt = now
+            bumpTaskRevision(task)
             noticeFor(team, lease, stopReason === 'unknown' ? 'settlement_unknown' : 'failed',
               `Member ${lease.memberId} activation ${lease.activationId} failed task ${task.id}: ${task.output}`)
           }
@@ -1266,6 +1363,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           task.attemptId = undefined
           clearTaskActivation(task)
           task.updatedAt = Date.now()
+          bumpTaskRevision(task)
         }
         current.state = 'rejected'
         current.recoveryDecision = 'rolled_back'
@@ -1689,6 +1787,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             clearTaskActivation(task)
             parkedAttempts.delete(ticket.memberId)
           }
+          bumpTaskRevision(task)
           const lease = resolveLease(fresh, ticket.activationId)
           if (lease !== undefined) {
             lease.state = 'rejected'

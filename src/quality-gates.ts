@@ -138,6 +138,20 @@ export interface CoverageRow {
   evidence?: string
 }
 
+/**
+ * One read-only delivery that skipped a pending verification gate, with the
+ * evidence it was based on. Recorded on the delivery result so the exemption is
+ * never silent: the caller sees which verification was waived and why.
+ */
+export interface DeliveryVerificationExemption {
+  /** Verification tasks this delivery does not have to run. */
+  readonly verificationTaskIds: readonly string[]
+  /** Completed deliveries whose recorded changedPaths were all empty. */
+  readonly basisTaskIds: readonly string[]
+  /** Human-readable evidence line, also mirrored into warnings. */
+  readonly reason: string
+}
+
 export interface DeliveryResult {
   ok: boolean
   blockers: string[]
@@ -147,6 +161,11 @@ export interface DeliveryResult {
    * moved on. Delivery is still allowed, but never silently.
    */
   warnings: string[]
+  /**
+   * Read-only deliveries that needed no verification run. Present only when the
+   * exemption applied, so an empty list and an absent field are equivalent.
+   */
+  exemptions?: readonly DeliveryVerificationExemption[]
 }
 
 /**
@@ -1660,6 +1679,47 @@ function unresolvedGates(team: TeamState): TeamTask[] {
     && !hasFollowUpRepair(team, item))
 }
 
+const DELIVERY_TASK_KINDS: readonly TaskKind[] = ['work', 'implementation', 'repair', 'integration']
+const PENDING_VERIFICATION_STATUSES: readonly TaskStatus[] = ['pending', 'claimed', 'in_progress']
+
+/**
+ * P2: a read-only delivery needs no verification run.
+ *
+ * A pure research or documentation delivery changes no file, so there is
+ * nothing for a verification task to execute against: demanding passed
+ * `commandsRun` evidence for it would force the verifier to invent a check. The
+ * exemption is deliberately narrow — it exists only when
+ *
+ * 1. the team already completed at least one deliverable,
+ * 2. every completed deliverable recorded an empty `changedPaths`, and
+ * 3. a `verification` task is still open, i.e. it is the gate being waived.
+ *
+ * Anything that reports a changed path keeps the ordinary gate, and no other
+ * kind is ever waived: a completed implementation without `changedPaths` is
+ * rejected by `evaluateQualityCompletion` long before it reaches delivery.
+ * The returned record is the evidence: it names the verification that was
+ * skipped and the deliveries whose empty path list justified skipping it.
+ */
+export function readOnlyDeliveryExemption(team: TeamState): DeliveryVerificationExemption | undefined {
+  const deliveries = team.tasks.filter((item) => (
+    DELIVERY_TASK_KINDS.includes(taskKindOf(item)) && item.status === 'completed'
+  ))
+  if (deliveries.length === 0) return undefined
+  // One changed path anywhere means the delivery is not read-only.
+  if (deliveries.some((item) => (item.changedPaths ?? []).length > 0)) return undefined
+  const verifications = team.tasks.filter((item) => (
+    taskKindOf(item) === 'verification' && PENDING_VERIFICATION_STATUSES.includes(item.status)
+  ))
+  if (verifications.length === 0) return undefined
+  const basisTaskIds = deliveries.map((item) => item.id)
+  const verificationTaskIds = verifications.map((item) => item.id)
+  return {
+    verificationTaskIds,
+    basisTaskIds,
+    reason: `read-only delivery: ${basisTaskIds.join(', ')} completed with no changed paths, so verification ${verificationTaskIds.join(', ')} needed no run; evidence basis: the empty changedPaths recorded by ${basisTaskIds.join(', ')}`,
+  }
+}
+
 export function canDeclareDelivery(team: TeamState, audit: DeliveryAudit = {}): DeliveryResult {
   const blockers: string[] = []
   const warnings: string[] = []
@@ -1675,8 +1735,13 @@ export function canDeclareDelivery(team: TeamState, audit: DeliveryAudit = {}): 
   const implementations = quality.filter((item) => taskKindOf(item) === 'implementation' || taskKindOf(item) === 'repair')
   const reviews = quality.filter((item) => taskKindOf(item) === 'review')
 
+  const exemption = readOnlyDeliveryExemption(team)
+  const exemptVerifications = new Set(exemption?.verificationTaskIds ?? [])
   for (const item of quality) {
     const kind = taskKindOf(item)
+    // A read-only delivery waives only the verification gate, and only the
+    // exact tasks the exemption names.
+    if (kind === 'verification' && exemptVerifications.has(item.id)) continue
     if (item.status === 'completed') {
       if ((kind === 'review' || kind === 'requirements') && item.verdict !== 'pass') {
         blockers.push(`${item.id} completed without verdict=pass`)
@@ -1720,7 +1785,14 @@ export function canDeclareDelivery(team: TeamState, audit: DeliveryAudit = {}): 
     blockers.push(`the current workspace audit is incomplete (${shown.join('; ')}${more}); no recorded verdict can be confirmed over partially enumerated or unreadable artifacts`)
   }
 
-  return { ok: blockers.length === 0, blockers, warnings }
+  if (exemption !== undefined) warnings.push(exemption.reason)
+
+  return {
+    ok: blockers.length === 0,
+    blockers,
+    warnings,
+    ...exemption === undefined ? {} : { exemptions: [exemption] },
+  }
 }
 
 export function resumeTeamState(team: TeamState, reason: string): ResumeTeamResult {
