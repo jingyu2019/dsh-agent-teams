@@ -1,12 +1,12 @@
 {
   "captain": {
-    "tools": 19,
-    "bytes": 20003,
-    "estimatedTokens": 5001,
+    "tools": 20,
+    "bytes": 22880,
+    "estimatedTokens": 5720,
     "rows": [
       {
         "name": "agent_teams_create",
-        "bytes": 2427
+        "bytes": 2556
       },
       {
         "name": "agent_teams_invoke_profile",
@@ -18,7 +18,7 @@
       },
       {
         "name": "agent_teams_edit_plan",
-        "bytes": 2330
+        "bytes": 2810
       },
       {
         "name": "agent_teams_add_member",
@@ -34,15 +34,15 @@
       },
       {
         "name": "agent_teams_create_task",
-        "bytes": 3161
+        "bytes": 3604
       },
       {
         "name": "agent_teams_reassign_task",
-        "bytes": 808
+        "bytes": 1024
       },
       {
         "name": "agent_teams_amend_task",
-        "bytes": 1542
+        "bytes": 1823
       },
       {
         "name": "agent_teams_collect",
@@ -54,7 +54,7 @@
       },
       {
         "name": "agent_teams_delete",
-        "bytes": 327
+        "bytes": 680
       },
       {
         "name": "agent_teams_list_agent_presets",
@@ -67,6 +67,10 @@
       {
         "name": "agent_teams_delete_agent_preset",
         "bytes": 252
+      },
+      {
+        "name": "agent_teams_agent_catalog",
+        "bytes": 975
       },
       {
         "name": "agent_teams_worktree",
@@ -84,12 +88,12 @@
   },
   "coreCaptain": {
     "tools": 11,
-    "bytes": 15945,
-    "estimatedTokens": 3987,
+    "bytes": 17694,
+    "estimatedTokens": 4424,
     "rows": [
       {
         "name": "agent_teams_create",
-        "bytes": 2427
+        "bytes": 2556
       },
       {
         "name": "agent_teams_invoke_profile",
@@ -105,19 +109,19 @@
       },
       {
         "name": "agent_teams_create_task",
-        "bytes": 3161
+        "bytes": 3604
       },
       {
         "name": "agent_teams_reassign_task",
-        "bytes": 808
+        "bytes": 1024
       },
       {
         "name": "agent_teams_update_task",
-        "bytes": 3009
+        "bytes": 3287
       },
       {
         "name": "agent_teams_send_message",
-        "bytes": 1502
+        "bytes": 1832
       },
       {
         "name": "agent_teams_status",
@@ -129,14 +133,14 @@
       },
       {
         "name": "agent_teams_delete",
-        "bytes": 327
+        "bytes": 680
       }
     ]
   },
   "member": {
     "tools": 4,
-    "bytes": 5551,
-    "estimatedTokens": 1388,
+    "bytes": 6159,
+    "estimatedTokens": 1540,
     "rows": [
       {
         "name": "agent_teams_claim_task",
@@ -144,11 +148,11 @@
       },
       {
         "name": "agent_teams_update_task",
-        "bytes": 3009
+        "bytes": 3287
       },
       {
         "name": "agent_teams_send_message",
-        "bytes": 1502
+        "bytes": 1832
       },
       {
         "name": "agent_teams_status",
@@ -157,8 +161,8 @@
     ]
   },
   "savings": {
-    "tools": 8,
-    "bytes": 4058,
-    "percent": 20.3
+    "tools": 9,
+    "bytes": 5186,
+    "percent": 22.7
   }
 }
