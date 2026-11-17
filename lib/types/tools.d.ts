@@ -12,9 +12,9 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { type MemberToolPolicy } from './tool-policies.ts';
-import type { ArtifactRootConfig, ArtifactSnapshot } from './types.ts';
+import type { ArtifactRootConfig, ArtifactSnapshot, MessageIdempotencyRecord } from './types.ts';
 import { type MemberRuntimeConfig } from './members.ts';
-import { type ActivationLease, type TeamMember, type TeamState, type TeamTask } from './types.ts';
+import { type ActivationLease, type TeamMember, type TeamMessage, type TeamState, type TeamTask } from './types.ts';
 import { type TeamScheduler } from './scheduler.ts';
 import { type SkillBindingConfig } from './profiles.ts';
 export { steerCaptainReport } from './members.ts';
@@ -331,6 +331,41 @@ export declare function stagedPlanApprovedContext(teamName: string): string;
 export declare function stagedPlanDiscardContext(teamName: string): string;
 /** Model-facing continuation that turns the review UI back into a conversation. */
 export declare function stagedPlanFeedbackContext(teamName: string): string;
+/**
+ * How long one caller-declared send key keeps replaying its first delivery.
+ * The record is pruned on the next keyed send, so the window is a bound, not a
+ * promise that every key is remembered for the full day.
+ */
+export declare const MESSAGE_KEY_WINDOW_MS: number;
+/** Idempotency records retained per team; the oldest expire first. */
+export declare const MESSAGE_KEY_CAP = 512;
+/**
+ * Window in which the pair's messages are counted for the ping-pong ceiling:
+ * long enough to catch a mutual reply loop, short enough to leave ordinary
+ * long-running coordination legal.
+ */
+export declare const PINGPONG_WINDOW_MS: number;
+/**
+ * Messages one member↔captain pair may exchange inside {@link PINGPONG_WINDOW_MS}
+ * before further sends are refused. Overridable through
+ * `AGENT_TEAMS_PINGPONG_MESSAGE_LIMIT`.
+ * @returns the positive configured limit, or 12.
+ */
+export declare function pingPongMessageLimit(): number;
+/** The explicit refusal text for a suspected member↔captain message ping-pong. */
+export declare function pingPongFailure(from: string, to: string, exchanged: number, limit?: number): string;
+/**
+ * The first delivery recorded for one caller-declared key inside its window.
+ * @returns the live record, or undefined once it expired.
+ */
+export declare function findMessageKey(team: TeamState, from: string, to: string, key: string, now?: number): MessageIdempotencyRecord | undefined;
+/**
+ * Record one first delivery and drop expired records plus any earlier record
+ * for the same key, so the retained map stays bounded.
+ */
+export declare function recordMessageKey(team: TeamState, record: MessageIdempotencyRecord, now?: number): void;
+/** Count one pair's messages inside the ping-pong window, both directions. */
+export declare function countPingPongMessages(messages: readonly TeamMessage[], from: string, to: string, now?: number): number;
 /**
  * Register every `agent_teams_*` tool into the shared tools registry.
  * @param ctx - the plugin context (injects `tools`).

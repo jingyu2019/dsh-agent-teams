@@ -482,6 +482,20 @@ export interface TeamMessage {
     /** Safe-copied local attachments, never paths read at render time. */
     attachments?: MessageAttachment[];
 }
+/**
+ * One caller-declared `agent_teams_send_message` idempotency key and the message
+ * it created. Scoped to one team and the exact `(from, to)` pair: a repeated key
+ * replays this first delivery instead of writing a second message.
+ */
+export interface MessageIdempotencyRecord {
+    key: string;
+    from: string;
+    to: string;
+    /** Id of the first message accepted for this key. */
+    messageId: string;
+    /** When that first delivery was accepted (epoch ms). */
+    at: number;
+}
 /** Owner-configured root from which a captain may attach files. */
 export interface ArtifactRootConfig {
     id: string;
@@ -624,6 +638,11 @@ export interface TeamState {
     timeline?: TimelineEntry[];
     /** Monotonic timeline id allocator; survives cap eviction. */
     timelineSeq?: number;
+    /**
+     * Bounded caller-declared send keys, newest last: expired records are pruned
+     * on the next keyed send, so this state cannot grow without bound.
+     */
+    messageKeys?: MessageIdempotencyRecord[];
     /** Per-member local avatar overrides keyed by member display name. */
     memberAvatars?: Record<string, AvatarRef>;
     /** Optional role-wide local avatar overrides. */

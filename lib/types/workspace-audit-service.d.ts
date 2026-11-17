@@ -14,7 +14,6 @@ export interface WorkspaceAuditOptions {
  * starts after it arrives.
  */
 export declare class WorkspaceAuditService {
-    private readonly options;
     private worker;
     private active;
     private timer;
@@ -23,6 +22,7 @@ export declare class WorkspaceAuditService {
     private readonly queue;
     private sequence;
     private closed;
+    private readonly options;
     constructor(options?: WorkspaceAuditOptions);
     audit(workspace: string, team: TeamState, stateRoot?: string): Promise<DeliveryAudit>;
     private pump;
