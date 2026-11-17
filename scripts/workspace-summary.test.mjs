@@ -12,7 +12,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.endsWith('/client/ActivityPanel.js')) {
     if (specifier === '@deepseek-ai/dsh-client-ui-primitives') source = 'export const Modal = () => null'
     if (specifier === './AgentTeamsCard.js') source = 'export const OPEN_PANEL_EVENT = "test-open"'
-    if (specifier === './StagingPlanEditor.js') source = 'export const StagingPlanEditor = () => null'
+    if (specifier === './StagingPlanEditor.js') source = 'export const StagingPlanEditor = () => null; export const StagedModelPicker = () => null'
   }
   return source === undefined ? next(specifier, context) : { url: `data:text/javascript,${encodeURIComponent(source)}`, shortCircuit: true }
 } })
