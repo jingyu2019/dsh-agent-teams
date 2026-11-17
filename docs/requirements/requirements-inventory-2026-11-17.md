@@ -159,4 +159,5 @@
    4. P1-2 给 `publish.yml` 的 `consumer-resolution` 门补结构断言用例。
    5. P0-1 重算 `docs/tool-surface-budget.json` 并挂进 verify。
    6. R1 补 activation 租约 TTL 清扫（`reconcileStaleActivationLeases`），让 429 后的僵尸租约可自愈。
+   7. **R4 的自动重置在任务派发路径上打不到**（复核补充，已 grep 确认）：`resetMemberContextLocked`（`src/tools.ts:376-382`）在 `member.status === 'working'`、仍持 open attempt、或持活跃 lease 时抛错，而 `recoverLostSessionDelivery` 的重投就在同一条派发路径里（`src/tools.ts:1165-1180`）——所以真正能自愈的只有「无 open attempt / 无活跃 lease」的邮件唤醒与空闲派发。要么为 spawn 失败（无活会话）单开一条不经过该守卫的重置分支，要么把它固化成文档语义。README 已按后者写明，代码侧仍算 R4 的部分交付。
 4. **`npm run verify` 整链跑不完的真实原因**（复核实测）：`scripts/harness-runtime-verify.mjs` 需要真实 Harness 安装路径，无参调用直接抛错退出；不是产物过期，也与 pnpm 缺失无关。
