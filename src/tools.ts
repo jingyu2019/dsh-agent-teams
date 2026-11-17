@@ -38,6 +38,7 @@ import {
   cancelUnfinishedTask,
   clearTaskProbe,
   invalidateTaskAttempt,
+  clearTaskActivation,
   readUnreadMailbox,
   readMailbox,
   recordRetiredMemberIds,
@@ -445,6 +446,130 @@ export async function recoverLostSessionDelivery(input: {
     return { accepted: false, retried: false, deliveryFailure: `${input.failure} (automatic context reset refused: ${reason})` }
   }
   return { accepted: await input.retry(), retried: true }
+}
+
+/** Why an automatic dispatch-path reset could not run, as far as it can be told apart. */
+export type DispatchResetRefusal = 'retired' | 'open-attempt' | 'session-alive'
+
+/**
+ * Why a dead-session dispatch refused to reset the member. Each cause names its
+ * own exit: a retired member must not be resurrected, an attempt that could not
+ * be reclaimed has to be closed by hand, and a live session needs no reset.
+ * @param memberName - the member whose turn never started.
+ * @param reason - which refusal happened.
+ * @returns the captain-facing explanation.
+ */
+export function dispatchResetFailure(memberName: string, reason: DispatchResetRefusal): string {
+  switch (reason) {
+    case 'retired':
+      return `member "${memberName}" was retired on purpose; a dead session is not resurrected automatically — reassign the task with agent_teams_reassign_task, or reset the member explicitly with agent_teams_reset_member_context`
+    case 'open-attempt':
+      return `member "${memberName}" still owns an open attempt that could not be reclaimed; the dead session was not reset — finish or reassign that attempt, then retry the dispatch`
+    case 'session-alive':
+      return `member "${memberName}" still has a live session; nothing was reset`
+  }
+}
+
+/** Leases that still own a permit and block the guarded reset. */
+const ACTIVE_LEASE_STATES: readonly ActivationLease['state'][] = ['pending', 'started', 'recovering']
+
+/** What {@link reclaimDeadSessionDelivery} cleared before an automatic reset. */
+export interface DeadSessionReclaim {
+  /** Task ids whose open attempt was closed as failed. */
+  readonly closedAttempts: readonly string[]
+  /** Activation ids whose lease was ended without a host settlement. */
+  readonly releasedLeases: readonly string[]
+  /** The member was retired by a human, so nothing was touched. */
+  readonly retired: boolean
+  /** The child session is alive, so nothing was touched. */
+  readonly live: boolean
+  /** Open attempts still owned afterwards; a positive count refuses the reset. */
+  readonly remainingOpenAttempts: number
+  /** Active leases still held afterwards; a positive count refuses the reset. */
+  readonly activeLeases: number
+}
+
+/**
+ * Clear the wreckage a dead child session leaves behind on the dispatch path
+ * before the shared reset can run: the member's open attempt is closed as failed
+ * with the delivery failure as its output, and the lease it holds is ended with
+ * its permit released. This is a cleanup, not a loosened guard — a member that
+ * still owns anything open after this refuses the reset exactly as before.
+ * @param input - fresh team state (mutated in place), state root, member name,
+ *   the delivery failure to record, and whether the host still reports the child
+ *   session as running (a live session is never reclaimed).
+ * @returns what was cleared and what is still open.
+ */
+export async function reclaimDeadSessionDelivery(input: {
+  readonly team: TeamState
+  readonly stateRoot: string
+  readonly memberName: string
+  readonly failure: string
+  readonly sessionRunning?: boolean
+}): Promise<DeadSessionReclaim> {
+  const untouched: DeadSessionReclaim = { closedAttempts: [], releasedLeases: [], retired: false, live: false, remainingOpenAttempts: 0, activeLeases: 0 }
+  const fresh = input.team
+  const member = fresh.members.find(candidate => candidate.name === input.memberName && candidate.status !== 'removed')
+  if (member === undefined) return untouched
+  const openAttempts = (): TeamTask[] => fresh.tasks.filter(task => task.assignee === input.memberName
+    && task.attemptId !== undefined
+    && !TERMINAL_TASK_STATUSES.includes(task.status))
+  const activeLeases = (): ActivationLease[] => (fresh.activations ?? []).filter(lease => lease.memberId === member.id
+    && ACTIVE_LEASE_STATES.includes(lease.state))
+  // A member a human stopped keeps its refusal: its context is not resurrected here.
+  if (member.id !== '' && (await readRetiredMemberIds(input.stateRoot)).has(member.id)) return { ...untouched, retired: true }
+  if (input.sessionRunning === true) return { ...untouched, live: true, remainingOpenAttempts: openAttempts().length, activeLeases: activeLeases().length }
+  // Only an attempt that never produced anything is reclaimed. An attempt that
+  // already reported progress is real work: the captain decides whether to
+  // reassign it, and the guarded reset keeps refusing with its own message. That
+  // refusal must not disturb the record, so it is decided before anything moves.
+  const attempted = openAttempts()
+  // A task that already consumed an attempt keeps its capability: the evidence of
+  // that attempt outranks an automatic reset, so the captain decides. Only the
+  // first dispatch of a task is reclaimed automatically.
+  const progressed = attempted.filter(candidate => (candidate.attempt ?? 0) > 1
+    || (candidate.output ?? '') !== ''
+    || (candidate.commandsRun ?? []).length > 0
+    || (candidate.acceptanceResults ?? []).length > 0)
+  if (progressed.length > 0) return { ...untouched, remainingOpenAttempts: attempted.length, activeLeases: activeLeases().length }
+  const now = Date.now()
+  const output = `lost session (${input.failure}); returned to the queue for a fresh dispatch`
+  const closedAttempts: string[] = []
+  for (const openAttempt of attempted) {
+    // The attempt belongs to a session that no longer exists, so it cannot be
+    // delivered to again. The task keeps its assignee and goes back to pending:
+    // the scheduler claims it with a fresh attempt after the member is reset,
+    // which is the only way to recover without loosening the reset guard.
+    openAttempt.status = 'pending'
+    openAttempt.attemptId = undefined
+    clearTaskActivation(openAttempt)
+    openAttempt.output = output
+    openAttempt.updatedAt = now
+    bumpTaskRevision(openAttempt)
+    closedAttempts.push(openAttempt.id)
+  }
+  // A lease is only cleared as part of reclaiming the attempt that holds it. A
+  // wake with no attempt to reclaim keeps its lease: the durable mailbox entry is
+  // the fallback for that message, and dropping the lease would fake a delivery.
+  const releasedLeases: string[] = []
+  for (const lease of closedAttempts.length === 0 ? [] : activeLeases()) {
+    lease.state = 'ended'
+    lease.endObserved = true
+    lease.settlementApplied = true
+    lease.permitHeld = false
+    lease.releasedAt ??= now
+    lease.endedAt ??= now
+    lease.stopReason = 'error'
+    lease.diagnostic = output
+    releasedLeases.push(lease.activationId)
+  }
+  if (closedAttempts.length === 0 && releasedLeases.length === 0) return untouched
+  delete member.currentActivationId
+  const remainingOpenAttempts = openAttempts().length
+  const active = activeLeases().length
+  if (remainingOpenAttempts === 0 && active === 0 && member.status === 'working') member.status = 'idle'
+  await writeTeam(input.stateRoot, fresh)
+  return { closedAttempts, releasedLeases, retired: false, live: false, remainingOpenAttempts, activeLeases: active }
 }
 
 /** Look up one task by id. */
@@ -1160,7 +1285,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         orphan = undefined
         return { accepted: true, receipt }
       })
-      if (deliveryFailure !== undefined && deliveryCause !== undefined) {
+      if (!recovered && deliveryFailure !== undefined && deliveryCause !== undefined) {
         // A lost session is recoverable without the captain: reset exactly like
         // the tool does and deliver once more. A retired member was stopped on
         // purpose, and a refused reset is reported instead of bypassed.
@@ -1171,6 +1296,19 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           reset: async () => {
             await withTeamLock(teamLockKey(root, teamId), async () => {
               const fresh = await requireFreshCaptainTeam(ctx, root, teamId, captain.id)
+              const stale = fresh.members.find(item => item.name === memberName && item.status !== 'removed')
+              // The reset guard is unchanged; the wreckage of the dead session is
+              // cleared first so the guard can pass on its own terms.
+              const reclaim = await reclaimDeadSessionDelivery({
+                team: fresh,
+                stateRoot: root,
+                memberName,
+                failure: deliveryFailure ?? lostSessionDeliveryFailure(memberName, stale?.spawnError),
+                sessionRunning: stale === undefined || stale.id === '' ? false : ctx.agents.get(stale.id as SessionId)?.status === 'running',
+              })
+              if (reclaim.retired) throw new Error(dispatchResetFailure(memberName, 'retired'))
+              if (reclaim.live) throw new Error(dispatchResetFailure(memberName, 'session-alive'))
+              if (reclaim.remainingOpenAttempts > 0 || reclaim.activeLeases > 0) throw new Error(dispatchResetFailure(memberName, 'open-attempt'))
               await resetMemberContextLocked({ team: fresh, stateRoot: root, memberName, reason: AUTO_RESET_REASON })
             })
           },
@@ -3408,6 +3546,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     parameters: {
       task_id: { type: 'string', required: true, description: 'Task whose contract is being amended.' },
       reason: { type: 'string', required: true, description: 'Why the current contract is wrong; recorded in the revisions ledger.' },
+      expected_revision: { type: 'number', description: 'Optional optimistic lock: the task revision you read. The amendment is refused when another writer moved the task since; the error names the current revision to retry with. Omit it to keep the previous unconditional behaviour.' },
       objective: { type: 'string', description: 'Replacement objective.' },
       acceptance: { type: 'array', items: { type: 'string' }, description: 'Replacement acceptance criteria (full list, not a delta).' },
       verify: { type: 'array', items: { type: 'string' }, description: 'Replacement verification commands (full list, not a delta).' },
@@ -3439,6 +3578,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const amended = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(ctx, stateRoot, team.id, captain.id)
         const task = requireTask(fresh, args.task_id)
+        if (args.expected_revision !== undefined && !isExpectedRevision(args.expected_revision)) throw new Error('expected_revision must be an integer >= 1')
+        const staleAmend = expectedRevisionError(task, args.expected_revision)
+        if (staleAmend !== undefined) throw new Error(staleAmend)
         const input: ContractAmendmentInput = {
           ...args.objective === undefined ? {} : { objective: args.objective },
           ...args.acceptance === undefined ? {} : { acceptance: args.acceptance },

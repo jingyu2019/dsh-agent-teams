@@ -205,6 +205,50 @@ export declare function recoverLostSessionDelivery(input: {
     readonly reset: () => Promise<unknown>;
     readonly retry: () => Promise<boolean>;
 }): Promise<DeadSessionRecoveryOutcome>;
+/** Why an automatic dispatch-path reset could not run, as far as it can be told apart. */
+export type DispatchResetRefusal = 'retired' | 'open-attempt' | 'session-alive';
+/**
+ * Why a dead-session dispatch refused to reset the member. Each cause names its
+ * own exit: a retired member must not be resurrected, an attempt that could not
+ * be reclaimed has to be closed by hand, and a live session needs no reset.
+ * @param memberName - the member whose turn never started.
+ * @param reason - which refusal happened.
+ * @returns the captain-facing explanation.
+ */
+export declare function dispatchResetFailure(memberName: string, reason: DispatchResetRefusal): string;
+/** What {@link reclaimDeadSessionDelivery} cleared before an automatic reset. */
+export interface DeadSessionReclaim {
+    /** Task ids whose open attempt was closed as failed. */
+    readonly closedAttempts: readonly string[];
+    /** Activation ids whose lease was ended without a host settlement. */
+    readonly releasedLeases: readonly string[];
+    /** The member was retired by a human, so nothing was touched. */
+    readonly retired: boolean;
+    /** The child session is alive, so nothing was touched. */
+    readonly live: boolean;
+    /** Open attempts still owned afterwards; a positive count refuses the reset. */
+    readonly remainingOpenAttempts: number;
+    /** Active leases still held afterwards; a positive count refuses the reset. */
+    readonly activeLeases: number;
+}
+/**
+ * Clear the wreckage a dead child session leaves behind on the dispatch path
+ * before the shared reset can run: the member's open attempt is closed as failed
+ * with the delivery failure as its output, and the lease it holds is ended with
+ * its permit released. This is a cleanup, not a loosened guard — a member that
+ * still owns anything open after this refuses the reset exactly as before.
+ * @param input - fresh team state (mutated in place), state root, member name,
+ *   the delivery failure to record, and whether the host still reports the child
+ *   session as running (a live session is never reclaimed).
+ * @returns what was cleared and what is still open.
+ */
+export declare function reclaimDeadSessionDelivery(input: {
+    readonly team: TeamState;
+    readonly stateRoot: string;
+    readonly memberName: string;
+    readonly failure: string;
+    readonly sessionRunning?: boolean;
+}): Promise<DeadSessionReclaim>;
 /**
  * Consecutive member-start failures tolerated before dispatch pauses for that
  * member. The scheduler treats a rejected dispatch as "not now" and retries, so

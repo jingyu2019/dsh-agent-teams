@@ -56,6 +56,7 @@ async function fixture({
   tasks = [pendingTask('t1')],
   startActivation,
   liveChildren = [],
+  liveChildrenRunning = [],
   teams = [],
   seedRunningTeam = true,
 } = {}) {
@@ -65,7 +66,10 @@ async function fixture({
   const starts = []
   const deliveries = []
   const warnings = []
-  const defaults = new Map(liveChildren.map(id => [id, fakeAgent(id, workspace)]))
+  const defaults = new Map([
+    ...liveChildren.map(id => [id, fakeAgent(id, workspace)]),
+    ...liveChildrenRunning.map(id => [id, fakeAgent(id, workspace, 'running')]),
+  ])
   if (seedRunningTeam) await createTeamDir(stateRoot, {
     id: 'run-team', name: 'Run Team', captainSessionId: captain.id, createdAt: 1,
     phase: 'running', taskSeq: tasks.length,
@@ -213,15 +217,26 @@ test('R2 a retired member reports retirement, not a missing session', async () =
   } finally { await f.cleanup() }
 })
 
-test('R2 a live member without a resumable session reports the delivery failure', async () => {
+test('R2 a dead session on the dispatch path is reclaimed and reset, not reported as a start failure', async () => {
+  // R4 收尾: the dispatch path now closes the wreckage of the dead session
+  // (open attempt back to pending, lease released) before the unchanged reset
+  // guard runs, so the reset actually succeeds here instead of being refused.
+  // The failure is recorded on the task, and the member comes back healthy.
   const f = await fixture({ member: { id: 'child-worker', spawnError: 'previous start error' } })
   try {
     await kickWorker(f)
     const team = await readTeam(f.stateRoot, 'run-team')
-    assert.match(team.members[0].spawnError, /has no resumable session/u)
-    assert.match(team.members[0].spawnError, /start error: previous start error/u, 'the recorded start error must be carried forward')
-    assert.doesNotMatch(team.members[0].spawnError, /was retired/u)
-    assert.deepEqual(f.deliveries, ['child-worker'], 'the delivery must have been attempted once')
+    assert.deepEqual(f.deliveries, ['child-worker'], 'the dead session must be tried exactly once, never retried inline')
+    assert.equal(team.members[0].id, '', 'the dead child session id must be cleared')
+    assert.equal(team.members[0].generation, 2, 'the reset bumps the generation')
+    assert.equal(team.members[0].spawnError, undefined, 'a recovered member carries no start failure')
+    assert.equal(team.members[0].status, 'idle')
+    assert.equal(team.tasks[0].status, 'pending', 'the task returns to the queue for a fresh dispatch')
+    assert.equal(team.tasks[0].attemptId, undefined, 'the dead attempt is not left open')
+    assert.match(team.tasks[0].output, /lost session/u, 'the task keeps the reason the previous attempt died')
+    assert.match(team.tasks[0].output, /has no resumable session/u)
+    assert.match(team.tasks[0].output, /start error: previous start error/u, 'the recorded start error must be carried forward')
+    assert.equal(team.timeline.some(entry => entry.action === 'member.context_reset'), true, 'the reset must leave a timeline trace')
   } finally { await f.cleanup() }
 })
 
