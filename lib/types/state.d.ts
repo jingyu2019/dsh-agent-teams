@@ -12,7 +12,7 @@
  * `fs` service offers no directory deletion.
  * @module dsh-agent-teams/state
  */
-import { type TaskStatus, type TeamMessage, type TeamState, type TeamTask, type TimelineEntry } from './types.ts';
+import { type ActivationLease, type TaskStatus, type TeamMessage, type TeamState, type TeamTask, type TimelineEntry } from './types.ts';
 import { type LeadIdentity } from './lineage.ts';
 export { amendTaskContract, buildCoverageMatrix, canDeclareDelivery, classifyChangedPath, collectChangedPaths, defaultQualityDeliveryGraph, describeQualityLoop, evaluateQualityCompletion, hasValidQualityTaskFields, isQualityKind, isTaskRevision, isValidFindingLine, normalizeBlankOptionalTaskFields, normalizeSentinelNumericTaskFields, pathMatchesScope, planQualityFollowUp, qualityPlanningPrompt, resumeTeamState, sanitizeReviewAcceptance, sanitizeReviewObjective, taskKindOf, validateCreateTask, } from './quality-gates.ts';
 export type { ContractAmendmentInput } from './quality-gates.ts';
@@ -107,6 +107,54 @@ export declare function invalidateTaskAttempt(task: TeamTask, nextAssignee?: str
  * must leave the permits held for restart recovery.
  */
 export declare function releaseActivationPermitsForDrainedMembers(stateRoot: string, teamId: string, memberIds: readonly string[]): Promise<number>;
+/** Default age after which an unsettled activation lease is expired. */
+export declare const DEFAULT_ACTIVATION_LEASE_TTL_MS: number;
+/**
+ * Normalize the stale-activation sweep threshold.
+ *
+ * Missing, empty, non-numeric and non-positive values all fall back to
+ * {@link DEFAULT_ACTIVATION_LEASE_TTL_MS} so a bad environment cannot turn the
+ * sweep into a no-op or an immediate expiry.
+ * @returns the sweep age in milliseconds.
+ */
+export declare function activationLeaseTtlMs(): number;
+/**
+ * Age anchor of one lease: the earliest moment that proves the activation began.
+ * A lease that never started only has its creation time to speak for it.
+ */
+export declare function activationLeaseAnchorMs(lease: Pick<ActivationLease, 'startedAt' | 'runningObservedAt' | 'createdAt'>): number;
+/** Outcome of one stale-lease sweep. */
+export interface StaleActivationSweep {
+    /** Snapshot of the leases this sweep expired, for logging. */
+    released: ActivationLease[];
+    /** Leases still active (not expired by this sweep). */
+    kept: number;
+}
+/**
+ * Expire activation leases that outlived the sweep threshold unsettled.
+ *
+ * A crashed member or a host that dropped the turn leaves its lease in
+ * `pending|started|recovering` with nobody left to drain it: the permit keeps
+ * shrinking the global budget and the member stays `working`. Every delivery
+ * path releases exactly; this sweep is the fallback for the ones that never run.
+ * A member that still owns an open attempt keeps its status — only the lease and
+ * its permit are reclaimed.
+ * @param input.stateRoot - state root holding the team directory.
+ * @param input.teamId - team whose activations are swept.
+ * @param input.now - epoch ms of this tick, injected so tests need no real clock.
+ * @param input.staleAfterMs - age at which an unsettled lease is expired.
+ * @param input.skipMemberIds - members the caller has just observed running in a
+ *   live host session; their lease proves nothing about a crash, and the anchor
+ *   never advances inside one long turn, so they are never swept.
+ * @returns the expired lease snapshots and the number of leases still active.
+ */
+export declare function reconcileStaleActivationLeases(input: {
+    readonly stateRoot: string;
+    readonly teamId: string;
+    readonly now: number;
+    readonly staleAfterMs: number;
+    readonly skipMemberIds?: ReadonlySet<string>;
+}): Promise<StaleActivationSweep>;
 /**
  * Release the exact legacy delivery one idle edge can prove quiesced.
  *

@@ -39,6 +39,9 @@ import {
   releaseMailboxDelivery,
   releaseActivationPermitsForDrainedMembers,
   releaseLegacyPermitForIdle,
+  activationLeaseAnchorMs,
+  activationLeaseTtlMs,
+  reconcileStaleActivationLeases,
   unsatisfiedDependencies,
   withTeamLock,
   writeTeam,
@@ -124,6 +127,40 @@ export function canAcquireActivationPermit(
 ): boolean {
   if (maxConcurrentWorkers === undefined) return true
   return activePermitCount(leases) < Math.max(1, Math.floor(maxConcurrentWorkers))
+}
+
+/**
+ * Expire activation leases that no delivery path will ever release, and report
+ * each one. A member that crashed or a turn the host dropped leaves its permit
+ * pinned forever; the sweep is the fallback, and a failed sweep must never stop
+ * scheduling, so it only warns.
+ */
+async function sweepStaleActivationLeases(ctx: Context, stateRoot: string, teamId: string): Promise<void> {
+  try {
+    // A lease age alone cannot tell a crash from a long, healthy turn: the anchor
+    // is stamped once and never refreshed inside one activation. Anything the
+    // host still reports as running is therefore never swept — only sessions
+    // that are gone (or idle with nobody left to drain them) can expire.
+    const observed = await readTeam(stateRoot, teamId)
+    const running = new Set<string>()
+    for (const member of observed?.members ?? []) {
+      if (member.id === '' || member.id === undefined) continue
+      if (liveMember(ctx, member)?.status === 'running') running.add(member.id)
+    }
+    const swept = await reconcileStaleActivationLeases({
+      stateRoot,
+      teamId,
+      now: Date.now(),
+      staleAfterMs: activationLeaseTtlMs(),
+      skipMemberIds: running,
+    })
+    for (const lease of swept.released) {
+      const ageMs = Date.now() - activationLeaseAnchorMs(lease)
+      ctx.logger.warn(`released stale activation lease ${lease.memberId} after ${ageMs}ms`)
+    }
+  } catch (error: unknown) {
+    ctx.logger.warn(`agent-teams: could not sweep stale activation leases for ${teamId}: ${String(error)}`)
+  }
 }
 
 export interface TeamScheduler {
@@ -1448,6 +1485,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       const stateRoot = stateRootOf(workspace, config)
       await recoverActivations(workspace, stateRoot, teamId)
       await flushDueNotices(workspace, stateRoot, teamId)
+      await sweepStaleActivationLeases(ctx, stateRoot, teamId)
       const team = await readTeam(stateRoot, teamId)
       if (team === undefined || team.halted === true || team.phase === 'staged') return
       const captain = liveCaptain(ctx, team.captainSessionId, suppliedCaptain)
