@@ -111,7 +111,7 @@ function effortMenuId(effort: string): string {
  * reads only catalog metadata: choosing a member route must not change the
  * captain session's composer model.
  */
-function StagedModelPicker({
+export function StagedModelPicker({
   directory,
   provider,
   model,

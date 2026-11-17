@@ -76,7 +76,7 @@ import {
   type AgentTeamsUiScale,
 } from './ui-scale.ts'
 import { OPEN_PANEL_EVENT } from './AgentTeamsCard.tsx'
-import { StagingPlanEditor } from './StagingPlanEditor.tsx'
+import { StagedModelPicker, StagingPlanEditor } from './StagingPlanEditor.tsx'
 import type { AgentTeamsCardData } from './agent-teams-card-definition.ts'
 import type { AgentTeamsLocaleKey, AgentTeamsTranslate } from './locales.ts'
 import {
@@ -482,6 +482,108 @@ function MemberAvatarControl({ team, member, t }: {
         </button>
       )}
       {error !== '' && <span className={css.avatarError} role="alert">{error}</span>}
+    </span>
+  )
+}
+
+/**
+ * Change an idle running-team member's model/reasoning route from the panel.
+ *
+ * The server keeps the existing rule — the member must be idle and own no open
+ * attempt — and this control does not loosen it: the request goes out, and when
+ * it is refused the reason is shown in place instead of disappearing. The
+ * editor reuses the staged plan's model picker so both surfaces read the same.
+ */
+function MemberRouteControl({ team, member, modelDirectory, t }: {
+  readonly team: ActivityTeam
+  readonly member: ActivityMember
+  readonly modelDirectory?: ModelDirectory
+  readonly t: AgentTeamsTranslate
+}) {
+  const current = {
+    provider: member.provider ?? '',
+    model: member.model ?? '',
+    reasoningEffort: member.reasoningEffort ?? '',
+  }
+  const [editing, setEditing] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState('')
+  const [draft, setDraft] = useState({ provider: current.provider, model: current.model, reasoningEffort: current.reasoningEffort })
+  useEffect(() => {
+    if (editing) return
+    setDraft({ provider: current.provider, model: current.model, reasoningEffort: current.reasoningEffort })
+  }, [editing, current.provider, current.model, current.reasoningEffort])
+  const changed = draft.provider !== current.provider
+    || draft.model !== current.model
+    || draft.reasoningEffort !== current.reasoningEffort
+  const submit = async (): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    setError('')
+    setSaved('')
+    try {
+      const response = await fetch('/plugins/dsh-agent-teams/member-route', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: team.captainSessionId,
+          teamId: team.teamId,
+          memberName: member.name,
+          provider: draft.provider,
+          model: draft.model,
+          ...draft.reasoningEffort === '' ? {} : { reasoningEffort: draft.reasoningEffort },
+        }),
+      })
+      if (!response.ok) {
+        let message = `HTTP ${response.status}`
+        try {
+          const body = await response.json() as { error?: unknown }
+          if (typeof body.error === 'string' && body.error.trim() !== '') message = body.error
+        } catch {}
+        throw new Error(message)
+      }
+      setEditing(false)
+      setSaved(t('member.route.saved'))
+    } catch (cause: unknown) {
+      setError(t('member.route.failed', { message: cause instanceof Error ? cause.message : String(cause) }))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <span className={css.routeControls}>
+      {!editing && (
+        <button type="button" className={css.routeAction} onClick={() => { setEditing(true); setSaved(''); setError('') }}>
+          {t('member.route.edit')}
+        </button>
+      )}
+      {editing && modelDirectory === undefined && (
+        <span className={css.routeError} role="alert">{t('member.route.failed', { message: 'model catalog is unavailable' })}</span>
+      )}
+      {editing && modelDirectory !== undefined && (
+        <>
+          <StagedModelPicker
+            directory={modelDirectory}
+            provider={draft.provider}
+            model={draft.model}
+            reasoningEffort={draft.reasoningEffort}
+            busy={busy}
+            onChange={(selection) => { setDraft({ provider: selection.provider, model: selection.model, reasoningEffort: selection.reasoningEffort }) }}
+            t={t}
+          />
+          <button type="button" className={css.routeAction} disabled={busy || !changed} onClick={() => { void submit() }}>
+            {t('member.route.save')}
+          </button>
+          <button type="button" className={css.routeAction} disabled={busy} onClick={() => { setEditing(false); setError(''); setSaved('') }}>
+            {t('member.route.cancel')}
+          </button>
+        </>
+      )}
+      {editing && <span className={css.routeHint}>{t('member.route.hint')}</span>}
+      {saved !== '' && <span className={css.routeSaved} role="status">{saved}</span>}
+      {error !== '' && <span className={css.routeError} role="alert">{error}</span>}
     </span>
   )
 }
@@ -1064,6 +1166,9 @@ export function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscar
                   <span className={css.memberCount}>{member.done}/{member.total}</span>
                 </button>
                 {!historic && <MemberAvatarControl team={team} member={member} t={t} />}
+                {!historic && !stopped && !discarded && team.phase === 'running' && (
+                  <MemberRouteControl team={team} member={member} modelDirectory={modelDirectory} t={t} />
+                )}
                 <div className={css.assignmentLine}>
                   <span className={css.assignmentLabel}>{t(discarded
                     ? 'assignment.discarded'
@@ -1665,7 +1770,7 @@ export function ActivityPanel({ sessionsList, modelDirectories, openMember, t, c
                     <TeamSection
                       key={team.teamId}
                       team={team}
-                      modelDirectory={team.phase === 'staged'
+                      modelDirectory={team.phase === 'staged' || team.phase === 'running'
                         ? modelDirectories.directoryFor(team.captainSessionId as SessionId)
                         : undefined}
                       onContinuePlanning={returnToComposer}

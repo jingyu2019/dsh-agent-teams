@@ -188,6 +188,22 @@ export interface ManualStagedTeamInput {
   tasks?: Array<{ subject: string; description?: string; assignee?: string; dependencies?: string[] }>
 }
 
+/** One member route change requested by a tool call or the activity panel. */
+export interface MemberRouteInput {
+  readonly memberName: string
+  readonly provider?: string
+  readonly model?: string
+  readonly reasoningEffort?: string
+}
+
+/** The route a member will use on its next turn. */
+export interface MemberRouteResult {
+  readonly member_name: string
+  readonly provider: string
+  readonly model: string
+  readonly reasoning_effort?: string
+}
+
 /** Runtime bridge shared by model-facing tools and the Web staging surface. */
 export interface AgentTeamsRuntime {
   isPendingMember(agent: Agent): boolean
@@ -197,6 +213,8 @@ export interface AgentTeamsRuntime {
   approveStagedTeam(captain: Agent, teamId: string, signal?: AbortSignal): Promise<{ teamId: string; members: number; tasks: number }>
   continueStagedPlanning(captain: Agent, teamId: string): Promise<{ teamId: string; alreadyWaiting: boolean }>
   discardStagedTeam(captain: Agent, teamId: string): Promise<{ teamId: string }>
+  /** Change one idle running-team member's primary route (tool + panel share this). */
+  updateMemberRoute(captain: Agent, teamId: string, input: MemberRouteInput, signal?: AbortSignal): Promise<MemberRouteResult>
   memoryDiagnostics(): ReturnType<TeamScheduler['diagnostics']> & { ancestryCache: number }
 }
 
@@ -462,6 +480,37 @@ export function retiredMemberDeliveryFailure(memberName: string): string {
 /** Why a delivery to a member without a resumable session was refused. */
 export function lostSessionDeliveryFailure(memberName: string, spawnError: string | undefined): string {
   return `member "${memberName}" has no resumable session (start error: ${spawnError ?? 'unknown'}); reassign the task with agent_teams_reassign_task, or reset the member with agent_teams_reset_member_context once it is idle`
+}
+
+/**
+ * Why a member route change was refused because the team is not running yet.
+ *
+ * A route edit only makes sense against a live roster: staged members are still
+ * being planned (the staged editor owns them) and a halted team has frozen
+ * dispatch. Both messages name the exit instead of leaving the caller to guess.
+ */
+export function memberRouteNotRunningFailure(teamName: string, state: 'staged' | 'halted'): string {
+  return state === 'halted'
+    ? `team "${teamName}" is halted, so its member routes are frozen: resume it with agent_teams_resume, then change the route`
+    : `team "${teamName}" is not running yet, so its member routes are still part of the plan: edit them in the staged plan or approve it with agent_teams_approve`
+}
+
+/**
+ * Why a member route change was refused while the member still owns an open
+ * task. The route would otherwise change mid-attempt, and the attempt's model
+ * would disagree with the record it reports against.
+ */
+export function memberRouteOpenAttemptFailure(memberName: string, taskId: string): string {
+  return `member "${memberName}" owns open task "${taskId}", so its route cannot change mid-attempt: finish or reassign that task with agent_teams_reassign_task, then retry`
+}
+
+/**
+ * Why a member route change was refused while the member is running a turn.
+ * A live turn already resolved its model, so the new route could only apply to
+ * the next turn; changing it under the turn would make the badge lie.
+ */
+export function memberRouteBusyFailure(memberName: string): string {
+  return `member "${memberName}" has an active turn, so its route cannot change mid-turn: wait until agent_teams_status shows it idle with no open work, then retry`
 }
 
 /**
@@ -1410,6 +1459,113 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
 
 
 
+  const updateMemberRoute: AgentTeamsRuntime['updateMemberRoute'] = async (captain, teamId, input, signal) => {
+    const workspace = workspaceOf(captain)
+    const stateRoot = stateRootOf(workspace, config)
+    const memberName = input.memberName.trim()
+    const provider = input.provider?.trim()
+    const model = input.model?.trim()
+    const reasoningEffort = input.reasoningEffort?.trim()
+    const team = await requireFreshCaptainTeam(ctx, stateRoot, teamId, captain.id)
+      const prepared = await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+      const fresh = await requireFreshCaptainTeam(ctx, stateRoot, teamId, captain.id)
+      if (fresh.phase === 'staged') throw new Error(memberRouteNotRunningFailure(fresh.name, 'staged'))
+      if (fresh.halted === true) throw new Error(memberRouteNotRunningFailure(fresh.name, 'halted'))
+      const member = requireMember(fresh, memberName)
+      if (member.status === 'removed') throw new Error(`member "${member.name}" has been removed`)
+      if (member.stopping === true) throw new Error(`member "${member.name}" is already stopping`)
+      const openTask = memberOpenTask(fresh, member.name)
+      if (openTask !== undefined) throw new Error(memberRouteOpenAttemptFailure(member.name, openTask.id))
+      const activeLease = fresh.activations?.some(lease => lease.memberId === member.id && (
+        lease.permitHeld === true || lease.state === 'pending' || lease.state === 'started' || lease.state === 'recovering'))
+      const live = member.id === '' ? undefined : ctx.agents.get(member.id as SessionId)
+      if (activeLease || (live !== undefined && live.status === 'running')) {
+        throw new Error(memberRouteBusyFailure(member.name))
+      }
+      const original = {
+        provider: member.provider,
+        model: member.model,
+        reasoningEffort: member.reasoningEffort,
+        activeProvider: member.activeProvider,
+        activeModel: member.activeModel,
+        fallbackActive: member.fallbackActive,
+        spawnError: member.spawnError,
+      }
+      member.stopping = true
+      await writeTeam(stateRoot, fresh)
+      return { member: { ...member }, original }
+    })
+    let next: Awaited<ReturnType<typeof resolveMemberLlmSelection>> | undefined
+    try {
+      const requestedProvider = provider === undefined || provider === '' ? prepared.member.provider : provider
+      const requestedModel = model === undefined || model === '' ? prepared.member.model : model
+      if (requestedProvider === undefined || requestedProvider === '' || requestedModel === undefined || requestedModel === '') {
+        throw new Error(`member "${memberName}" has no complete primary route to update`)
+      }
+      const requestedEffort = reasoningEffort === undefined
+        ? prepared.member.reasoningEffort
+        : reasoningEffort === 'default' ? undefined : reasoningEffort
+      next = await resolveMemberLlmSelection(ctx, captain, {
+        provider: requestedProvider,
+        model: requestedModel,
+        reasoningEffort: requestedEffort,
+        fallback: prepared.member.fallback,
+        fallbacks: prepared.member.fallbacks,
+      }, signal)
+      await validateMemberLlmSelections(ctx, [next], signal)
+      if (prepared.member.id !== '') await drainMemberChildren(ctx.subagents, captain, [prepared.member.id as SessionId])
+      const updated = await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+        const fresh = await requireFreshCaptainTeam(ctx, stateRoot, teamId, captain.id)
+        const member = requireMember(fresh, memberName)
+        member.provider = next!.provider
+        member.model = next!.model
+        if (next!.reasoningEffort === undefined) delete member.reasoningEffort
+        else member.reasoningEffort = next!.reasoningEffort
+        if (next!.fallback === undefined) delete member.fallback
+        else member.fallback = next!.fallback
+        if (next!.fallbacks === undefined) delete member.fallbacks
+        else member.fallbacks = next!.fallbacks
+        delete member.activeProvider
+        delete member.activeModel
+        delete member.fallbackActive
+        delete member.spawnError
+        delete member.spawnFailures
+        member.stopping = false
+        await writeTeam(stateRoot, fresh)
+        return member
+      })
+      await scheduler.kickTeam(workspace, teamId, await liveLeadAnchorAgent(ctx, freshTeamRef(team, captain), captain))
+      return {
+        member_name: updated.name,
+        provider: updated.provider!,
+        model: updated.model!,
+        ...updated.reasoningEffort === undefined ? {} : { reasoning_effort: updated.reasoningEffort },
+      }
+    } catch (error: unknown) {
+      await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
+        const fresh = await readTeam(stateRoot, teamId)
+        const member = fresh?.members.find(candidate => candidate.name === memberName)
+        if (fresh === undefined || member === undefined) return
+        if (prepared.original.provider === undefined) delete member.provider
+        else member.provider = prepared.original.provider
+        if (prepared.original.model === undefined) delete member.model
+        else member.model = prepared.original.model
+        if (prepared.original.reasoningEffort === undefined) delete member.reasoningEffort
+        else member.reasoningEffort = prepared.original.reasoningEffort
+        if (prepared.original.activeProvider === undefined) delete member.activeProvider
+        else member.activeProvider = prepared.original.activeProvider
+        if (prepared.original.activeModel === undefined) delete member.activeModel
+        else member.activeModel = prepared.original.activeModel
+        if (prepared.original.fallbackActive === undefined) delete member.fallbackActive
+        else member.fallbackActive = prepared.original.fallbackActive
+        member.stopping = false
+        member.spawnError = error instanceof Error ? error.message : String(error)
+        await writeTeam(stateRoot, fresh)
+      })
+      throw error
+    }
+  }
+
   ctx.tools.register(defineTool({
     name: 'agent_teams_create',
     description: 'Create a team. Use approval=required for a two-phase plan: members and tasks remain unspawned/unclaimed until the user reviews the Web plan and explicitly approves it. Optional profiles expand their configured roster; seed profiles also expand template tasks, while captain profiles leave the graph for the Captain to design. approval=automatic preserves the legacy immediate-execution path.',
@@ -2319,110 +2475,17 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     async execute(args, exec) {
       const captain = requireCaptain(exec)
       const workspace = workspaceOf(captain)
-      const stateRoot = stateRootOf(workspace, config)
       const team = await requireCaptainTeam(ctx, workspace, config, captain)
-      const memberName = args.member_name.trim()
-      if (memberName === '') throw new Error('member_name must not be empty')
+      if (args.member_name.trim() === '') throw new Error('member_name must not be empty')
       if (args.provider !== undefined && args.provider.trim() === '') throw new Error('provider must not be empty')
       if (args.model !== undefined && args.model.trim() === '') throw new Error('model must not be empty')
       if (args.reasoning_effort !== undefined && args.reasoning_effort.trim() === '') throw new Error('reasoning_effort must not be empty')
-      const prepared = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
-        const fresh = await requireFreshCaptainTeam(ctx, stateRoot, team.id, captain.id)
-        if (fresh.phase === 'staged') throw new Error('route changes are only available after the plan is approved')
-        if (fresh.halted === true) throw new Error('team is halted; resume before changing member routes')
-        const member = requireMember(fresh, memberName)
-        if (member.status === 'removed') throw new Error(`member "${member.name}" has been removed`)
-        if (member.stopping === true) throw new Error(`member "${member.name}" is already stopping`)
-        const openTask = memberOpenTask(fresh, member.name)
-        if (openTask !== undefined) throw new Error(`member "${member.name}" owns open task "${openTask.id}"; finish or reassign it before changing its route`)
-        const activeLease = fresh.activations?.some(lease => lease.memberId === member.id && (
-          lease.permitHeld === true || lease.state === 'pending' || lease.state === 'started' || lease.state === 'recovering'))
-        const live = member.id === '' ? undefined : ctx.agents.get(member.id as SessionId)
-        if (activeLease || (live !== undefined && live.status === 'running')) {
-          throw new Error(`member "${member.name}" has an active turn; wait until it is idle with no open work`)
-        }
-        const original = {
-          provider: member.provider,
-          model: member.model,
-          reasoningEffort: member.reasoningEffort,
-          activeProvider: member.activeProvider,
-          activeModel: member.activeModel,
-          fallbackActive: member.fallbackActive,
-          spawnError: member.spawnError,
-        }
-        member.stopping = true
-        await writeTeam(stateRoot, fresh)
-        return { member: { ...member }, original }
-      })
-      let next: Awaited<ReturnType<typeof resolveMemberLlmSelection>> | undefined
-      try {
-        const requestedProvider = args.provider?.trim() || prepared.member.provider
-        const requestedModel = args.model?.trim() || prepared.member.model
-        if (requestedProvider === undefined || requestedProvider === '' || requestedModel === undefined || requestedModel === '') {
-          throw new Error(`member "${memberName}" has no complete primary route to update`)
-        }
-        const requestedEffort = args.reasoning_effort === undefined
-          ? prepared.member.reasoningEffort
-          : args.reasoning_effort.trim() === 'default' ? undefined : args.reasoning_effort.trim()
-        next = await resolveMemberLlmSelection(ctx, captain, {
-          provider: requestedProvider,
-          model: requestedModel,
-          reasoningEffort: requestedEffort,
-          fallback: prepared.member.fallback,
-          fallbacks: prepared.member.fallbacks,
-        }, exec.signal)
-        await validateMemberLlmSelections(ctx, [next], exec.signal)
-        if (prepared.member.id !== '') await drainMemberChildren(ctx.subagents, captain, [prepared.member.id as SessionId])
-        const updated = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
-          const fresh = await requireFreshCaptainTeam(ctx, stateRoot, team.id, captain.id)
-          const member = requireMember(fresh, memberName)
-          member.provider = next!.provider
-          member.model = next!.model
-          if (next!.reasoningEffort === undefined) delete member.reasoningEffort
-          else member.reasoningEffort = next!.reasoningEffort
-          if (next!.fallback === undefined) delete member.fallback
-          else member.fallback = next!.fallback
-          if (next!.fallbacks === undefined) delete member.fallbacks
-          else member.fallbacks = next!.fallbacks
-          delete member.activeProvider
-          delete member.activeModel
-          delete member.fallbackActive
-          delete member.spawnError
-          delete member.spawnFailures
-          member.stopping = false
-          await writeTeam(stateRoot, fresh)
-          return member
-        })
-        await scheduler.kickTeam(workspace, team.id, await liveLeadAnchorAgent(ctx, freshTeamRef(team, captain), captain))
-        return {
-          member_name: updated.name,
-          provider: updated.provider!,
-          model: updated.model!,
-          ...updated.reasoningEffort === undefined ? {} : { reasoning_effort: updated.reasoningEffort },
-        }
-      } catch (error: unknown) {
-        await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
-          const fresh = await readTeam(stateRoot, team.id)
-          const member = fresh?.members.find(candidate => candidate.name === memberName)
-          if (fresh === undefined || member === undefined) return
-          if (prepared.original.provider === undefined) delete member.provider
-          else member.provider = prepared.original.provider
-          if (prepared.original.model === undefined) delete member.model
-          else member.model = prepared.original.model
-          if (prepared.original.reasoningEffort === undefined) delete member.reasoningEffort
-          else member.reasoningEffort = prepared.original.reasoningEffort
-          if (prepared.original.activeProvider === undefined) delete member.activeProvider
-          else member.activeProvider = prepared.original.activeProvider
-          if (prepared.original.activeModel === undefined) delete member.activeModel
-          else member.activeModel = prepared.original.activeModel
-          if (prepared.original.fallbackActive === undefined) delete member.fallbackActive
-          else member.fallbackActive = prepared.original.fallbackActive
-          member.stopping = false
-          member.spawnError = error instanceof Error ? error.message : String(error)
-          await writeTeam(stateRoot, fresh)
-        })
-        throw error
-      }
+      return updateMemberRoute(captain, team.id, {
+        memberName: args.member_name,
+        ...args.provider === undefined ? {} : { provider: args.provider },
+        ...args.model === undefined ? {} : { model: args.model },
+        ...args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort },
+      }, exec.signal)
     },
   }))
 
@@ -3840,6 +3903,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     approveStagedTeam,
     continueStagedPlanning,
     discardStagedTeam,
+    updateMemberRoute,
   }
 
   return runtime
