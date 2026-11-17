@@ -56,7 +56,11 @@ export class WorkspaceAuditService {
   private sequence = 0
   private closed = false
 
-  constructor(private readonly options: WorkspaceAuditOptions = {}) {}
+  private readonly options: WorkspaceAuditOptions
+
+  constructor(options: WorkspaceAuditOptions = {}) {
+    this.options = options
+  }
 
   audit(workspace: string, team: TeamState, stateRoot = join(workspace, '.agent-teams')): Promise<DeliveryAudit> {
     if (this.closed) return Promise.resolve(incomplete('workspace audit service was disposed; retry after reload'))
