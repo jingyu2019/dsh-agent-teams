@@ -161,3 +161,27 @@
    6. R1 补 activation 租约 TTL 清扫（`reconcileStaleActivationLeases`），让 429 后的僵尸租约可自愈。
    7. **R4 的自动重置在任务派发路径上打不到**（复核补充，已 grep 确认）：`resetMemberContextLocked`（`src/tools.ts:376-382`）在 `member.status === 'working'`、仍持 open attempt、或持活跃 lease 时抛错，而 `recoverLostSessionDelivery` 的重投就在同一条派发路径里（`src/tools.ts:1165-1180`）——所以真正能自愈的只有「无 open attempt / 无活跃 lease」的邮件唤醒与空闲派发。要么为 spawn 失败（无活会话）单开一条不经过该守卫的重置分支，要么把它固化成文档语义。README 已按后者写明，代码侧仍算 R4 的部分交付。
 4. **`npm run verify` 整链跑不完的真实原因**（复核实测）：`scripts/harness-runtime-verify.mjs` 需要真实 Harness 安装路径，无参调用直接抛错退出；不是产物过期，也与 pnpm 缺失无关。
+---
+
+## §缺口闭环（2026-11-17 21:30，队长）
+
+§裁定 第 3 条列出的 7 项已全部落地，"完整 7 / 部分 8 / 未开始 1" 的计数不再适用。逐项证据：
+
+| 缺口 | 提交 | 落点 | 能失败的用例 |
+| --- | --- | --- | --- |
+| P0-4 `amend_task` 接 `expected_revision` | `f031097` | `src/tools.ts:3542`（参数）/ `:3574-3576`（落盘前校验，复用 `isExpectedRevision`、`expectedRevisionError`） | `scripts/p0-4-amend-expected-revision.test.mjs` 6 例（含"两次 amend 之间被 update_task 改写 → 旧 revision 被拒"，把校验删掉即红） |
+| P0-3 `reassign_task` 写域准入 + 防饥饿 + lane 放行 | `554b2ce` | `src/tools.ts:2939-2952`（落盘前过门）、`src/quality-gates.ts:401` 起（`writeScopeConflict` 的 `stale`/`laneOf`）、`src/scheduler.ts:1646-1658`（派发门传 lane、stale 只 warn） | `scripts/p0-3-reassign-write-scope.test.mjs` 12 例（live 冲突时 assignee/status/attempt/revision 全不变；过期租约放行且占域者不被抢占；异 lane 放行、同 lane 仍冲突） |
+| P1-1 可选包断言 | `554b2ce` | `scripts/harness-runtime-cohort.mjs` 已有的 `skipped[{reason:'optional-platform'}]` | `scripts/harness-runtime-cohort.test.mjs` 6 例（断言逐条 `reason === 'optional-platform'`；把归并改成抛错即红） |
+| P1-2 发布门用例 | `554b2ce` | `.github/workflows/publish.yml:166` | `scripts/publish-workflow-gate.test.mjs` 3 例（断言 `if` 含 `!cancelled() && needs.publish.result == 'success'`；把 if 放宽成 `!cancelled()` 即红） |
+| P0-1 重算工具面预算 | `49d3327` | `docs/tool-surface-budget.json` | `verify:tool-surface-budget`（实测 captain 20 工具 / 22,880 B、core 11 / 17,694 B、member 4 / 6,159 B） |
+| R1 租约 TTL 清扫 | `7b0e60c` | `src/state.ts` `reconcileStaleActivationLeases` / `activationLeaseTtlMs`、`src/scheduler.ts` `sweepStaleActivationLeases` | `scripts/r1-activation-lease-ttl.test.mjs` 7 例（含"宿主仍报告 running 的会话永不被清扫"；这条是队长补的缺口——锚点字段一次 activation 内不推进，不清 `skipMemberIds` 就会误杀健康长回合） |
+| R4 派发路径重置 | `f031097` | `src/tools.ts` `reclaimDeadSessionDelivery` + `DispatchResetRefusal`/`dispatchResetFailure`，在**未放宽**的 `resetMemberContextLocked` 之前执行 | `scripts/r4-dispatch-path-reset.test.mjs` 6 例、`scripts/m1-dispatch-wiring.test.mjs` R2 改写（断言死会话被回收成 pending + output 说明 + `member.context_reset`，而不是报启动失败） |
+
+R4 的真实语义（与本清单 §裁定 3.7 的初判不同）：不是"绕过守卫"，而是**清扫残骸让守卫按自己的条件通过**。清扫范围经两轮既有回归校正后收窄为：
+- 只回收「仍在第一次尝试、且没有 output/commandsRun/acceptanceResults」的任务；已消耗过 attempt 或已产出证据的任务保留 capability，交队长 reassign（`scripts/lifecycle-verify.mjs` 的 recoveredOwnership 两条用例强制如此）。
+- lease 只在同时回收了 attempt 时才结束；只唤醒、无 attempt 可回收时保留 lease，因为 durable mailbox 条目才是那条消息的回退（否则会伪造一次投递）。
+
+## 已知不一致与遗留（补记）
+
+5. `verify:compatibility` 在本轮之前就失败：`synchronizing from the 0.1.27 manifest keeps the checked-in ASCII escapes` 断言生成的 `package.json` 与入库版本逐字节相同，实测不等。已在本轮用 `git stash` 回到 HEAD 基线复现（同样失败），**与本轮改动无关**，另行处理。
+6. `npm run verify` 整链仍跑不完，原因见上条第 4 项（`scripts/harness-runtime-verify.mjs` 需真实 Harness 安装路径），可改用逐项 `verify:*`；51 项子脚本本轮已全绿（`verify:compatibility` 除外）。
