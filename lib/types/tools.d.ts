@@ -116,6 +116,20 @@ export interface ManualStagedTeamInput {
         dependencies?: string[];
     }>;
 }
+/** One member route change requested by a tool call or the activity panel. */
+export interface MemberRouteInput {
+    readonly memberName: string;
+    readonly provider?: string;
+    readonly model?: string;
+    readonly reasoningEffort?: string;
+}
+/** The route a member will use on its next turn. */
+export interface MemberRouteResult {
+    readonly member_name: string;
+    readonly provider: string;
+    readonly model: string;
+    readonly reasoning_effort?: string;
+}
 /** Runtime bridge shared by model-facing tools and the Web staging surface. */
 export interface AgentTeamsRuntime {
     isPendingMember(agent: Agent): boolean;
@@ -134,6 +148,8 @@ export interface AgentTeamsRuntime {
     discardStagedTeam(captain: Agent, teamId: string): Promise<{
         teamId: string;
     }>;
+    /** Change one idle running-team member's primary route (tool + panel share this). */
+    updateMemberRoute(captain: Agent, teamId: string, input: MemberRouteInput, signal?: AbortSignal): Promise<MemberRouteResult>;
     memoryDiagnostics(): ReturnType<TeamScheduler['diagnostics']> & {
         ancestryCache: number;
     };
@@ -206,6 +222,26 @@ export declare function memberDispatchPaused(spawnFailures: number | undefined, 
 export declare function retiredMemberDeliveryFailure(memberName: string): string;
 /** Why a delivery to a member without a resumable session was refused. */
 export declare function lostSessionDeliveryFailure(memberName: string, spawnError: string | undefined): string;
+/**
+ * Why a member route change was refused because the team is not running yet.
+ *
+ * A route edit only makes sense against a live roster: staged members are still
+ * being planned (the staged editor owns them) and a halted team has frozen
+ * dispatch. Both messages name the exit instead of leaving the caller to guess.
+ */
+export declare function memberRouteNotRunningFailure(teamName: string, state: 'staged' | 'halted'): string;
+/**
+ * Why a member route change was refused while the member still owns an open
+ * task. The route would otherwise change mid-attempt, and the attempt's model
+ * would disagree with the record it reports against.
+ */
+export declare function memberRouteOpenAttemptFailure(memberName: string, taskId: string): string;
+/**
+ * Why a member route change was refused while the member is running a turn.
+ * A live turn already resolved its model, so the new route could only apply to
+ * the next turn; changing it under the turn would make the badge lie.
+ */
+export declare function memberRouteBusyFailure(memberName: string): string;
 /**
  * Whether a member record proves that a child session actually started.
  *

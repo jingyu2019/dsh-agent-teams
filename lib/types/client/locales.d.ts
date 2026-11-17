@@ -174,6 +174,12 @@ export declare const zh: {
     'avatar.restore': string;
     'avatar.uploading': string;
     'avatar.failed': string;
+    'member.route.edit': string;
+    'member.route.hint': string;
+    'member.route.save': string;
+    'member.route.cancel': string;
+    'member.route.saved': string;
+    'member.route.failed': string;
     'plan.member.provider': string;
     'plan.member.model': string;
     'plan.member.reasoning': string;
@@ -452,6 +458,12 @@ export declare const en: {
     'avatar.restore': string;
     'avatar.uploading': string;
     'avatar.failed': string;
+    'member.route.edit': string;
+    'member.route.hint': string;
+    'member.route.save': string;
+    'member.route.cancel': string;
+    'member.route.saved': string;
+    'member.route.failed': string;
     'plan.member.provider': string;
     'plan.member.model': string;
     'plan.member.reasoning': string;
