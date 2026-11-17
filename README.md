@@ -28,7 +28,7 @@
 
 `dsh-agent-teams` turns the current DeepSeek Harness session into a captain that can assemble durable sub-agents, split a goal into dependency-aware tasks, and coordinate work through direct messages.
 
-Ask in natural language. The plugin provides the team protocol, 14 coordination tools, persistent state, an automatic shared-task scheduler, and a live Web UI—without requiring a separate workflow engine.
+Ask in natural language. The plugin provides the team protocol, 24 team tools, persistent state, an automatic shared-task scheduler, and a live Web UI—without requiring a separate workflow engine.
 
 <p align="center">
   <img src="./assets/readme/workspace.png" width="100%" alt="AgentTeams native workspace with members, task dependencies, and progress">
@@ -46,10 +46,13 @@ Ask in natural language. The plugin provides the team protocol, 14 coordination 
 | **Durable members** | Members are continuable DSH sub-agents that can be woken for focused follow-up turns. |
 | **Dependency-aware tasks** | Tasks move through explicit states and cannot be claimed before their dependencies finish. |
 | **Automatic reuse and safe takeover** | Idle members claim the next ready task; reassignment revokes stale attempts before new work starts, and cold recovery retries stranded open attempts. |
-| **Direct messaging** | Members send durable mailbox messages directly to teammates or the captain—no relay required. |
+| **Direct messaging** | Members send durable mailbox messages directly to teammates or the captain—no relay required. `idempotency_key` replays a re-sent message instead of writing new mail, and a pair that keeps exchanging messages is refused as a suspected ping-pong. |
+| **Optimistic task edits** | Every task carries a monotonic `revision`. Passing `expected_revision` to `agent_teams_update_task`, `agent_teams_reassign_task` or an `edit_plan` operation refuses an edit built on stale state and names the revision to retry with; omitting it keeps the previous unconditional behaviour. |
+| **Fresh context per task** | A task can ask for an empty member conversation: `fresh_context` retires the child session before dispatch, keeping the roster row, route, skills, tool policy and worktree lane. The scheduler keeps the old session and logs the reason whenever the member is not safely idle. |
 | **Live activity panel** | The Web UI combines segmented progress, a collapsible roster, and an interactive task DAG; running tasks show the member's model, and completed archives retain their full member and task history. |
 | **Plan before execution** | Normal `/agent-teams` runs stage an unspawned roster and DAG first. The Web panel uses the host model catalog for member routes. Returning to chat stops the planning turn, asks what should change, and revises the same draft; discarding archives the draft, aborts the turn, and explicitly prevents automatic recreation. Only **Approve & Run** enables scheduling; each member starts with its first ready task. |
-| **Quality gates** | Opt-in quality tasks support requirements → implementation → verification → review → integration contracts, automatic repair/re-review, and explicit resume. Scope control is a completion-time audit, not host write interception. See [docs/quality-gates.md](./docs/quality-gates.md). |
+| **Quality gates** | Opt-in quality tasks support requirements → implementation → verification → review → integration contracts, automatic repair/re-review, and explicit resume. Scope control is a completion-time audit plus dispatch-time write-scope admission—overlapping `inScope` writers are serialized, not rewritten after the fact—rather than host write interception. See [docs/quality-gates.md](./docs/quality-gates.md). |
+| **Read-only delivery and spend** | A delivery whose tasks changed no paths needs no verification run, and its exemption is recorded with the evidence it was based on. `agent_teams_status` reports per-member token usage collected from the host's own usage records; the numbers are reported, never enforced as a cap. |
 
 The conversation card and activity panel use Harness's official locale service. They follow live language changes between English and Simplified Chinese—including status labels, dynamic summaries, controls, archive markers, and accessibility text—without a page reload or a separate plugin setting.
 
@@ -144,9 +147,9 @@ Team and task content starts immediately: wide panes use columns and narrow pane
 
 Team state is stored under `<workspace>/.agent-teams/`; the Web panel reads that disk truth and combines it with live sub-agent activity.
 
-Member creation is zero-interaction by default: a member on the captain's current LLM route snapshots that provider, model, and reasoning effort, while a member on a requested alternative route snapshots the target model's default effort; later continuations restore the resolved snapshot. Only an explicit heterogeneous-team request (for example, “backend on provider A/model X, frontend on provider B/model Y”) supplies a member-specific `provider` + `model`; there is no per-member model or reasoning prompt.
+Member creation is zero-interaction by default: a member on the captain's current LLM route snapshots that provider, model, and reasoning effort, while a member on a requested alternative route snapshots the target model's default effort; later continuations restore the resolved snapshot. Only an explicit heterogeneous-team request (for example, “backend on provider A/model X, frontend on provider B/model Y”) supplies a member-specific `provider` + `model`; there is no per-member model or reasoning prompt. A running member's route is not frozen: its panel control and `agent_teams_update_member_route` switch provider, model or reasoning effort between tasks, and a refusal names the missing condition instead of failing silently (the team must be running, and the member idle with no open attempt and no active turn).
 
-Captain sessions keep the concise core protocol and the original 14 native team tools from their first request. All business tools are directly available; no loading tool or extra activation call is needed. Configured profiles retain their bounded directory in the fixed system prompt. Creating, approving, continuing or ending a team does not rewrite the system prompt or tool schemas. Core rules remain available after history compaction or discarded code-mode tool results. Members receive four team tools, fixed member instructions, and their ordinary coding/research tools. Web approval wakes the captain with a control message; later member reports wake it again. See the [fixed protocol and benchmark contract](./docs/progressive-loading.md).
+Captain sessions keep the concise core protocol and the native team tools from their first request. All business tools are directly available; no loading tool or extra activation call is needed. Configured profiles retain their bounded directory in the fixed system prompt. Creating, approving, continuing or ending a team does not rewrite the system prompt or tool schemas. Core rules remain available after history compaction or discarded code-mode tool results. Members receive four team tools, fixed member instructions, and their ordinary coding/research tools. Web approval wakes the captain with a control message; later member reports wake it again. See the [fixed protocol and benchmark contract](./docs/progressive-loading.md).
 
 ## Slash command
 
@@ -191,7 +194,7 @@ Defaults work without extra setup. A trusted profile can override member behavio
         deny: [web_search]
 ```
 
-`memberMaxDepth` defaults to `0`: team members cannot create nested subagents. Set `1` to explicitly permit one descendant level; the limit also covers runtime/code-tool calls. Default members report through team messages only, avoiding duplicate native parent reports. Idle roster members make no model requests. Task assignments start distinct turns; coordination joins the nearest model step. Acceptance and consumption are tracked separately. Removal/archive drains the selected branch and its pending input before reporting success.
+`memberMaxDepth` defaults to `0`: team members cannot create nested subagents. Set `1` to explicitly permit one descendant level; the limit also covers runtime/code-tool calls. Default members report through team messages only, avoiding duplicate native parent reports. Idle roster members make no model requests. A member that keeps failing to start pauses dispatch after `AGENT_TEAMS_MEMBER_SPAWN_FAILURE_LIMIT` consecutive start failures (default `3`); `agent_teams_status` then shows its `spawn_failures` and last `spawn_error`, so a broken route is visible instead of retried forever. Task assignments start distinct turns; coordination joins the nearest model step. Acceptance and consumption are tracked separately. Removal/archive drains the selected branch and its pending input before reporting success.
 
 `toolPolicies` is owner configuration: reusable per-member tool policies keyed by id. A member *selects* one by id — `tool_policy` on `agent_teams_add_member`, a member row of an inline `plan`, or a profile member row. The Captain model can select a declared policy but can never submit raw allow/deny lists or invent one at runtime.
 
@@ -224,11 +227,11 @@ Optional W5/W7 capabilities are local-only and disabled by default:
       baseRef: main
 ```
 
-Attachments accept only regular files in the sender's task scope or an owner-configured artifact root; protected state, dependency, secret and repository-metadata paths are rejected. Avatars are raster-only, local, content-addressed and authenticated. Reusable agent presets are immutable revisions copied into new members. Member-lane worktrees bind one resident child to one path/branch; integration and cleanup require the explicit confirmation-gated `agent_teams_worktree` action and never force or prune.
+Attachments accept only regular files in the sender's task scope or an owner-configured artifact root; protected state, dependency, secret and repository-metadata paths are rejected. Avatars are raster-only, local, content-addressed and authenticated. Reusable agent presets are immutable revisions copied into new members. `agent_teams_agent_catalog` imports or exports a whole `agents/<name>/` directory (`plugin.json` plus instructions, with optional `skills/` and `avatars/`) or a single preset JSON, and resolves a preset by name; it reports conflicts, warnings and skipped entries instead of importing half a directory, never executes imported content, and rejects path escapes and symlinked directories. Member-lane worktrees bind one resident child to one path/branch; integration and cleanup require the explicit confirmation-gated `agent_teams_worktree` action and never force or prune.
 
 `toolSurface: core` keeps a stable but smaller captain tool set for token-sensitive sessions: basic create/approve/roster/task/report/collect/delete operations remain, while advanced editing, preset, worktree and amendment tools are hidden. The default is `full`.
 
-`agent_teams_reset_member_context` retires an idle member's child session after explicit user confirmation. The roster row, route, skills and worktree lane stay; the next task starts a fresh child context.
+`agent_teams_reset_member_context` retires an idle member's child session after explicit user confirmation. The roster row, route, skills and worktree lane stay; the next task starts a fresh child context. A task can request the same reset for itself with `fresh_context: true` on `agent_teams_create_task` (or on an `edit_plan` operation); the reset then happens at dispatch time and is skipped, with a logged reason, when the member is `working`, is `stopping`, has no session yet, still owns another open attempt, or holds a live activation. Independently, a delivery whose member session is gone is reset and re-delivered once automatically before it is reported as a failure, so a recycled child session does not strand queued work.
 
 `agent_teams_compact_member` invokes the host `ctx.compaction.compactNow` service for one live idle member; the plugin does not fabricate compaction or summarize history itself.
 
@@ -260,6 +263,9 @@ It reports the declared spec, installed version, local artifact SHA-256, whether
 
 - One captain leads one active team at a time.
 - Idle members with no open task are automatically reused for ready work. An idle member that still owns an open attempt is parked until messaged or explicitly reassigned; messages that cannot be delivered live remain durable and are retried at a later status boundary.
+- Dispatch serializes overlapping write scopes: when a claimed or in-progress write task already covers paths that a ready task declares in `inScope`, the ready task waits without consuming an attempt and is retried once the covering task finishes.
+- Messaging keeps two guards. Re-using an `idempotency_key` replays the first delivery for 24 hours instead of writing mail again (at most 512 keys are retained per team), and one sender/recipient pair exchanging more than 12 messages in 10 minutes is refused as a suspected ping-pong; `AGENT_TEAMS_PINGPONG_MESSAGE_LIMIT` raises that bound.
+- Per-member token counts come from the host's own usage records. A member with no measurement reports `unavailable` rather than `0`, and the numbers never gate work.
 - State is file-backed and serialized within one DSH process; concurrent processes editing the same team are not coordinated.
 - The activity panel reports persisted state as-is. Models may occasionally finish work without performing the expected task-state update.
 
