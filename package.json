@@ -108,17 +108,17 @@
     "verify:m1-dispatch-diagnostics": "node --test scripts/m1-dispatch-diagnostics.test.mjs",
     "verify:fresh-context": "node --test scripts/fresh-context.test.mjs",
     "verify:m1-dispatch-wiring": "node --test scripts/m1-dispatch-wiring.test.mjs",
-
-    "verify:m1-plan-member-schema": "node --test scripts/m1-plan-member-schema.test.mjs",    "verify:availability": "node --test scripts/issue-97.test.mjs scripts/issue-76.test.mjs scripts/issue-62.test.mjs scripts/issue-62-probe.test.mjs",
-
-    "verify:member-route-control": "node --test scripts/member-route-control.test.mjs",    "verify:issue-203": "node --test scripts/issue-203-card.test.mjs",
-
-    "verify:p1-4-agent-catalog": "node --test scripts/p1-4-agent-catalog.test.mjs",    "verify:corrupt-state": "node --test scripts/corrupt-teamjson.test.mjs",
-
-    "verify:p0-5-idempotency": "node --test scripts/p0-5-idempotency.test.mjs",    "verify:web-routes": "node scripts/web-routes-verify.mjs",
-
+    "verify:m1-plan-member-schema": "node --test scripts/m1-plan-member-schema.test.mjs",
+    "verify:availability": "node --test scripts/issue-97.test.mjs scripts/issue-76.test.mjs scripts/issue-62.test.mjs scripts/issue-62-probe.test.mjs",
+    "verify:member-route-control": "node --test scripts/member-route-control.test.mjs",
+    "verify:issue-203": "node --test scripts/issue-203-card.test.mjs",
+    "verify:p1-4-agent-catalog": "node --test scripts/p1-4-agent-catalog.test.mjs",
+    "verify:corrupt-state": "node --test scripts/corrupt-teamjson.test.mjs",
+    "verify:p0-5-idempotency": "node --test scripts/p0-5-idempotency.test.mjs",
+    "verify:web-routes": "node scripts/web-routes-verify.mjs",
     "verify:p0-4-task-revision": "node --test scripts/p0-4-task-revision.test.mjs",
-    "verify:p2-readonly-token": "node --test scripts/p2-readonly-delivery-token-metering.test.mjs",    "verify:activity-etag": "node --test scripts/activity-etag.test.mjs",
+    "verify:p2-readonly-token": "node --test scripts/p2-readonly-delivery-token-metering.test.mjs",
+    "verify:activity-etag": "node --test scripts/activity-etag.test.mjs",
     "verify:release": "node --test scripts/release-metadata.test.mjs",
     "verify:manifest": "node scripts/dsh-plugin-manifest.mjs && node --test scripts/dsh-plugin-manifest.test.mjs",
     "verify:readme": "node scripts/readme-version.mjs && node --test scripts/readme-version.test.mjs",
